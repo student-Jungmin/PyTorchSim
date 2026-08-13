@@ -47,6 +47,17 @@
 # compiling Llama 3's graph unchanged. Nothing here was broken when it was
 # written; the entry is a floor, not a fix.
 #
+# test_mllama.py IS THE ONE THAT NEEDED A BACKEND FIX. Llama 3.2 Vision's
+# cross-attention decoder layer stopped in triton-npu's absorb_layout with
+# "indexing map cannot take the move": a single-input elementwise generic whose
+# move drops a unit middle axis, leaving no operand naming that dim, so linalg
+# could not infer the loop's bound -- which for a unit dim is 1. Fixed in
+# triton-npu 2988424, and the pin in thirdparty/triton-npu.json moves with it.
+# Both towers run: vision 4.2915e-06, text 3.4019e-06, 8m07s for the pair.
+# The vision width is NOT the real 1280 on purpose -- test_vit.py and
+# test_clip.py already gate ViT-shaped attention at 768, and what was unproven
+# was the tile structure and the local/global split, which scaling keeps.
+#
 # WHY tests/models/Qwen/test_qwen.py RUNS TWO PRESETS WHERE EVERY OTHER ENTRY
 # RUNS ONE. It gates a family, not a model: Qwen2/2.5 carry a QKV bias that no
 # other block in this suite has, Qwen3 drops it and adds an RMSNorm per head
@@ -72,6 +83,7 @@ tests/models/GPT2/test_gpt2.py
 tests/models/Llama/test_llama.py
 tests/models/Llama/test_llama3.py
 tests/models/Llama/test_llama3x.py
+tests/models/Llama/test_mllama.py
 tests/models/Mixtral8x7B/test_mistral.py
 tests/models/MobileNet/test_mobilenet.py
 tests/models/Qwen/test_qwen.py
