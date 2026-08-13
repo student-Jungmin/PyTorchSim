@@ -89,8 +89,9 @@ rel" is the worst max|npu-cpu| / max|cpu| over all of a version's outputs.
     26       yolo26n       2,505,360     142   1169s   1.07e+00    WRONG NUMBERS**
 
      * v6 compiles 68 kernels and then stops; it never reaches an output.
-    ** these four SEGFAULT on the pinned triton-npu and need one commit past it
-       even to run.  See below.
+    ** these four SEGFAULTED on the triton-npu pin this file was written
+       against.  The pin has since moved and they now RUN and are merely
+       wrong; see below.
 
 SO TWO VERSIONS PASS, and the file gates those two.  The other seven each have a
 measured stopping point rather than a guess, and no two of them are the same
@@ -143,6 +144,17 @@ stop:
     buf132, an ``aten.bmm`` of shape (2, 4, 4) inside the attention, 1 element
     of 32 over tolerance at 5.5e-04 relative; by the outputs that has become
     0.57.
+
+    THE PIN NOW CARRIES IT.  ``thirdparty/triton-npu.json`` moved from 2988424
+    to 2e0987c, which is triton-npu develop (3c1ccca, and so a616ea5) MERGED
+    with the p09 unit-axis line 2988424 sat on.  The merge was needed rather
+    than a bump: 2988424 is not an ancestor of develop -- it carries five
+    commits that never landed there -- so pinning develop alone would have
+    taken the p11 fix and dropped the p09 fix that test_mllama.py is gated on.
+    Re-measured on the merged pin: no segfault, and each of the four returns a
+    max rel IDENTICAL to its a616ea5 run to every digit (5.67e-01, 5.83e-01,
+    1.35e+00, 1.07e+00), while test_mllama.py still passes both towers at
+    4.2915e-06 and 3.4019e-06.
 
 WHAT WOULD HAVE HIDDEN ALL OF THIS.  Every one of these seven passed an earlier
 version of this file, and the two reasons are in ``_revive`` and in the
@@ -428,6 +440,9 @@ def run_yolo(device, version="v8", batch=1, imgsz=None, compile_model=True, rtol
 # RUNS IT -- one process, no arguments, 1128s -- inside the sweep's 1800s.  The
 # two runs share codegen rather than colliding in it: 1453s if run separately,
 # and each version's max rel is identical either way (1.85e-05 and 1.15e-05).
+# THAT NUMBER IS LOAD-SENSITIVE and the margin is not large: the same gate run
+# took 1578s on a machine also building a toolchain and running eight other
+# models.  Same two diffs, to every digit, on the moved pin.
 #
 # The other seven are one --version each and are NOT gated; each has a measured
 # stopping point in the module docstring.  A version is added here when it
