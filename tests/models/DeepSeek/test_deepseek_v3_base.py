@@ -42,7 +42,16 @@ if importlib.util.find_spec("flash_attn") is None:
 torch.npu.register_eager_to_compile([
     "aten::zero_",
     "aten::sum.IntList_out",
-    "aten::mul.out",
+    # NOT aten::mul.out. Registering it makes the wrapper compile the op, and
+    # Inductor refuses to generate code for complex operators -- it emits
+    # aten.mul.Tensor as a fallback, whose ATen implementation allocates an out
+    # and calls aten::mul.out, which lands back in the wrapper:
+    #
+    #     RecursionError: maximum recursion depth exceeded
+    #
+    # DeepSeek-V2's RoPE multiplies complex tensors, so it closes that loop.
+    # Measured: with mul.out registered the isolated RoPE recurses, without it
+    # the same code passes.
     "aten::floor_divide",
     "aten::floor_divide.Tensor",
     "aten::floor_divide.Scalar",
