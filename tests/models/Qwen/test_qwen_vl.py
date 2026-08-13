@@ -34,40 +34,45 @@ tower that quietly contributed nothing would pass.
     source /workspace/tnpu-env.sh
     python tests/models/Qwen/test_qwen_vl.py
 
-MEASURED 2026-08-13, triton-npu pinned to develop 3434608, triton_shared with
-the i64 fix above:
+MEASURED 2026-08-13.  The `tiny` rows are triton-npu develop 3434608; the `2b`
+row also needs the triton-npu fix below (fix/p13-replicate-one-lane).  Both need
+triton_shared with the i64 fix:
 
     preset  version     text hidden  vision  patches  params        max diff
     tiny    Qwen2-VL      256         128      16      1,825,536    1.2517e-06
     tiny    Qwen2.5-VL    256         128      16      1,792,384    1.0729e-06
-    2b      either       1536        1280      64    114,652,928    stops, below
+    2b      Qwen2-VL     1536        1280      64  114,652,928    4.2021e-06*
 
-WHERE 2b STOPS, and why it is not the vision width.  The blocker is
-`triton_npu_fused_eq_sum_15` -- `(input_ids == image_token_id).sum()`, which is
-transformers' own CONSISTENCY CHECK that the number of image placeholders
-matches the number of image embeddings.  Not model arithmetic at all.  It is a
-reduction to a scalar over a 20-long axis, and tnpu's p13_bank_vectorize
-refuses it:
+    * with --eager-splice; see below.
 
-    NotVectorisable: one operand of this elementwise op is in a single bank
-    (ONE_LANE) while another is banked across the lanes on iteration dim 0 of
-    extent 128
+WHAT THE SIZED PRESETS NEEDED, since none of it is in this file.  Two toolchain
+changes and one flag, in the order they were hit:
 
-XBLOCK is 128 against an xnumel of 1, so 127 lanes are mask.  Measured on that
-kernel's spec directly: XBLOCK 128 and 32 are refused, XBLOCK 1 compiles.  But
-kernel_spec's `_covers` deliberately does NOT clamp a unit numel, and says why
-with its own measurement -- Mistral's RMSNorm (xnumel 1, r0_numel 512) passes
-at XBLOCK 128 and STOPS at XBLOCK 1, because the tile then banks on the
-reduction axis instead.  So the two shapes want opposite blocks and no config
-answers both; what is missing is the replicating transfer p13's own message
-asks for.  That is a tnpu change, not a test one.
+  triton_shared   `tts.get_structured_state` accepted i32 offset tensors while
+                  the prepass that builds it wraps every int tensor, so the
+                  splice's int64 running index failed the whole kernel.
+                  Widened to the i32-or-i64 constraint that file already has.
 
-Qwen2-Audio stops on the same kind of kernel -- its audio-token-vs-feature
-count -- so one fix there covers both.
+  triton-npu      `_replicate_computed_row` chose `replicate_axes` by matching
+                  shapes, and a rank-2 row against a rank-4 tile matched none
+                  of its three arms -- so transformers' image-token COUNT (not
+                  the model's arithmetic: the check that placeholders match
+                  embeddings) was refused by bank_vectorize with "one operand
+                  ... is in a single bank (ONE_LANE) while another is banked
+                  across the lanes on iteration dim 0 of extent 128".  The
+                  correspondence was in the operand's map; it reads it there
+                  now.  Qwen2-Audio's audio-token count is the same shape.
 
-`tiny` is therefore the default: it is what passes, and it exercises every
-structural claim above (M-RoPE, the 3D patchifier, the splice).  `2b` and `7b`
-are the real widths, kept for the day p13 grows that transfer.
+  --eager-splice  at the sized presets Inductor lowers the splice's cumsum as a
+                  DECOUPLED-LOOKBACK split scan, where one block spins on
+                  another's published state.  This route compiles one ELF and
+                  walks the grid in its own wrapper, so there is no such
+                  channel.  The flag declines the feature that picks that form
+                  and the op falls back to eager -- right values, no kernel.
+
+`tiny` is the default because it needs none of the third: its scan is one
+block, so the splice COMPILES there, and it exercises every structural claim
+above.  `7b` is the same shapes at the 7B text width and is not measured here.
 """
 
 import argparse
@@ -250,6 +255,27 @@ if __name__ == "__main__":
     parser.add_argument("--preset", type=str, default="tiny", choices=sorted(_PRESETS))
     parser.add_argument("--dtype", type=str, default="float32",
                         choices=["float32", "float16", "bfloat16"])
+    # WHAT THIS BUYS AND WHAT IT COSTS, both measured. At the sized presets
+    # Inductor lowers the splice's cumsum as a SPLIT scan --
+    # `exclusive_scan_decoupled_lookback_64`, where block i spins on block j's
+    # published state -- and this route compiles one ELF whose grid the C
+    # wrapper walks itself, so there is no cross-block channel to publish on.
+    # Declining BackendFeature.MASKED_SCATTER_WITH_INDEX takes the cumsum form
+    # away: `torch._inductor.decomposition.masked_scatter` returns
+    # NotImplemented and the op falls back, which on this device means
+    # `aten::masked_scatter_` in EAGER mode -- right values, no kernel, nothing
+    # simulated for that op.
+    #
+    #     measured   `--preset 2b --version 2`: without it, SpecIncomplete on
+    #                the lookback helper. With it, 39 kernels and 4.2021e-06.
+    #
+    # NOT THE DEFAULT, and not a backend-wide setting, because at `tiny` the
+    # scan is one block and the splice COMPILES -- making this global would
+    # trade a simulated op for an eager one on the preset that has it.
+    parser.add_argument("--eager-splice", action="store_true",
+                        help="decline MASKED_SCATTER_WITH_INDEX, so the image "
+                             "splice falls back to eager instead of lowering "
+                             "to a scan this route cannot express")
     parser.add_argument("--no-compile", dest="compile", action="store_false", default=True)
     parser.add_argument("--rtol", type=float, default=1e-2)
     parser.add_argument("--atol", type=float, default=1e-2)
@@ -257,6 +283,18 @@ if __name__ == "__main__":
 
     sys.path.append(os.environ.get("PYTORCHSIM_ROOT_PATH", "/workspace/PyTorchSim"))
     torch.compiler.is_compiling = lambda: True  # FIXME. Same as test_llama.py.
+
+    if args.eager_splice:
+        # OUR OWN SUBCLASS'S ATTRIBUTE, not a patch of anything upstream:
+        # `backend_features` is how TritonScheduling declares them and
+        # TritonNPUScheduling is ours to declare for.
+        from torch._inductor.codegen.common import BackendFeature
+        from PyTorchSimFrontend.triton_backend import scheduling
+        have = scheduling.TritonNPUScheduling.backend_features
+        scheduling.TritonNPUScheduling.backend_features = type(have)(
+            [f for f in have if f is not BackendFeature.MASKED_SCATTER_WITH_INDEX])
+        print("eager-splice: MASKED_SCATTER_WITH_INDEX declined; "
+              "aten::masked_scatter_ will run eager")
 
     for version in ([args.version] if args.version else ["2", "2.5"]):
         run_qwen_vl(
