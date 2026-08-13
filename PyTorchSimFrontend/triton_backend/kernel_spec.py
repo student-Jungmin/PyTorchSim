@@ -458,7 +458,7 @@ def reduction_axes(numels):
 #: -- fused with a patch convolution, an addmm and a transpose -- keeps 41
 #: scratchpad globals live, and no constant that serves that kernel is tolerable
 #: for an ordinary reduction (it would cost three quarters of the tile). So
-#: codecache._shrink_reduction_blocks corrects it instead: tnpu measures the
+#: codecache._shrink_tile corrects it instead: tnpu measures the
 #: real usage, says by how much it is over, and the kernel is recompiled with a
 #: block divided by that ratio. Guessing low now costs one recompile rather than
 #: a failure, which is what makes 12 an acceptable guess rather than a bet.
@@ -721,7 +721,7 @@ _HELPER_USE_RE = re.compile(r"\btriton_helpers\.(\w+)")
 _VENDORED_HELPERS = {"promote_to_tensor", "is_floating",
                      "minimum", "maximum", "min2", "max2", "any",
                      "welford_reduce", "welford_combine", "welford",
-                     "sort_with_index",
+                     "sort_with_index", "select_one",
                      "div_floor_integer", "remainder_integer"}
 
 _HELPERS_SRC = '''
@@ -939,6 +939,18 @@ def _tnpu_remainder_integer(a, b):
     return tl.where((remainder != 0) & ((a < 0) != (b < 0)),
                     remainder + b, remainder)
 
+# Inductor's answer to "pick the one element the mask selects" -- a masked SUM
+# over the reduction axis, done on the BITS so it works for any dtype, not just
+# an addable one. Emitted by an index_select-shaped gather; Qwen2-VL's M-RoPE
+# is what brought it in (`mrope_section` selects one of three position bands
+# per element).
+@triton.jit
+def _tnpu_select_one(x, mask, dim, keep_dims=False):
+    idtype = tl.core.get_int_dtype(x.dtype.primitive_bitwidth, signed=False)
+    ix = x.to(idtype, bitcast=True)
+    iy = tl.sum(ix * mask, dim, keep_dims=keep_dims)
+    return iy.to(x.dtype, bitcast=True)
+
 triton_helpers = _types.ModuleType("triton_helpers")
 triton_helpers.any = _tnpu_any
 triton_helpers.welford_reduce = _tnpu_welford_reduce
@@ -951,6 +963,7 @@ triton_helpers.maximum = _tnpu_maximum
 triton_helpers.min2 = _tnpu_min2
 triton_helpers.max2 = _tnpu_max2
 triton_helpers.sort_with_index = _tnpu_sort_with_index
+triton_helpers.select_one = _tnpu_select_one
 triton_helpers.div_floor_integer = _tnpu_div_floor_integer
 triton_helpers.remainder_integer = _tnpu_remainder_integer
 '''

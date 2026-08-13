@@ -1,0 +1,309 @@
+"""Qwen2-VL and Qwen2.5-VL on the Triton codegen route.
+
+Built from the ``transformers`` configs with random weights: no checkpoint, no
+network, and no image file -- the pixel input is the patch tensor the processor
+would have produced, which is what the model actually consumes.
+
+A VL model is not the text model with an encoder bolted on the front, and the
+three things that make it different are the three this file exists for:
+
+  * THE PATCHES ARE A FLAT SEQUENCE, not a grid.  ``pixel_values`` arrives as
+    (num_patches, channels * temporal_patch * patch * patch) with the layout
+    carried separately in ``image_grid_thw``, so the tower's first op is a
+    3D convolution over a sequence rather than a 2D one over an image.
+
+  * M-ROPE.  ``rope_scaling={"mrope_section": [...]}`` splits head_dim/2 into
+    three bands -- temporal, height, width -- and each band takes its position
+    from a different axis.  Inductor lowers the band selection to
+    ``triton_helpers.select_one``, which is why kernel_spec vendors it.
+
+  * MASKED_SCATTER.  The image embeddings are spliced into the text sequence
+    at the image-token positions.  Inductor lowers that to a running index --
+    a ``tl.associative_scan`` carried across the reduction loop in int64 --
+    used as a gather offset.  THAT is what blocked this file: triton_shared's
+    ``tts.get_structured_state`` accepted only i32 tensors while the prepass
+    that builds it wraps every int tensor, so the whole kernel was refused.
+    Fixed in triton_shared (fix/structured-state-i64-offsets); with the old
+    binary this test stops at stage 3 and says so.
+
+``_assert_character`` cashes each of those against the built model, and the
+image is proved to REACH the output rather than assumed to: the same model is
+run twice with different pixels and the logits must differ.  Without that a
+tower that quietly contributed nothing would pass.
+
+    source /workspace/tnpu-env.sh
+    python tests/models/Qwen/test_qwen_vl.py
+
+MEASURED 2026-08-13.  The `tiny` rows are triton-npu develop 3434608; the `2b`
+row also needs the triton-npu fix below (fix/p13-replicate-one-lane).  Both need
+triton_shared with the i64 fix:
+
+    preset  version     text hidden  vision  patches  params        max diff
+    tiny    Qwen2-VL      256         128      16      1,825,536    1.2517e-06
+    tiny    Qwen2.5-VL    256         128      16      1,792,384    1.0729e-06
+    2b      Qwen2-VL     1536        1280      64  114,652,928    4.2021e-06*
+    2b      Qwen2.5-VL   1536        1280      64  114,676,408    4.3809e-06*
+
+    * with --eager-splice; see below.
+
+WHAT THE SIZED PRESETS NEEDED, since none of it is in this file.  Two toolchain
+changes and one flag, in the order they were hit:
+
+  triton_shared   `tts.get_structured_state` accepted i32 offset tensors while
+                  the prepass that builds it wraps every int tensor, so the
+                  splice's int64 running index failed the whole kernel.
+                  Widened to the i32-or-i64 constraint that file already has.
+
+  triton-npu      `_replicate_computed_row` chose `replicate_axes` by matching
+                  shapes, and a rank-2 row against a rank-4 tile matched none
+                  of its three arms -- so transformers' image-token COUNT (not
+                  the model's arithmetic: the check that placeholders match
+                  embeddings) was refused by bank_vectorize with "one operand
+                  ... is in a single bank (ONE_LANE) while another is banked
+                  across the lanes on iteration dim 0 of extent 128".  The
+                  correspondence was in the operand's map; it reads it there
+                  now.  Qwen2-Audio's audio-token count is the same shape.
+
+  --eager-splice  at the sized presets Inductor lowers the splice's cumsum as a
+                  DECOUPLED-LOOKBACK split scan, where one block spins on
+                  another's published state.  This route compiles one ELF and
+                  walks the grid in its own wrapper, so there is no such
+                  channel.  The flag declines the feature that picks that form
+                  and the op falls back to eager -- right values, no kernel.
+
+`tiny` is the default because it needs none of the third: its scan is one
+block, so the splice COMPILES there, and it exercises every structural claim
+above.  `7b` is the same shapes at the 7B text width and is not measured here.
+"""
+
+import argparse
+import copy
+import os
+import sys
+
+import torch
+
+sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
+from _pytorchsim_utils import test_result
+
+
+# Depth is one layer on BOTH sides, for the reason the text presets give: the
+# tower is the same block 32 times.  Width is what stays honest -- the vision
+# tower's real 1280 embed and patch 14 on the sized presets, and the text side
+# at the width the shipped model pairs with it.
+_PRESETS = {
+    # Smoke: small enough to tell a broken test file from a broken backend.
+    "tiny": dict(hidden=256, heads=8, kv_heads=2, intermediate=512, vocab=1024,
+                 vis_hidden=128, vis_heads=2, vis_interm=256,
+                 grid=(1, 4, 4), mrope=(8, 4, 4)),
+
+    # Qwen2-VL-2B / Qwen2.5-VL-3B character: the real vision tower width (1280,
+    # 16 heads, patch 14) against the 1536-wide text block.
+    "2b": dict(hidden=1536, heads=12, kv_heads=2, intermediate=8960, vocab=4096,
+               vis_hidden=1280, vis_heads=16, vis_interm=3420,
+               grid=(1, 8, 8), mrope=(16, 24, 24)),
+
+    # Qwen2-VL-7B / Qwen2.5-VL-7B: the real 7B text width under the same tower.
+    "7b": dict(hidden=3584, heads=28, kv_heads=4, intermediate=18944, vocab=8192,
+               vis_hidden=1280, vis_heads=16, vis_interm=3420,
+               grid=(1, 8, 8), mrope=(16, 24, 24)),
+}
+
+_IMAGE_TOKEN, _VIDEO_TOKEN, _VISION_START = 1001, 1002, 1003
+
+
+def _dtype_from_str(name):
+    return {"float32": torch.float32, "float16": torch.float16,
+            "bfloat16": torch.bfloat16}.get(name, torch.float32)
+
+
+def _build(version, preset, dtype):
+    p = _PRESETS[preset]
+    if version == "2":
+        from transformers.models.qwen2_vl.configuration_qwen2_vl import (
+            Qwen2VLConfig as Config, Qwen2VLVisionConfig as VisionConfig)
+        from transformers.models.qwen2_vl.modeling_qwen2_vl import (
+            Qwen2VLForConditionalGeneration as Model)
+        vision = VisionConfig(depth=1, embed_dim=p["vis_hidden"], num_heads=p["vis_heads"],
+                              in_chans=3, patch_size=14, spatial_merge_size=2,
+                              temporal_patch_size=2, hidden_size=p["hidden"])
+    else:
+        from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import (
+            Qwen2_5_VLConfig as Config, Qwen2_5_VLVisionConfig as VisionConfig)
+        from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
+            Qwen2_5_VLForConditionalGeneration as Model)
+        # 2.5 replaces the tower's uniform full attention with windowed
+        # attention on all but fullatt_block_indexes.  With one layer, index 0
+        # is that full-attention block -- windowed attention over a single
+        # window would be the same thing computed the long way round.
+        vision = VisionConfig(depth=1, hidden_size=p["vis_hidden"], num_heads=p["vis_heads"],
+                              in_chans=3, patch_size=14, spatial_merge_size=2,
+                              temporal_patch_size=2, out_hidden_size=p["hidden"],
+                              intermediate_size=p["vis_interm"], fullatt_block_indexes=[0])
+
+    cfg = Config(
+        vocab_size=p["vocab"], hidden_size=p["hidden"],
+        num_attention_heads=p["heads"], num_key_value_heads=p["kv_heads"],
+        intermediate_size=p["intermediate"], num_hidden_layers=1,
+        vision_config=vision.to_dict(), use_cache=False,
+        attn_implementation="eager",
+        rope_scaling={"type": "mrope", "mrope_section": list(p["mrope"])},
+        image_token_id=_IMAGE_TOKEN, video_token_id=_VIDEO_TOKEN,
+        vision_start_token_id=_VISION_START,
+    )
+    torch.manual_seed(0)
+    return cfg, Model(cfg).to(dtype=_dtype_from_str(dtype)).eval()
+
+
+def _inputs(preset, dtype, seed=0):
+    """Tokens and patches, shaped the way the processor would hand them over."""
+    p = _PRESETS[preset]
+    t, h, w = p["grid"]
+    n_patches = t * h * w
+    # spatial_merge_size 2 merges each 2x2 patch block into one visual token.
+    n_tokens = n_patches // 4
+    g = torch.Generator().manual_seed(seed)
+    pixel = torch.randn(n_patches, 3 * 2 * 14 * 14, generator=g,
+                        dtype=_dtype_from_str(dtype))
+    ids = torch.tensor([[5, 6, _VISION_START] + [_IMAGE_TOKEN] * n_tokens + [7]])
+    return dict(input_ids=ids, pixel_values=pixel,
+                image_grid_thw=torch.tensor([[t, h, w]]))
+
+
+def _assert_character(version, cfg, model, preset):
+    """Fail if this is not actually the VL model the preset claims."""
+    p = _PRESETS[preset]
+    vision = cfg.vision_config
+
+    tower = model.visual if hasattr(model, "visual") else model.model.visual
+    assert tower is not None, "a VL preset without a vision tower is a text model"
+    assert vision.spatial_merge_size == 2, "the 2x2 spatial merge is part of the shape"
+    assert getattr(vision, "temporal_patch_size", None) == 2, \
+        "patches are 3D (temporal_patch_size 2); a 2D patchifier is a different model"
+
+    sections = cfg.rope_scaling["mrope_section"]
+    head_dim = cfg.hidden_size // cfg.num_attention_heads
+    assert len(sections) == 3, f"M-RoPE has three bands (t, h, w); got {sections}"
+    assert sum(sections) == head_dim // 2, \
+        (f"the M-RoPE bands must cover head_dim/2 = {head_dim // 2}, got {sum(sections)} "
+         "-- a mismatch here silently changes which positions rope sees")
+
+    if preset in ("2b", "7b"):
+        assert vision.hidden_size if version != "2" else vision.embed_dim
+        width = vision.embed_dim if version == "2" else vision.hidden_size
+        assert width == 1280, f"the sized presets run the real tower width, got {width}"
+        assert vision.patch_size == 14, "the real tower is patch 14"
+    if preset == "7b":
+        assert cfg.hidden_size == 3584 and cfg.intermediate_size == 18944, \
+            "7b preset must run at the real 7B text width"
+
+
+def _logits(out):
+    return out.logits if hasattr(out, "logits") else out[0]
+
+
+@torch.no_grad()
+def run_qwen_vl(device, version="2", preset="2b", dtype="float32",
+                compile_model=True, rtol=1e-2, atol=1e-2):
+    cfg, model_cpu = _build(version, preset, dtype)
+    kwargs = _inputs(preset, dtype)
+
+    p = _PRESETS[preset]
+    vis_width = cfg.vision_config.embed_dim if version == "2" else cfg.vision_config.hidden_size
+    print(f"version=Qwen{'2' if version == '2' else '2.5'}-VL preset={preset} "
+          f"text_hidden={cfg.hidden_size} heads={cfg.num_attention_heads}/{cfg.num_key_value_heads} "
+          f"interm={cfg.intermediate_size} vision={vis_width}x{cfg.vision_config.num_heads}heads "
+          f"patches={kwargs['pixel_values'].shape[0]} grid={p['grid']} "
+          f"mrope={p['mrope']} vocab={cfg.vocab_size} dtype={dtype}")
+    print("model params:", sum(x.numel() for x in model_cpu.parameters()))
+
+    _assert_character(version, cfg, model_cpu, preset)
+
+    cpu_out = _logits(model_cpu(**kwargs))
+
+    # THE IMAGE MUST REACH THE OUTPUT. A tower whose result never lands in the
+    # text sequence would agree with the NPU perfectly and prove nothing, and
+    # the splice is exactly the part this file is here for.
+    other = _inputs(preset, dtype, seed=1)
+    delta = (cpu_out - _logits(model_cpu(**other))).abs().max().item()
+    assert delta > 1e-4, \
+        (f"changing the pixels moved the logits by {delta:.3e} -- the image is not "
+         "reaching the output, so this run would not test the splice")
+    print(f"image-reaches-output guard ok: {delta:.4e} on a pixel change")
+
+    model_npu = copy.deepcopy(model_cpu).to(device).eval()
+    if compile_model:
+        model_npu = torch.compile(model_npu, dynamic=False)
+    npu_kwargs = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in kwargs.items()}
+    npu_out = _logits(model_npu(**npu_kwargs))
+
+    test_result(f"Qwen{'2' if version == '2' else '2.5'}-VL ({preset})",
+                npu_out, cpu_out, rtol=rtol, atol=atol)
+    print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
+    print("Qwen-VL Simulation Done")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Qwen2-VL / Qwen2.5-VL on the Triton route")
+    # The default runs BOTH versions at `2b`. They differ in the tower -- 2.5
+    # windows its attention and carries its own MLP width -- and the text side
+    # they feed is the same, so running one and claiming the other would be the
+    # kind of vacuous pass _assert_character exists to prevent.
+    parser.add_argument("--version", type=str, default=None, choices=["2", "2.5"])
+    # tiny, not 2b: the default is what passes. See the docstring for where 2b
+    # stops -- a tnpu lane-banking case on transformers' own token-count check,
+    # not on anything the vision tower computes.
+    parser.add_argument("--preset", type=str, default="tiny", choices=sorted(_PRESETS))
+    parser.add_argument("--dtype", type=str, default="float32",
+                        choices=["float32", "float16", "bfloat16"])
+    # WHAT THIS BUYS AND WHAT IT COSTS, both measured. At the sized presets
+    # Inductor lowers the splice's cumsum as a SPLIT scan --
+    # `exclusive_scan_decoupled_lookback_64`, where block i spins on block j's
+    # published state -- and this route compiles one ELF whose grid the C
+    # wrapper walks itself, so there is no cross-block channel to publish on.
+    # Declining BackendFeature.MASKED_SCATTER_WITH_INDEX takes the cumsum form
+    # away: `torch._inductor.decomposition.masked_scatter` returns
+    # NotImplemented and the op falls back, which on this device means
+    # `aten::masked_scatter_` in EAGER mode -- right values, no kernel, nothing
+    # simulated for that op.
+    #
+    #     measured   `--preset 2b --version 2`: without it, SpecIncomplete on
+    #                the lookback helper. With it, 39 kernels and 4.2021e-06.
+    #
+    # NOT THE DEFAULT, and not a backend-wide setting, because at `tiny` the
+    # scan is one block and the splice COMPILES -- making this global would
+    # trade a simulated op for an eager one on the preset that has it.
+    parser.add_argument("--eager-splice", action="store_true",
+                        help="decline MASKED_SCATTER_WITH_INDEX, so the image "
+                             "splice falls back to eager instead of lowering "
+                             "to a scan this route cannot express")
+    parser.add_argument("--no-compile", dest="compile", action="store_false", default=True)
+    parser.add_argument("--rtol", type=float, default=1e-2)
+    parser.add_argument("--atol", type=float, default=1e-2)
+    args = parser.parse_args()
+
+    sys.path.append(os.environ.get("PYTORCHSIM_ROOT_PATH", "/workspace/PyTorchSim"))
+    torch.compiler.is_compiling = lambda: True  # FIXME. Same as test_llama.py.
+
+    if args.eager_splice:
+        # OUR OWN SUBCLASS'S ATTRIBUTE, not a patch of anything upstream:
+        # `backend_features` is how TritonScheduling declares them and
+        # TritonNPUScheduling is ours to declare for.
+        from torch._inductor.codegen.common import BackendFeature
+        from PyTorchSimFrontend.triton_backend import scheduling
+        have = scheduling.TritonNPUScheduling.backend_features
+        scheduling.TritonNPUScheduling.backend_features = type(have)(
+            [f for f in have if f is not BackendFeature.MASKED_SCATTER_WITH_INDEX])
+        print("eager-splice: MASKED_SCATTER_WITH_INDEX declined; "
+              "aten::masked_scatter_ will run eager")
+
+    for version in ([args.version] if args.version else ["2", "2.5"]):
+        run_qwen_vl(
+            torch.device("npu:0"),
+            version=version,
+            preset=args.preset,
+            dtype=args.dtype,
+            compile_model=args.compile,
+            rtol=args.rtol,
+            atol=args.atol,
+        )

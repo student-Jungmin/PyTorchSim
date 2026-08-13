@@ -144,25 +144,30 @@ def _shrink_tile(meta, usage, budget):
     reduction -- Inductor's choice when r0_numel is small enough to hold the
     whole reduction in one tile -- writes the block size into the kernel BODY:
 
-        @triton_heuristics.persistent_reduction(size_hints={'x': 1, 'r0_': 64})
-        def triton_npu_fused_copy__sort_40(..., XBLOCK : tl.constexpr):
-            R0_BLOCK: tl.constexpr = 64         # <- not an argument
+        @triton_heuristics.persistent_reduction(size_hints={'x': 1024, 'r0_': 128})
+        def triton_npu_fused_..._5(..., XBLOCK : tl.constexpr):
+            R0_BLOCK: tl.constexpr = 128        # <- not an argument
 
     so R0_BLOCK is absent from the signature and rewriting it here changes the
-    spec, recompiles, and produces THE SAME KERNEL.
+    spec, recompiles, and produces THE SAME KERNEL. Measured on Qwen3's fused
+    q_norm + rope (`_unsafe_view_add_cat_mean_mul_neg_pow_rsqrt_slice_...`, 27
+    scratchpad globals over a [XBLOCK, 128] tile), where the loop used to run
+    down to R0_BLOCK 1 and fail with the overflow unchanged at every step:
 
-        measured   Qwen3's fused q_norm + rope, 27 scratchpad globals over a
-                   [XBLOCK, 128] tile (develop-e2e-qwen f8deeb3, where this
-                   was first diagnosed):
-                     R0_BLOCK 128 -> 8 -> 1  1625120 bytes/lane, all three
-                     XBLOCK   128 -> 64      fits
+        R0_BLOCK 128 -> 8 -> 1   1625120 bytes/lane, all three, over 131072
+        XBLOCK   128 -> 64        fits (and 16 and 8 also compile)
 
-        measured   Moonlight's MoE router sort at 16 experts, xnumel 1,
-                   r0_numel 64: R0_BLOCK 32 and 16 both 104224 bytes/lane.
-                   Same shape, and the same lever is the one that moves.
+    In that kernel the reduction axis is the vectorised one -- tnpu names the
+    globals `bufN_spad_1lane` and Inductor scores the tiling `{'x': 0,
+    'r0_': 2655744}` -- so X is the tile's outer axis and shrinking it is
+    exactly what frees bytes per lane. Hence: reduction blocks if the kernel
+    takes any, XBLOCK only when it takes none, and never both.
 
-    Hence: reduction blocks if the kernel takes any, XBLOCK only when it takes
-    none, and never both.
+        measured   Moonlight's MoE router sort, xnumel 1, r0_numel 64 at 16
+                   routed experts: R0_BLOCK 32 and then 16, 104224 bytes/lane
+                   both times, byte-identical. XBLOCK 128 -> 64 -> 32 moves it
+                   (104224 -> 71328 -> fits), and the run goes on. Same shape,
+                   same lever.
     """
     factor = 1
     while usage > budget * factor:

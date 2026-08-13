@@ -579,7 +579,7 @@ def _decline_persistence_we_cannot_resize():
     reduction takes it away. Inductor writes `R0_BLOCK: tl.constexpr = <next
     power of two above the extent>` INTO the generated source, so
     `kernel_spec.fixed_config_for`'s answer is never read and
-    `codecache._shrink_reduction_blocks` halves a number the kernel does not
+    `codecache._shrink_tile` halves a number the kernel does not
     consult.
 
     MEASURED, BERT-small kernel 0 (three embedding gathers + the first
