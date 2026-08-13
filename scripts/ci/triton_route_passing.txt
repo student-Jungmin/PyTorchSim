@@ -112,10 +112,13 @@
 # develop -- it carries five commits that never landed there -- so pinning
 # develop alone would have taken a616ea5 and dropped the p09 fix, and mllama
 # would have started failing for a reason nothing in this file mentions.
-# thirdparty/triton-npu.json now points at 2e0987c, develop merged with that
-# line. Re-measured on it: resnet, mllama (both towers, 4.2915e-06 / 3.4019e-06)
-# and this gate all pass, and the four YOLO versions above return max rels
-# identical to their a616ea5 runs to every digit.
+# thirdparty/triton-npu.json now points at 98744f7, develop merged with that
+# line -- one commit carrying p09 (mllama), p11 (the YOLO segfault) and p13
+# (7aec83d, Qwen2-VL's replicate axes, which landed on develop while this pin
+# was being moved). Re-measured on it: resnet, mllama (both towers, 4.2915e-06
+# / 3.4019e-06) and this gate (1.85e-05 / 1.15e-05) all pass, and the four YOLO
+# versions above return max rels identical to their a616ea5 runs to every
+# digit.
 tests/models/BERT/test_bert.py
 tests/models/DeepSeek/test_deepseek_v3_base.py
 tests/models/Diffusion/test_diffusion.py

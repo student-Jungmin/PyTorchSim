@@ -146,15 +146,19 @@ stop:
     0.57.
 
     THE PIN NOW CARRIES IT.  ``thirdparty/triton-npu.json`` moved from 2988424
-    to 2e0987c, which is triton-npu develop (3c1ccca, and so a616ea5) MERGED
-    with the p09 unit-axis line 2988424 sat on.  The merge was needed rather
-    than a bump: 2988424 is not an ancestor of develop -- it carries five
-    commits that never landed there -- so pinning develop alone would have
-    taken the p11 fix and dropped the p09 fix that test_mllama.py is gated on.
-    Re-measured on the merged pin: no segfault, and each of the four returns a
-    max rel IDENTICAL to its a616ea5 run to every digit (5.67e-01, 5.83e-01,
-    1.35e+00, 1.07e+00), while test_mllama.py still passes both towers at
-    4.2915e-06 and 3.4019e-06.
+    to 98744f7, which is triton-npu develop MERGED with the p09 unit-axis line
+    2988424 sat on.  The merge was needed rather than a bump: 2988424 is not an
+    ancestor of develop -- it carries five commits that never landed there --
+    so pinning develop alone would have taken the p11 fix and dropped the p09
+    fix that test_mllama.py is gated on.  One commit now carries all three:
+    p09 (mllama), p11 (this segfault) and p13 (7aec83d, the replicate axes
+    Qwen2-VL needs), the last of which landed on develop WHILE this pin was
+    being moved and would otherwise have been left behind.
+
+    Re-measured on it: no segfault, and each of the four returns a max rel
+    IDENTICAL to its a616ea5 run to every digit (5.67e-01, 5.83e-01, 1.35e+00,
+    1.07e+00); test_mllama.py still passes both towers at 4.2915e-06 and
+    3.4019e-06; the gate is unchanged at 1.85e-05 and 1.15e-05.
 
 WHAT WOULD HAVE HIDDEN ALL OF THIS.  Every one of these seven passed an earlier
 version of this file, and the two reasons are in ``_revive`` and in the
