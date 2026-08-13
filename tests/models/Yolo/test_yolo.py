@@ -158,7 +158,11 @@ stop:
     Re-measured on it: no segfault, and each of the four returns a max rel
     IDENTICAL to its a616ea5 run to every digit (5.67e-01, 5.83e-01, 1.35e+00,
     1.07e+00); test_mllama.py still passes both towers at 4.2915e-06 and
-    3.4019e-06; the gate is unchanged at 1.85e-05 and 1.15e-05.
+    3.4019e-06; the gate is unchanged at 1.85e-05 and 1.15e-05.  v3 and v9,
+    which fail for reasons that have nothing to do with p11, were re-measured
+    too and are also unchanged to every digit (1.27e+00 and 2.47e+00) -- so the
+    pin move is visible in exactly one place across the nine versions, and it
+    is the segfault.
 
 WHAT WOULD HAVE HIDDEN ALL OF THIS.  Every one of these seven passed an earlier
 version of this file, and the two reasons are in ``_revive`` and in the
