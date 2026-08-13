@@ -405,6 +405,20 @@ ATEN_RE = re.compile(r"aten[.:][a-zA-Z_][a-zA-Z0-9_.]*")
 NOTIMPL_RE = re.compile(r"NotImplementedError[: ]+(.*)")
 
 
+EXTERN_RE = re.compile(r"(extern_kernels\.[a-zA-Z_][a-zA-Z0-9_]*)")
+
+
+def _extern_hint(tb_text):
+    """Name the extern kernel a traceback died in, when no aten op appears.
+
+    Inductor does not lower every op; some it hands to an ATen extern kernel,
+    and on npu:0 an unregistered one raises `<name>_overrideable not
+    implemented` with no aten token anywhere in the traceback.
+    """
+    m = EXTERN_RE.search(tb_text)
+    return m.group(1) if m else None
+
+
 def parse_failure(tb_text):
     aten_hits = []
     for m in ATEN_RE.finditer(tb_text):
@@ -488,11 +502,19 @@ def run_model(name, args, out_dir):
                 for h in hits[:10]:
                     w(f"    {h}")
             w("\n----- traceback -----\n" + tb)
+            # Fall back to the NotImplemented message when the traceback names
+            # no aten op. That is not a rare corner: a failure inside an EXTERN
+            # kernel has no aten token at all. RecurrentGemma stops at
+            # extern_kernels.convolution -> convolution_overrideable, and the
+            # summary said "?" while the one useful sentence sat in the log,
+            # which is a summary that sends you to read the log it exists to
+            # replace.
             return {
                 "name": name,
                 "status": "FAIL",
                 "ops": ops,
-                "fail_op": hits[0] if hits else "?",
+                "fail_op": hits[0] if hits else (
+                    _extern_hint(tb) or (msg[:60] if msg else None) or "?"),
                 "msg": msg,
             }
 
