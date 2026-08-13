@@ -43,6 +43,7 @@ WHERE THE LADDER STANDS, measured 2026-08-13 on triton-npu develop-e2e-kimi
 
     rung       preset  kernels  goldens  max diff      time
     moonlight  tiny        49      408   8.0466e-07    ~5 min
+    moonlight  small       58      416   1.0729e-06    ~9 min
 
 `goldens` is with `pytorchsim_functional_verify_per_kernel` on, so it is every
 realized Spike buffer compared against a CPU golden at 1e-4 and not just the
