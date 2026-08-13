@@ -113,8 +113,8 @@ def _spad_overflow(exc):
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
-def _shrink_reduction_blocks(meta, usage, budget):
-    """Divide every reduction block by enough to fit, in place. False if stuck.
+def _shrink_tile(meta, usage, budget):
+    """Divide the tile by enough to fit, in place. False if stuck.
 
     WHY THE BLOCK SIZE IS THE FREE VARIABLE AND THE BUFFER COUNT IS NOT.
     `fixed_config_for` sizes R0_BLOCK against a budget divided by
@@ -137,18 +137,50 @@ def _shrink_reduction_blocks(meta, usage, budget):
 
     `usage / budget` rounded up to a power of two, so an overshoot of 1.18x
     halves once and an overshoot of 5x goes straight to an eighth rather than
-    walking there. Only reduction blocks move: XBLOCK is the lane axis and
-    shrinking it would leave lanes idle without freeing a byte per lane.
+    walking there. A reduction block moves first: XBLOCK is usually the lane
+    axis, and shrinking it would leave lanes idle without freeing a byte.
+
+    ONLY A BLOCK THE KERNEL ACCEPTS AS AN ARGUMENT MOVES ANYTHING. A PERSISTENT
+    reduction -- Inductor's choice when r0_numel is small enough to hold the
+    whole reduction in one tile -- writes the block size into the kernel BODY:
+
+        @triton_heuristics.persistent_reduction(size_hints={'x': 1024, 'r0_': 128})
+        def triton_npu_fused_..._5(..., XBLOCK : tl.constexpr):
+            R0_BLOCK: tl.constexpr = 128        # <- not an argument
+
+    so R0_BLOCK is absent from the signature and rewriting it here changes the
+    spec, recompiles, and produces THE SAME KERNEL. Measured on Qwen3's fused
+    q_norm + rope (`_unsafe_view_add_cat_mean_mul_neg_pow_rsqrt_slice_...`, 27
+    scratchpad globals over a [XBLOCK, 128] tile), where the loop used to run
+    down to R0_BLOCK 1 and fail with the overflow unchanged at every step:
+
+        R0_BLOCK 128 -> 8 -> 1   1625120 bytes/lane, all three, over 131072
+        XBLOCK   128 -> 64        fits (and 16 and 8 also compile)
+
+    In that kernel the reduction axis is the vectorised one -- tnpu names the
+    globals `bufN_spad_1lane` and Inductor scores the tiling `{'x': 0,
+    'r0_': 2655744}` -- so X is the tile's outer axis and shrinking it is
+    exactly what frees bytes per lane. Hence: reduction blocks if the kernel
+    takes any, XBLOCK only when it takes none, and never both.
     """
     factor = 1
     while usage > budget * factor:
         factor *= 2
-    blocks = {k: v for k, v in (meta.get("fixed_config") or {}).items()
-              if k.startswith("R") and k.endswith("_BLOCK") and v and v > 1}
+    cfg = meta.get("fixed_config") or {}
+    signature = meta.get("signature") or {}
+
+    def _movable(names):
+        return {k: v for k, v in cfg.items()
+                if k in names and k in signature and v and v > 1}
+
+    blocks = _movable([k for k in cfg
+                       if k.startswith("R") and k.endswith("_BLOCK")])
+    if not blocks:
+        blocks = _movable(["XBLOCK"])
     if not blocks:
         return False
     for k, v in blocks.items():
-        meta["fixed_config"][k] = max(1, v // factor)
+        cfg[k] = max(1, v // factor)
     return True
 
 
@@ -181,7 +213,7 @@ def triton_npu_compile(src_code, meta, kernel_name):
                     break
                 except tnpu_bridge.TnpuError as exc:
                     over = _spad_overflow(exc)
-                    if over is None or not _shrink_reduction_blocks(meta, *over):
+                    if over is None or not _shrink_tile(meta, *over):
                         raise
                     logger.info(
                         "[triton-npu] %s: %d bytes/lane over a budget of %d, "

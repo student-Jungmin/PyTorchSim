@@ -370,7 +370,7 @@ def reduction_axes(numels):
 #: -- fused with a patch convolution, an addmm and a transpose -- keeps 41
 #: scratchpad globals live, and no constant that serves that kernel is tolerable
 #: for an ordinary reduction (it would cost three quarters of the tile). So
-#: codecache._shrink_reduction_blocks corrects it instead: tnpu measures the
+#: codecache._shrink_tile corrects it instead: tnpu measures the
 #: real usage, says by how much it is over, and the kernel is recompiled with a
 #: block divided by that ratio. Guessing low now costs one recompile rather than
 #: a failure, which is what makes 12 an acceptable guess rather than a bet.
