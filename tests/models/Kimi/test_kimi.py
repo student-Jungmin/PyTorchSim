@@ -38,14 +38,30 @@ route on and timing off:
     source /workspace/kimi-env.sh
     python tests/models/Kimi/test_kimi.py --rung moonlight --preset tiny
 
-WHERE THE LADDER STANDS, measured 2026-08-13 on triton-npu develop-e2e-kimi
-(3434608) and PyTorchSim develop-e2e-kimi (204ec14):
+WHERE THE LADDER STANDS. The environment moved mid-bringup -- transformers
+4.43.4 -> 4.51.3 and triton-npu's p01/p11/p13/p16 refactors -- so the rows say
+which side of that they were measured on. The new baseline is the one to
+extend; the old rows stay until each is re-measured, because a number whose
+compiler is gone is a number about nothing.
+
+  BASELINE: transformers 4.51.3, triton-npu develop-e2e-kimi at the develop
+  merge (b28808b..), PyTorchSim develop-e2e-kimi ac39991.
+
+    rung       preset  kernels  goldens  max diff      time
+    moonlight  tiny        51      430   7.1526e-07    ~5 min
+
+  BEFORE IT: transformers 4.43.4, triton-npu 3434608, PyTorchSim 204ec14.
 
     rung       preset  kernels  goldens  max diff      time
     moonlight  tiny        49      408   8.0466e-07    ~5 min
     moonlight  small       58      416   1.0729e-06    ~9 min
     moonlight  medium     157        -   2.0266e-06    ~43 min
     kimi-vl    tiny        93      909   8.3447e-07    ~8 min
+
+The two kernels and 22 goldens tiny gained across that move are not attributed:
+both the compiler and transformers changed between the runs, and one run cannot
+tell them apart. Pin TNPU_DIR at a pre-merge worktree to split them if it ever
+matters.
 
 `goldens` is with `pytorchsim_functional_verify_per_kernel` on, so it is every
 realized Spike buffer compared against a CPU golden at 1e-4 and not just the
