@@ -87,6 +87,37 @@ def _fverify_writes(kernel_name, position):
     return kernel_spec.writes_arg(kernel_name, position)
 
 
+def _fverify_mutated(line):
+    """Buffer names a NON-kernel wrapper line writes, from Inductor's own IR.
+
+    A GENERATED KERNEL IS NOT THE ONLY THING THAT WRITES A BUFFER. Anything
+    Inductor declines to codegen comes out as a fallback call that mutates its
+    first argument in place, and the buffer is only finished after it:
+
+        triton_npu_fused_eq_index_put_view_26(arg0_1, buf0, 1968)
+        _fverify.verify_check(buf0, ...)                    <- was here
+        aten.index_put_(buf0, [buf1], arg2_1, False)        <- finishes buf0
+
+        measured   Kimi-VL's MoonViT merge, `inputs_embeds[input_ids ==
+                   image_token] = image_features`. The kernel copies the
+                   embeddings and the fallback scatters the image rows in, so
+                   the check saw the copy and reported 492 of 1968 elements
+                   over tol -- exactly the 4 image tokens x 123 hidden the
+                   fallback had not written yet.
+
+    `get_mutation_names` is Inductor's answer to the same question, so this
+    asks it rather than pattern-matching the line class (there are four of
+    them, and a fifth would be silently missed).
+    """
+    node = getattr(line, "node", None)
+    if node is None:
+        return ()
+    try:
+        return tuple(node.get_mutation_names())
+    except Exception:  # noqa: BLE001 - a node type that does not answer
+        return ()
+
+
 class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
     def __init__(self):
         super().__init__()
@@ -272,6 +303,8 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
                     else:
                         if isinstance(line, wrapper.WrapperLine):
                             line.codegen(self.wrapper_call)
+                            if _func_verify.enabled():
+                                self._fverify_emit_mutation_checks(line)
                         else:
                             self.wrapper_call.writeline(line)
                     # Add buffer plan hook for alloc
@@ -326,14 +359,16 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
         """
         last = {}
         for line in self.lines:
-            if not isinstance(line, wrapper.KernelCallLine):
+            if isinstance(line, wrapper.KernelCallLine):
+                for pos, a in enumerate(line.call_args):
+                    if not (isinstance(a, str) and a.strip().isidentifier()):
+                        continue
+                    if not _fverify_writes(line.kernel_name, pos):
+                        continue
+                    last[a.strip()] = id(line)
                 continue
-            for pos, a in enumerate(line.call_args):
-                if not (isinstance(a, str) and a.strip().isidentifier()):
-                    continue
-                if not _fverify_writes(line.kernel_name, pos):
-                    continue
-                last[a.strip()] = id(line)
+            for name in _fverify_mutated(line):
+                last[name] = id(line)
         return last
 
     def _fverify_emit_checks(self, call_args, line_id=None, kernel_name=None):
@@ -369,27 +404,45 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
             if not isinstance(a, str):
                 continue
             name = a.strip()
-            if not name.isidentifier() or name in self._fverify_seen:
+            if not name.isidentifier():
                 continue
             if not _fverify_writes(kernel_name, pos):
                 continue          # this kernel only reads it
-            if line_id is not None and self._fverify_last.get(name) != line_id:
-                continue          # a later kernel still writes this buffer
-            self._fverify_seen.add(name)
-            if name in V.graph.graph_inputs:
-                continue  # placeholders: golden == input, nothing to verify
-            try:
-                buf = V.graph.get_buffer(name)
-            except Exception:
-                buf = None
-            if buf is None:
-                continue
-            origin = getattr(buf, "origin_node", None)
-            if origin is None:
-                continue
-            op = str(getattr(origin, "target", "?"))
-            self.wrapper_call.writeline(
-                f'_fverify.verify_check({name}, "{name}", "{origin.name}", "{op}")')
+            self._fverify_check_one(name, line_id)
+
+    def _fverify_emit_mutation_checks(self, line):
+        """The same check, after a FALLBACK that finishes a buffer in place.
+
+        See `_fverify_mutated`: the last write to a buffer is not always a
+        generated kernel, and a check emitted before the fallback compares a
+        half-built buffer against a finished golden.
+        """
+        if self._fverify_last is None:
+            self._fverify_last = self._fverify_last_writer()
+        for name in _fverify_mutated(line):
+            self._fverify_check_one(name, id(line))
+
+    def _fverify_check_one(self, name, line_id):
+        """One `verify_check` for `name`, if this line is its last writer."""
+        if name in self._fverify_seen:
+            return
+        if line_id is not None and self._fverify_last.get(name) != line_id:
+            return                # something later still writes this buffer
+        self._fverify_seen.add(name)
+        if name in V.graph.graph_inputs:
+            return  # placeholders: golden == input, nothing to verify
+        try:
+            buf = V.graph.get_buffer(name)
+        except Exception:
+            buf = None
+        if buf is None:
+            return
+        origin = getattr(buf, "origin_node", None)
+        if origin is None:
+            return
+        op = str(getattr(origin, "target", "?"))
+        self.wrapper_call.writeline(
+            f'_fverify.verify_check({name}, "{name}", "{origin.name}", "{op}")')
 
     def memory_plan(self):
         self.lines = memory_planning.MemoryPlanner(self).plan(self.lines)
