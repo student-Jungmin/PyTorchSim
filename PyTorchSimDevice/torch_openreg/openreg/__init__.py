@@ -266,6 +266,47 @@ def launch_model(model, *args, stream_index=0, timestamp=0, **kwargs):
 from .random import *  # noqa: F403
 from .amp import *
 
+def _tree_to(x, device):
+    if isinstance(x, torch.Tensor):
+        return x.to(device)
+    if isinstance(x, (list, tuple)):
+        return type(x)(_tree_to(v, device) for v in x)
+    return x
+
+
+def _run_on_cpu(op, args, kwargs):
+    """Run `op` on CPU copies and put the answer back where the caller wants it.
+
+    This is what the C++ CPUFallback does for an op the device has no kernel
+    for, written here in Python because the re-entry below has to reach it
+    WITHOUT going through the dispatcher again -- going through the dispatcher
+    is the thing that loops.
+    """
+    cpu_args = _tree_to(args, "cpu")
+    cpu_kwargs = {k: _tree_to(v, "cpu") for k, v in kwargs.items()}
+    result = op(*cpu_args, **cpu_kwargs)
+
+    out = kwargs.get("out")
+    if out is not None:
+        # An out= variant must write the caller's tensor and return it, not a
+        # copy of it: the graph that called it already holds that buffer.
+        outs = [out] if isinstance(out, torch.Tensor) else list(out)
+        srcs = [result] if isinstance(result, torch.Tensor) else list(result)
+        for dst, src in zip(outs, srcs):
+            dst.copy_(src)
+        return out
+
+    device = None
+    for x in list(args) + list(kwargs.values()):
+        for t in (x if isinstance(x, (list, tuple)) else [x]):
+            if isinstance(t, torch.Tensor):
+                device = t.device
+                break
+        if device is not None:
+            break
+    return _tree_to(result, device) if device is not None else result
+
+
 def eager_to_compile(op_name):
     """
     Register an eager mode operation as a graph-based implementation using torch.compile().
@@ -275,18 +316,51 @@ def eager_to_compile(op_name):
 
     Example:
         torch.npu.eager_to_compile("aten::mul.Tensor")
+
+    RE-ENTRY IS NOT RECURSION HERE, IT IS A LOOP THAT CANNOT END. The compiled
+    graph for an op is allowed to contain that same op again -- Inductor emits
+    an aten fallback for anything it cannot codegen, and for an out= variant the
+    dispatcher reaches it through the functional one -- so the registered impl
+    calls torch.compile, which produces a graph that calls the registered impl.
+    Nothing about the second trip differs from the first, so it runs until
+    Python's stack ends.
+
+        measured   torch.cat over two complex64 tensors under torch.compile
+                   with aten::cat.out registered:
+                   RecursionError: maximum recursion depth exceeded.
+                   Inductor declines complex ("Torchinductor does not support
+                   code generation for complex operators"), emits
+                   aten.cat.default, and cat.default's out-variant path lands
+                   back on this wrapper. Kimi-VL's MoonViT builds its 2D rope
+                   table exactly that way. Without the registration the same
+                   program runs; the registration is what closes the loop.
+
+    So the first entry compiles, and an entry that arrives while that graph is
+    still running executes on CPU instead. That is the same answer the device
+    gives for any op it has no kernel for -- what is lost is the compiling of
+    the inner op, which was never possible anyway.
     """
+    in_flight = threading.local()
+
     def wrapper(*args, **kwargs):
+        # Convert "aten::mul.Tensor" -> torch.ops.aten.mul.Tensor
+        namespace, op_path = op_name.split("::", 1)
+        op = torch.ops
+        for part in [namespace] + op_path.split("."):
+            op = getattr(op, part)
+
+        if getattr(in_flight, "busy", False):
+            return _run_on_cpu(op, args, kwargs)
+
         @torch.compile(dynamic=False)
         def dummy_graph(*args, **kwargs):
-            # Convert "aten::mul.Tensor" -> torch.ops.aten.mul.Tensor
-            namespace, op_path = op_name.split("::", 1)
-            op_path_parts = op_path.split(".")
-            op = torch.ops
-            for part in [namespace] + op_path_parts:
-                op = getattr(op, part)
             return op(*args, **kwargs)
-        return dummy_graph(*args, **kwargs)
+
+        in_flight.busy = True
+        try:
+            return dummy_graph(*args, **kwargs)
+        finally:
+            in_flight.busy = False
 
     torch.library.impl(op_name, "npu", wrapper)
 
