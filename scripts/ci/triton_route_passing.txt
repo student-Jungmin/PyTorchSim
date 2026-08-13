@@ -107,11 +107,16 @@
 #                 THEY ARE NOT GATED because setup/versions.env still pins
 #                 TRITON_SHARED_SHA 9017bd4e, which needs a prebuilt release to
 #                 move; on the pinned binary they still fail.
-#   v10 11 12 26  SEGFAULTED on the old pin -- the PSA depthwise conv faults on
-#                 its SECOND grid iteration. Fixed by triton-npu a616ea5, which
+#   v10 11 12 26  PASS now (2.64e-05, 1.25e-05, 2.67e-05, 5.65e-05) after TWO
+#                 defects in the same kernel -- the PSA depthwise conv. It
+#                 SEGFAULTED on the old pin (fixed by triton-npu a616ea5, which
 #                 removed a p11 repair measured as never firing and which this
-#                 kernel drives True twice. The pin now carries it, so all four
-#                 RUN and are merely wrong.
+#                 kernel drives True twice), and then returned wrong numbers
+#                 because all 128 channels read channel 0's BatchNorm
+#                 parameters: applyUnstructuredMask rebuilds the load as a
+#                 gather for its MASK, not its address, and divided the parked
+#                 `group` offset by the broadcast dim's stride of 0. Fixed in
+#                 triton_shared 99dc6bc. NOT GATED, same reason as v3 and v9.
 #
 # THE PIN MOVED WITH THIS, and it is a MERGE rather than a bump. 2988424 (the
 # p09 unit-axis fix test_mllama.py is gated on) is NOT an ancestor of triton-npu

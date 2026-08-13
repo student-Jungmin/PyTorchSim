@@ -78,20 +78,20 @@ so the wall clocks are upper bounds.  "kern" is unique compiled kernels; "max
 rel" is the worst max|npu-cpu| / max|cpu| over all of a version's outputs.
 
     version  yaml            params      kern   time   max rel     verdict
-    v3       yolov3-tiny  12,134,184      50    332s   2.93e-06    PASS ***
+    v3       yolov3-tiny  12,134,184      50    385s   2.93e-06    PASS ***
     v5       yolov5n       2,509,244      88    746s   1.85e-05    PASS
     v6       yolov6n       4,238,540      68*   420s   --          BLOCKED, device
     v8       yolov8n       3,011,628      89    707s   1.15e-05    PASS
-    v9       yolov9t       2,006,188     118   1607s   1.15e-04    PASS ***
-    v10      yolov10n      2,708,600     124   1024s   1.35e+00    WRONG NUMBERS**
-    11       yolo11n       2,590,620     124    907s   5.67e-01    WRONG NUMBERS**
-    12       yolo12n       2,568,828     145   1252s   5.83e-01    WRONG NUMBERS**
-    26       yolo26n       2,505,360     142   1169s   1.07e+00    WRONG NUMBERS**
+    v9       yolov9t       2,006,188     118   1710s   1.15e-04    PASS ***
+    v10      yolov10n      2,708,600     124   1054s   2.64e-05    PASS ****
+    11       yolo11n       2,590,620     124    926s   1.25e-05    PASS ****
+    12       yolo12n       2,568,828     145   1286s   2.67e-05    PASS ****
+    26       yolo26n       2,505,360     142   1198s   5.65e-05    PASS ****
 
       * v6 compiles 68 kernels and then stops; it never reaches an output.
-     ** these four SEGFAULTED on the triton-npu pin this file was written
-        against.  The pin has since moved and they now RUN and are merely
-        wrong; see below.
+     ** these four went WRONG NUMBERS -> PASS with triton_shared 99dc6bc, and
+        before that SEGFAULTED on the triton-npu pin this file was written
+        against.  Two separate defects in a row on the same kernel; see below.
     *** v3 and v9 were BOTH WRONG NUMBERS here (1.27e+00 and 2.47e+00) until
         triton_shared b6c3e60; see "the pooling bug" below.  v9's pass is not
         comfortable -- 1.15e-04 against a 1e-4 relative criterion, where the
@@ -100,9 +100,10 @@ rel" is the worst max|npu-cpu| / max|cpu| over all of a version's outputs.
         fix and did not move, so the width of that margin is GELAN's own error
         accumulation, not the pooling bug.
 
-SO FOUR VERSIONS PASS, and the file gates two of them: v5 and v8 are the two
-whose kernels the pooling fix did not touch, so they are the pair that was
-green before it and after it.
+SO EIGHT OF NINE PASS, and v6 is the one that does not -- it stops in the
+DEVICE, not in the compiler.  The file still gates only v5 and v8, and that is
+the rule working rather than an oversight: the other six pass against
+triton_shared commits this repo does not pin yet.  See the gate's own note.
 
 THE POOLING BUG, which is where two of the four came from.  A 2x2 stride-2
 pool reads four addresses -- base, base+1, base+64, base+65 -- and
@@ -158,10 +159,31 @@ stop:
     uniform precision story cannot produce that, and the branch that was clean
     is the branch with no pool on it.
 
-  * v10 / 11 / 12 / 26 all carry attention (PSA, C2PSA, A2C2f) and all four die
-    the same way on the pinned toolchain: a Spike ``User load segfault @
-    0x11005bd0`` inside the PSA block's depthwise 3x3 positional-encoding conv
-    on the 2x2 feature map.  Bisecting the GRID rather than the data is what
+  * v10 / 11 / 12 / 26 all carry attention (PSA, C2PSA, A2C2f) and all four hit
+    TWO defects in a row, in the SAME kernel -- the PSA block's depthwise 3x3
+    positional-encoding conv on the 2x2 feature map.  The second only became
+    visible once the first was fixed, which is the ordinary shape of this work.
+
+    THE SECOND ONE, and the one that made them wrong rather than dead.  That
+    kernel's epilogue loads four per-channel BatchNorm parameters, and all 128
+    channels were reading channel 0's.  `idx_c = idx_y_c[None, :] + group`
+    parks the scalar `group` on the OUTERMOST dim by convention, which for a
+    <1x16> pointer is the size-1, stride-0 one; the load is then rebuilt as a
+    gather -- not because its address needs one, but because its MASK does --
+    and that rebuild divides the dim's offset by the dim's stride.  Stride 0.
+    The IR carried `arith.divui %group, %c0`.
+
+    Isolating the kernel one piece at a time is what found it, and each piece
+    had to be neutralised to see the next: with BN identity and the residual
+    zeroed the conv is exact (4.77e-07); with x zeroed the residual layout is
+    exact; and only with BOTH neutralised does beta = 100..227 come back as 100
+    for every channel.  Running program 5 alone then split it cleanly -- the
+    STORE addressed channel 5 correctly while the load still read beta[0].
+    Fixed in triton_shared 99dc6bc by MOVING that offset to a dim with a real
+    stride rather than dividing it.
+
+    THE FIRST ONE was a Spike ``User load segfault @ 0x11005bd0`` in the same
+    kernel.  Bisecting the GRID rather than the data is what
     identified it -- program id 1 alone runs clean, ids 1 and 2 together fault,
     so it is the SECOND invocation that dies, which is a re-entrancy bug and not
     an index overrun.  Bisecting triton-npu over the 23 commits above the pin
@@ -488,11 +510,11 @@ def run_yolo(device, version="v8", batch=1, imgsz=None, compile_model=True, rtol
 # took 1578s on a machine also building a toolchain and running eight other
 # models.  Same two diffs, to every digit, on the moved pin.
 #
-# V3 AND V9 PASS AND ARE STILL NOT HERE, which is the rule doing its job: they
-# pass only against triton_shared b6c3e60, and `TRITON_SHARED_SHA` in
-# triton-npu's setup/versions.env still points at 9017bd4e. Moving it needs a
-# matching TRITON_SHARED_PREBUILT_SHA release, so CI would run the old binary
-# and both would fail on the pooling bug. They join the gate when the pin
+# SIX VERSIONS PASS AND ARE STILL NOT HERE, which is the rule doing its job.
+# v3 and v9 need triton_shared b6c3e60; v10, 11, 12 and 26 need 99dc6bc on top
+# of it. `TRITON_SHARED_SHA` in triton-npu's setup/versions.env still points at
+# 9017bd4e, and moving it needs a matching TRITON_SHARED_PREBUILT_SHA release,
+# so CI would run a binary with neither fix. They join the gate when the pin
 # moves, not when the fix is written -- a version is added here when it passes
 # on the PINNED toolchain.
 #
