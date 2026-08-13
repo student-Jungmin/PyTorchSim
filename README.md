@@ -47,7 +47,7 @@ PyTorchSim **supports**:
 | ViT | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/test_vit.py` |
 | Mistral | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | |
 | Stable-diffusion v1 | 🤗 | ✅ |  |
-| Llama 2/3 | 🤗 | ✅ | `tests/models/Llama/` (blocks & decode-style paths) |
+| Llama 2 / 3 / 3.1 / 3.2 (text) / 3.3 | 🤗 | ✅ | `tests/models/Llama/` — `test_llama3x.py` runs one block at the real 8B width (4096 hidden, head_dim 128, SwiGLU 14336) plus the 3.2 1B/3B shapes. 3.1 rope scaling is covered at short context only; 3.3 is config-identical to 3.1 70B. Llama 3.2 Vision (Mllama) is not covered |
 | DeepSeek-V3 (base) | 🤗 | ✅ | `tests/models/DeepSeek/` — several ops(e.g., gate ops) are not cycle-modeled |
 | SwinV2 | 🤗 | ✅ | `tests/models/test_swinv2.py` (shifted-window attention) |
 | CLIP (vision) | 🤗 | ✅ | `tests/models/test_clip.py` |
