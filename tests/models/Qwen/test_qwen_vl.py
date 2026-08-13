@@ -184,10 +184,28 @@ def _build(version, preset, dtype):
                 num_attention_heads=p["heads"], num_key_value_heads=p["kv_heads"],
                 intermediate_size=p["intermediate"], num_hidden_layers=1,
                 use_cache=False)
+    # THREE SPELLINGS, NOT TWO, AND THEY MOVED ONE AT A TIME. 4.51 keeps the
+    # text fields on the VL config with a `rope_scaling` dict; 4.57 splits out
+    # `text_config` but the dict is still `rope_scaling`; 5.x renames it
+    # `rope_parameters`. Asking each question of the signature that answers it
+    # -- does the VL config take a text_config, and which name does the TEXT
+    # config take -- covers the middle spelling, which a single version test
+    # does not: 4.57 was built with rope_parameters and its attention then read
+    # `self.rope_scaling["mrope_section"]` off a None.
+    # THE INNER KEY MOVED WITH THE OUTER ONE. 4.x spells the kind `type` and its
+    # validator normalises "mrope" to "default" while keeping the sections;
+    # 5.x spells it `rope_type` and has an mrope entry of its own, and REJECTS
+    # the 4.x spelling. Measured on 4.57.6: `rope_type="mrope"` raises
+    # `KeyError: 'mrope'` out of ROPE_INIT_FUNCTIONS, `type="mrope"` is taken.
     mrope = list(p["mrope"])
     if "text_config" in inspect.signature(Config.__init__).parameters:
-        text["rope_parameters"] = {"rope_type": "mrope", "mrope_section": mrope,
-                                   "rope_theta": 1000000.0}
+        TextConfig = type(Config().text_config)
+        names = inspect.signature(TextConfig.__init__).parameters
+        if "rope_parameters" in names:
+            text["rope_parameters"] = {"rope_type": "mrope", "mrope_section": mrope,
+                                       "rope_theta": 1000000.0}
+        else:
+            text["rope_scaling"] = {"type": "mrope", "mrope_section": mrope}
         cfg = Config(text_config=text, vision_config=vision.to_dict(),
                      attn_implementation="eager",
                      image_token_id=_IMAGE_TOKEN, video_token_id=_VIDEO_TOKEN,
