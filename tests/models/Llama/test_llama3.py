@@ -39,6 +39,17 @@ def llama3_config(vocab_size=8192, layers=1):
         attention_bias=False,
         mlp_bias=False,
         use_cache=False,
+        # NAMED, NOT LEFT TO THE DEFAULT. transformers 4.57 looks the
+        # implementation up in ALL_ATTENTION_FUNCTIONS by this string and a
+        # config that never set it carries None, which is not a key:
+        #
+        #     KeyError: None   (modeling_llama.py, in forward)
+        #
+        # 4.51 filled it in for itself. Eager is what the rest of this suite
+        # asks for anyway -- it keeps the sdpa dispatch out of the graph, so a
+        # failure is about the model and not about which kernel was picked --
+        # and test_llama3x.py has said so on this line all along.
+        attn_implementation="eager",
     )
 
 

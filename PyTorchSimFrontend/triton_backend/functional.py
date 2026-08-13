@@ -147,7 +147,31 @@ def write_inputs(workdir, meta, args):
             # index, so the contiguous cpu tensor lands in the padded slots
             # correctly; only the layout has to come from the tensor the kernel
             # was compiled against.
-            flat.as_strided(t.shape, t.stride()).copy_(cpu)
+            # A ZERO STRIDE MEANS THE BUFFER HOLDS FEWER ELEMENTS THAN THE
+            # SHAPE, and writing through it would write the same address once
+            # per logical position -- which torch refuses outright:
+            #
+            #     RuntimeError: unsupported operation: more than one element of
+            #     the written-to tensor refers to a single memory location
+            #
+            # A broadcast operand is exactly that: the kernel reads it with the
+            # same zero stride (the descriptor carries it), so the file has to
+            # hold the UNBROADCAST data, once. Dropping the zero-stride axes
+            # from the destination and taking index 0 of them from the source
+            # writes each distinct address exactly once with the value every
+            # position along that axis shares.
+            #
+            #     measured   Qwen2-VL under transformers 4.57, whose M-RoPE
+            #                position ids reach the launch as a broadcast view.
+            #                4.51 materialised them, so this never fired.
+            shape, strides = list(t.shape), list(t.stride())
+            src = cpu
+            for i in range(len(strides) - 1, -1, -1):
+                if strides[i] == 0:
+                    src = src.select(i, 0)
+                    shape.pop(i)
+                    strides.pop(i)
+            flat.as_strided(shape, strides).copy_(src)
             flat.numpy().tofile(path)
         else:
             np.zeros(m["numel"], dtype=_np_dtype(m["dtype"])).tofile(path)

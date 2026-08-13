@@ -78,6 +78,7 @@ above.  `7b` is the same shapes at the 7B text width and is not measured here.
 
 import argparse
 import copy
+import inspect
 import os
 import sys
 
@@ -117,6 +118,38 @@ def _dtype_from_str(name):
             "bfloat16": torch.bfloat16}.get(name, torch.float32)
 
 
+
+
+#: Which model class a preset builds, so `_inputs` can ask what its forward
+#: takes without building it twice.  Set by `_build`; the two are always used
+#: together and a preset's class does not depend on anything else.
+_FORWARD = {}
+
+
+def _forward_of(preset):
+    return _FORWARD.get(preset, lambda **_: None)
+
+
+def _text_of(cfg):
+    """The config that carries the text fields, in either spelling.
+
+    4.x puts them on the VL config itself; 5.x moves them into `text_config`.
+    Everything that asks "how wide is the text side" goes through here so the
+    question is asked once.
+    """
+    return getattr(cfg, "text_config", cfg)
+
+
+def _rope_of(cfg):
+    """The rope dict, `rope_parameters` (5.x) or `rope_scaling` (4.x)."""
+    t = _text_of(cfg)
+    for name in ("rope_parameters", "rope_scaling"):
+        got = getattr(t, name, None)
+        if got:
+            return got
+    return {}
+
+
 def _build(version, preset, dtype):
     p = _PRESETS[preset]
     if version == "2":
@@ -141,17 +174,50 @@ def _build(version, preset, dtype):
                               temporal_patch_size=2, out_hidden_size=p["hidden"],
                               intermediate_size=p["vis_interm"], fullatt_block_indexes=[0])
 
-    cfg = Config(
-        vocab_size=p["vocab"], hidden_size=p["hidden"],
-        num_attention_heads=p["heads"], num_key_value_heads=p["kv_heads"],
-        intermediate_size=p["intermediate"], num_hidden_layers=1,
-        vision_config=vision.to_dict(), use_cache=False,
-        attn_implementation="eager",
-        rope_scaling={"type": "mrope", "mrope_section": list(p["mrope"])},
-        image_token_id=_IMAGE_TOKEN, video_token_id=_VIDEO_TOKEN,
-        vision_start_token_id=_VISION_START,
-    )
+    # THE TEXT HALF IS SPELLED TWO WAYS AND THIS FILE HAS TO BUILD BOTH.  Up to
+    # transformers 4.x a VL config carries the text fields at the top level and
+    # a `rope_scaling` dict; from 5.x they live in a `text_config` of their own
+    # and the dict is `rope_parameters`.  Same model, same numbers -- so the
+    # values below are written once and placed by which spelling the installed
+    # version takes, rather than by a version number, which would go stale.
+    text = dict(vocab_size=p["vocab"], hidden_size=p["hidden"],
+                num_attention_heads=p["heads"], num_key_value_heads=p["kv_heads"],
+                intermediate_size=p["intermediate"], num_hidden_layers=1,
+                use_cache=False)
+    # THREE SPELLINGS, NOT TWO, AND THEY MOVED ONE AT A TIME. 4.51 keeps the
+    # text fields on the VL config with a `rope_scaling` dict; 4.57 splits out
+    # `text_config` but the dict is still `rope_scaling`; 5.x renames it
+    # `rope_parameters`. Asking each question of the signature that answers it
+    # -- does the VL config take a text_config, and which name does the TEXT
+    # config take -- covers the middle spelling, which a single version test
+    # does not: 4.57 was built with rope_parameters and its attention then read
+    # `self.rope_scaling["mrope_section"]` off a None.
+    # THE INNER KEY MOVED WITH THE OUTER ONE. 4.x spells the kind `type` and its
+    # validator normalises "mrope" to "default" while keeping the sections;
+    # 5.x spells it `rope_type` and has an mrope entry of its own, and REJECTS
+    # the 4.x spelling. Measured on 4.57.6: `rope_type="mrope"` raises
+    # `KeyError: 'mrope'` out of ROPE_INIT_FUNCTIONS, `type="mrope"` is taken.
+    mrope = list(p["mrope"])
+    if "text_config" in inspect.signature(Config.__init__).parameters:
+        TextConfig = type(Config().text_config)
+        names = inspect.signature(TextConfig.__init__).parameters
+        if "rope_parameters" in names:
+            text["rope_parameters"] = {"rope_type": "mrope", "mrope_section": mrope,
+                                       "rope_theta": 1000000.0}
+        else:
+            text["rope_scaling"] = {"type": "mrope", "mrope_section": mrope}
+        cfg = Config(text_config=text, vision_config=vision.to_dict(),
+                     attn_implementation="eager",
+                     image_token_id=_IMAGE_TOKEN, video_token_id=_VIDEO_TOKEN,
+                     vision_start_token_id=_VISION_START)
+    else:
+        cfg = Config(
+            vision_config=vision.to_dict(), attn_implementation="eager",
+            rope_scaling={"type": "mrope", "mrope_section": mrope},
+            image_token_id=_IMAGE_TOKEN, video_token_id=_VIDEO_TOKEN,
+            vision_start_token_id=_VISION_START, **text)
     torch.manual_seed(0)
+    _FORWARD[preset] = Model.forward
     return cfg, Model(cfg).to(dtype=_dtype_from_str(dtype)).eval()
 
 
@@ -166,8 +232,16 @@ def _inputs(preset, dtype, seed=0):
     pixel = torch.randn(n_patches, 3 * 2 * 14 * 14, generator=g,
                         dtype=_dtype_from_str(dtype))
     ids = torch.tensor([[5, 6, _VISION_START] + [_IMAGE_TOKEN] * n_tokens + [7]])
-    return dict(input_ids=ids, pixel_values=pixel,
-                image_grid_thw=torch.tensor([[t, h, w]]))
+    got = dict(input_ids=ids, pixel_values=pixel,
+               image_grid_thw=torch.tensor([[t, h, w]]))
+    # WHICH TOKENS ARE IMAGE, SPELLED OUT.  transformers 5.x asks the caller for
+    # it -- text 0, image 1, video 2 -- rather than recovering it from
+    # `input_ids == image_token_id`, and refuses M-RoPE without it; 4.x derives
+    # it and takes no such argument.  Passed only where the signature has it, so
+    # this file builds the same model on both.
+    if "mm_token_type_ids" in inspect.signature(_forward_of(preset)).parameters:
+        got["mm_token_type_ids"] = (ids == _IMAGE_TOKEN).to(torch.int32)
+    return got
 
 
 def _assert_character(version, cfg, model, preset):
@@ -181,8 +255,9 @@ def _assert_character(version, cfg, model, preset):
     assert getattr(vision, "temporal_patch_size", None) == 2, \
         "patches are 3D (temporal_patch_size 2); a 2D patchifier is a different model"
 
-    sections = cfg.rope_scaling["mrope_section"]
-    head_dim = cfg.hidden_size // cfg.num_attention_heads
+    text = _text_of(cfg)
+    sections = _rope_of(cfg)["mrope_section"]
+    head_dim = text.hidden_size // text.num_attention_heads
     assert len(sections) == 3, f"M-RoPE has three bands (t, h, w); got {sections}"
     assert sum(sections) == head_dim // 2, \
         (f"the M-RoPE bands must cover head_dim/2 = {head_dim // 2}, got {sum(sections)} "
@@ -194,7 +269,7 @@ def _assert_character(version, cfg, model, preset):
         assert width == 1280, f"the sized presets run the real tower width, got {width}"
         assert vision.patch_size == 14, "the real tower is patch 14"
     if preset == "7b":
-        assert cfg.hidden_size == 3584 and cfg.intermediate_size == 18944, \
+        assert text.hidden_size == 3584 and text.intermediate_size == 18944, \
             "7b preset must run at the real 7B text width"
 
 
@@ -209,12 +284,13 @@ def run_qwen_vl(device, version="2", preset="2b", dtype="float32",
     kwargs = _inputs(preset, dtype)
 
     p = _PRESETS[preset]
+    text = _text_of(cfg)
     vis_width = cfg.vision_config.embed_dim if version == "2" else cfg.vision_config.hidden_size
     print(f"version=Qwen{'2' if version == '2' else '2.5'}-VL preset={preset} "
-          f"text_hidden={cfg.hidden_size} heads={cfg.num_attention_heads}/{cfg.num_key_value_heads} "
-          f"interm={cfg.intermediate_size} vision={vis_width}x{cfg.vision_config.num_heads}heads "
+          f"text_hidden={text.hidden_size} heads={text.num_attention_heads}/{text.num_key_value_heads} "
+          f"interm={text.intermediate_size} vision={vis_width}x{cfg.vision_config.num_heads}heads "
           f"patches={kwargs['pixel_values'].shape[0]} grid={p['grid']} "
-          f"mrope={p['mrope']} vocab={cfg.vocab_size} dtype={dtype}")
+          f"mrope={p['mrope']} vocab={text.vocab_size} dtype={dtype}")
     print("model params:", sum(x.numel() for x in model_cpu.parameters()))
 
     _assert_character(version, cfg, model_cpu, preset)

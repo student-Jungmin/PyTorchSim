@@ -117,22 +117,71 @@ def _maybe_scale_config(config, scale=1.0, max_layers=None):
         if hasattr(config, name):
             setattr(config, name, _safe_scaled_int(getattr(config, name), scale))
 
-    # DeepSeek MoE gate expects n_routed_experts to be divisible by n_group.
+    # WIDTHS THAT A FUSED EXPERT MATMUL CAN ADDRESS. transformers 5.x runs the
+    # routed experts through `torch.nn.functional.grouped_mm` -- one batched
+    # matmul over the expert dimension rather than a loop of MLPs -- and that
+    # kernel requires strides that are a multiple of 16 bytes:
+    #
+    #     RuntimeError: strides should be multiple of 16 bytes
+    #
+    # Measured on `--preset small`: moe_intermediate_size scales 2048 -> 143.
+    # SIXTEEN ELEMENTS, NOT FOUR, and the difference is the dtype: this config
+    # is bfloat16, so 16 bytes is EIGHT elements rather than four, and the
+    # width that matters is the one the transposed weight steps by. Measured
+    # directly on the kernel, bf16, N=280: K=468 raises and K=464 does not.
+    # Sixteen covers both dtypes with one number and costs at most fifteen
+    # elements of a width the preset was already shrinking. 4.51.3 loops over
+    # per-expert MLPs and never asked.
+    for name in ("intermediate_size", "moe_intermediate_size",
+                 "shared_expert_intermediate_size"):
+        if hasattr(config, name):
+            setattr(config, name, max(16, (int(getattr(config, name)) // 16) * 16))
+
+    # DeepSeek MoE gate expects n_routed_experts to be divisible by n_group,
+    # AND EVERY GROUP NEEDS TWO EXPERTS IN IT. The group score is the sum of the
+    # top TWO experts in that group -- the algorithm, not an implementation
+    # detail -- so a group of one asks topk for a second element that is not
+    # there. transformers 4.51.3 never reached that line with a scaled config
+    # and 5.x does:
+    #
+    #     RuntimeError: selected index k out of range
+    #
+    # Measured on `--preset small`: the experts scale 256 -> 8 while n_group
+    # keeps its real 8, so every group held exactly one. The group COUNT is what
+    # gives here, because it is the thing the scaled model cannot honour --
+    # shrinking it keeps both halves of the structure (several groups, each with
+    # a choice inside it) and leaves the expert count where the preset put it.
     if hasattr(config, "n_routed_experts") and hasattr(config, "n_group"):
+        config.n_group = max(1, min(int(config.n_group),
+                                    max(1, int(config.n_routed_experts) // 2)))
         config.n_routed_experts = _round_to_multiple(
             config.n_routed_experts,
             config.n_group,
-            min_value=max(1, int(config.n_group)),
+            min_value=max(2, int(config.n_group)),
         )
+        if hasattr(config, "topk_group"):
+            config.topk_group = max(1, min(int(config.topk_group),
+                                           int(config.n_group)))
 
     if max_layers is not None and hasattr(config, "num_hidden_layers"):
         config.num_hidden_layers = max(1, min(int(max_layers), int(config.num_hidden_layers)))
 
     if hasattr(config, "hidden_size") and hasattr(config, "num_attention_heads"):
-        config.hidden_size = max(
-            config.num_attention_heads,
-            (config.hidden_size // config.num_attention_heads) * config.num_attention_heads,
-        )
+        # A MULTIPLE OF THE HEAD COUNT **AND** OF 16 BYTES. Scaling 7168 by 0.07
+        # gives 495, which divides by its 11 heads and is still an odd number of
+        # floats: transformers 5.x runs the projection through a path that
+        # refuses it --
+        #
+        #     RuntimeError: strides should be multiple of 16 bytes
+        #
+        # -- and 4.51.3 did not. The config is bfloat16, where 16 bytes is
+        # eight elements, and sixteen covers that and float32 with one number;
+        # the alignment is asked of the head count and the width TOGETHER rather
+        # than of either alone, so both hold at once.
+        step = config.num_attention_heads
+        while step % 16:
+            step *= 2
+        config.hidden_size = max(step, (config.hidden_size // step) * step)
 
     return config
 
@@ -300,7 +349,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DeepSeek V3 download-based test")
     parser.add_argument("--model-id", type=str, default=os.environ.get("DEEPSEEK_V3_MODEL_ID", "deepseek-ai/DeepSeek-V3-Base"))
     parser.add_argument("--revision", type=str, default=None)
-    parser.add_argument("--trust-remote-code", action="store_true", default=True)
+    # DEFAULT FALSE, AND IT USED TO BE TRUE WITH NO WAY TO TURN IT OFF --
+    # `store_true` with `default=True` is a flag that can only be set. What that
+    # bought was the Hub's own modeling file, and transformers has had its own
+    # `deepseek_v3` since 4.51, so the remote copy was being preferred over the
+    # maintained one. It is also 4.x-only code: under transformers 5 it fails at
+    # import with `cannot import name 'is_torch_fx_available'`, which is how
+    # this surfaced. Measured on both: AutoConfig + from_config with
+    # trust_remote_code=False builds DeepseekV3ForCausalLM and runs, on 4.51.3
+    # and on 5.15.0.
+    parser.add_argument("--trust-remote-code", action="store_true", default=False,
+                        help="use the Hub's modeling file instead of "
+                             "transformers' own deepseek_v3 (4.x only)")
     parser.add_argument("--init-mode", type=str, default="config-random", choices=["config-random", "pretrained"])
     parser.add_argument("--preset", type=str, default="small", choices=["none", "tiny", "small", "medium"])
     parser.add_argument("--scale", type=float, default=1.0)
