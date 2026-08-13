@@ -435,6 +435,49 @@ def _decline_persistence_we_cannot_resize():
         config.inductor_choices_class = _npu_choices_class()
 
 
+def _lower_conv1d_as_conv2d():
+    """Send a 1-D convolution through the 2-D template instead of to aten.
+
+    Inductor ships ONE conv template and gates it on `ndim == 2`
+    (`torch/_inductor/kernel/conv.py`), so a Conv1d has no Triton choice to
+    append and falls to `extern_kernels.convolution` -- which on npu raises
+    `convolution_overrideable not implemented`. That is what stops
+    RecurrentGemma's Griffin block, whose temporal conv is an `nn.Conv1d`.
+
+    The rewrite itself is torch's own: `conv1d_to_conv2d` sits in
+    `torch/_inductor/decomposition.py` under the comment "intentionally not
+    regiestered" [sic], fully written and simply never registered. It adds a
+    length-1 spatial axis, calls conv2d, and squeezes it back -- exact, not an
+    approximation. We register it rather than writing our own.
+
+    Registering a decomposition is the supported extension point, unlike the
+    two patches above it in `install()`, which exist only because GPU_TYPES and
+    has_triton are hardcoded lists with no hook.
+
+    Guards, in order of what each prevents:
+      * device -- the decomposition table is global, and a cpu graph in the
+        same process must keep the lowering Inductor chose for it.
+      * len(stride) != 1 -- this is what makes it a 1-D conv, AND what stops
+        the recursion: the conv2d we emit comes back through here with a 2-D
+        stride and declines.
+      * transposed / output_padding -- conv1d_to_conv2d models neither.
+    """
+    from torch._inductor.decomposition import conv1d_to_conv2d, register_decomposition
+
+    aten = torch.ops.aten
+
+    @register_decomposition([aten.convolution])
+    def _npu_convolution(input, weight, bias, stride, padding, dilation,
+                         transposed, output_padding, groups):
+        if input.device.type != "npu":
+            return NotImplemented
+        if len(stride) != 1 or transposed:
+            return NotImplemented
+        if any(p != 0 for p in output_padding):
+            return NotImplemented
+        return conv1d_to_conv2d(input, weight, bias, stride, padding, dilation, groups)
+
+
 def _install_selection():
     from torch._inductor.select_algorithm import AlgorithmSelectorCache
 
@@ -465,6 +508,7 @@ def install():
     _clamp_conv_block_n()
     _short_circuit_degenerate_gemms()
     _decline_persistence_we_cannot_resize()
+    _lower_conv1d_as_conv2d()
     _install_selection()
 
     config.max_autotune_gemm = True
