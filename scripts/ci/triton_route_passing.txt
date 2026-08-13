@@ -47,17 +47,46 @@
 # compiling Llama 3's graph unchanged. Nothing here was broken when it was
 # written; the entry is a floor, not a fix.
 #
-# WHAT test_gemma.py ADDS that no other entry covers. Four things, and the two
-# presets split them: 2b is MQA -- num_key_value_heads=1, so ONE kv head is
-# broadcast across eight query heads, where every other GQA repeat in the suite
-# is 1, 2, 3, 4, 6, 7 or 8-into-8 -- and 7b decouples head_dim from hidden
-# (16 * 256 = 4096 against 3072), so q_proj is not square and o_proj shrinks.
-# Both run head_dim 256, twice the suite's previous maximum. Both run GeGLU,
-# where every other gated MLP here is SwiGLU. And GemmaRMSNorm scales by
-# (1 + w) off a zero-initialised weight, not by w, which the test checks by
-# pushing a unit vector through the norm rather than by reading the config --
-# a backend that folded the two RMSNorm forms together would pass everything
-# else in this file and fail only there. 302M parameters at 7b, 395s.
+# WHAT test_gemma.py ADDS that no other entry covers. It gates a family across
+# three generations, so its default runs three presets, one per generation:
+# 7b + 2-2b + 3-1b. Measured the way this file runs it -- all three in one
+# process -- at 1137s and 64 unique kernels, inside the 1800s default. Each
+# preset's max diff there is identical to its own isolated run, so the three
+# share codegen rather than colliding in it.
+#
+# Gemma 1 (7b, and 2b behind it): MQA -- num_key_value_heads=1, so ONE kv head
+# is broadcast across eight query heads, where every other GQA repeat in the
+# suite is 1, 2, 3, 4, 6, 7 or 8-into-8. head_dim 256, twice the suite's
+# previous maximum. head_dim decoupled from hidden at 7B (16 * 256 = 4096
+# against 3072), so q_proj is not square and o_proj shrinks. GeGLU, where every
+# other gated MLP here is SwiGLU. And GemmaRMSNorm scales by (1 + w) off a
+# zero-initialised weight, not by w, which the test checks by pushing a unit
+# vector through the norm rather than by reading the config -- a backend that
+# folded the two RMSNorm forms together would pass everything else in this file
+# and fail only there.
+#
+# Gemma 2 (2-2b): local and global attention ALTERNATE, so the preset runs two
+# layers -- one of each -- and they compile to separate attention kernels (24
+# unique against 38 executed). Logit soft-capping adds a tanh on the
+# [b, h, seq, seq] scores and another on [b, seq, vocab]; nothing else here
+# caps. Four RMSNorms per layer against Llama's two. 2-27b-scalar carries 27B's
+# query_pre_attn_scalar of 144 against head_dim 128, the one Gemma where the
+# pre-attention scale is not head_dim ** -0.5.
+#
+# Gemma 3 (3-1b): TWO ROPE BASES in one model -- 10000 on local layers, 1000000
+# on global, as two rotary modules -- where every other model here has one
+# inv_freq. The preset runs six layers, one full 5:1 period, so the single
+# global layer actually runs; 25 unique kernels across 100 executions.
+#
+# THE WINDOW IS SCALED TO THE SEQUENCE, AND THAT IS LOAD-BEARING. Both shipped
+# configs use a 4096-token window, which at seq 32 masks ZERO elements: the
+# local layers would be byte-identical to the global ones and the alternation
+# would go untested while the test still passed. The presets use window 8 and
+# _assert_character refuses any preset whose window is not strictly inside its
+# seq, so that particular vacuous pass cannot happen quietly.
+#
+# Nothing was blocked: all three generations ran end to end on the first
+# attempt, with no backend change. The entry is a floor, not a fix.
 tests/models/BERT/test_bert.py
 tests/models/DeepSeek/test_deepseek_v3_base.py
 tests/models/Diffusion/test_diffusion.py
