@@ -78,22 +78,60 @@ so the wall clocks are upper bounds.  "kern" is unique compiled kernels; "max
 rel" is the worst max|npu-cpu| / max|cpu| over all of a version's outputs.
 
     version  yaml            params      kern   time   max rel     verdict
-    v3       yolov3-tiny  12,134,184      50    384s   1.27e+00    WRONG NUMBERS
+    v3       yolov3-tiny  12,134,184      50    332s   2.93e-06    PASS ***
     v5       yolov5n       2,509,244      88    746s   1.85e-05    PASS
     v6       yolov6n       4,238,540      68*   420s   --          BLOCKED, device
     v8       yolov8n       3,011,628      89    707s   1.15e-05    PASS
-    v9       yolov9t       2,006,188     118   1652s   2.47e+00    WRONG NUMBERS
+    v9       yolov9t       2,006,188     118   1607s   1.15e-04    PASS ***
     v10      yolov10n      2,708,600     124   1024s   1.35e+00    WRONG NUMBERS**
     11       yolo11n       2,590,620     124    907s   5.67e-01    WRONG NUMBERS**
     12       yolo12n       2,568,828     145   1252s   5.83e-01    WRONG NUMBERS**
     26       yolo26n       2,505,360     142   1169s   1.07e+00    WRONG NUMBERS**
 
-     * v6 compiles 68 kernels and then stops; it never reaches an output.
-    ** these four SEGFAULTED on the triton-npu pin this file was written
-       against.  The pin has since moved and they now RUN and are merely
-       wrong; see below.
+      * v6 compiles 68 kernels and then stops; it never reaches an output.
+     ** these four SEGFAULTED on the triton-npu pin this file was written
+        against.  The pin has since moved and they now RUN and are merely
+        wrong; see below.
+    *** v3 and v9 were BOTH WRONG NUMBERS here (1.27e+00 and 2.47e+00) until
+        triton_shared b6c3e60; see "the pooling bug" below.  v9's pass is not
+        comfortable -- 1.15e-04 against a 1e-4 relative criterion, where the
+        others sit at 1e-06 -- and its margin is thin enough that a different
+        input could tip it.  Its P3 output was ALREADY at 9.60e-05 before the
+        fix and did not move, so the width of that margin is GELAN's own error
+        accumulation, not the pooling bug.
 
-SO TWO VERSIONS PASS, and the file gates those two.  The other seven each have a
+SO FOUR VERSIONS PASS, and the file gates two of them: v5 and v8 are the two
+whose kernels the pooling fix did not touch, so they are the pair that was
+green before it and after it.
+
+THE POOLING BUG, which is where two of the four came from.  A 2x2 stride-2
+pool reads four addresses -- base, base+1, base+64, base+65 -- and
+triton_shared's `PtrState::rebuildAsGatherScatter` was ZEROING the constant
+that distinguishes them.  With the constants gone the four loads ARE the same
+load, CSE merges them (correctly -- it is the witness, not the culprit) and
+canonicalize folds `max(a,a,a,a)` to `a`.  Measured on v3's first pool:
+
+    stage                          exp  select  load
+    triton IR in                    4     3      4
+    --triton-to-structured          4     3      4
+    --cse --canonicalize            1     0      1
+
+so the kernel returned silu of the window's TOP-LEFT element.  v9's avg_pool
+had the same disease in the other spelling: the three adds survived while the
+loads collapsed, making it (a+a+a+a)/4.  That is why v9's P3 was clean while
+P4 and P5 were not -- the pools are on those two branches.
+
+The fix keeps a compile-time constant and still clears a non-constant one,
+which is exactly the splatted scalar the original comment was written about.
+1311 dumped kernels through the full pipeline afterwards: 1304 byte-identical,
+7 changed, 0 newly failing -- and all seven are pools.
+
+AND THE GATHER WAS NEVER NEEDED.  XBLOCK is 8 and the modulus is 32, so within
+a block `x // 32` is constant and `x % 32` is consecutive: measured over all
+128 programs, every block's addresses are an arithmetic sequence of stride 2.
+PtrAnalysis falls back to gather because it does not test whether the block
+extent divides the modulus.  Fixing the gather path was the correctness fix;
+not taking it at all is a separate, faster one that is not done.  The other seven each have a
 measured stopping point rather than a guess, and no two of them are the same
 stop:
 
@@ -107,20 +145,18 @@ stop:
     lowers the convolution, not its rank.  ResNet, MobileNet-v2 and YOLOv5 all
     convolve and pass because theirs are lowered.
 
-  * v3 compiles and runs and the ANSWER IS WRONG, first at the fused
-    max_pool2d.  Per-kernel functional verify names it exactly:
+  * v3 and v9 WERE the pooling bug, and both pass now -- see it above.  What
+    found it was per-kernel functional verify naming
     ``triton_npu_fused_max_pool2d_with_indices_silu_3`` writing buf4
-    (1, 16, 32, 32) -- the first pool in the model -- with 12167 of 16384
-    elements over tolerance and a max abs diff of 4.85 on data of order 1.
-    That is a miscompile, not precision.  It does NOT reduce: silu-then-pool at
-    the same shape and stride, and the whole Conv-BN-SiLU-MaxPool block
-    standalone, both come back clean (9.5e-07), so it needs the model's context.
-    Unchanged on triton-npu develop 3434608, on a616ea5 and on develop-refactor
-    3c1ccca -- three trees, same 81.83 max diff, so no pin move fixes it.
+    (1, 16, 32, 32) with 12167 of 16384 elements over tolerance, and then the
+    kernel run standalone against candidate answers: `silu(top-left)` matched
+    to 2.4e-07 where the correct `max(silu(...))` was 4.85 out.  Reading the IR
+    would not have said which; running the kernel did.
 
-  * v9 diverges by BRANCH, which is what makes it interesting: its P3 output is
-    clean at 9.6e-05 while P4 and P5 come back at 1.25 and 2.47 relative.  A
-    uniform precision story cannot produce that.
+    v9's shape was the tell that these were ONE bug and not two.  Its P3 output
+    was clean at 9.6e-05 while P4 and P5 came back at 1.25 and 2.47 -- a
+    uniform precision story cannot produce that, and the branch that was clean
+    is the branch with no pool on it.
 
   * v10 / 11 / 12 / 26 all carry attention (PSA, C2PSA, A2C2f) and all four die
     the same way on the pinned toolchain: a Spike ``User load segfault @
@@ -452,9 +488,16 @@ def run_yolo(device, version="v8", batch=1, imgsz=None, compile_model=True, rtol
 # took 1578s on a machine also building a toolchain and running eight other
 # models.  Same two diffs, to every digit, on the moved pin.
 #
-# The other seven are one --version each and are NOT gated; each has a measured
-# stopping point in the module docstring.  A version is added here when it
-# passes on the pinned toolchain, not when it merely compiles.
+# V3 AND V9 PASS AND ARE STILL NOT HERE, which is the rule doing its job: they
+# pass only against triton_shared b6c3e60, and `TRITON_SHARED_SHA` in
+# triton-npu's setup/versions.env still points at 9017bd4e. Moving it needs a
+# matching TRITON_SHARED_PREBUILT_SHA release, so CI would run the old binary
+# and both would fail on the pooling bug. They join the gate when the pin
+# moves, not when the fix is written -- a version is added here when it passes
+# on the PINNED toolchain.
+#
+# The rest are one --version each; each has a measured stopping point in the
+# module docstring.
 _GATE = ("v5", "v8")
 
 

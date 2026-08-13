@@ -95,12 +95,18 @@
 #                 dispatches to convolution_overrideable, which
 #                 PyTorchSimDevice/csrc does not register. Same gap as
 #                 RecurrentGemma's conv1d, and v6 shows it is not 1-D specific.
-#   v3            runs and is WRONG, first at
-#                 triton_npu_fused_max_pool2d_with_indices_silu_3 (buf4,
-#                 12167/16384 elements, max abs 4.85). Identical on three
-#                 triton-npu trees, so no pin move addresses it.
-#   v9            wrong on P4/P5 (1.25 and 2.47 relative) while P3 is clean at
-#                 9.6e-05.
+#   v3, v9        WERE wrong and now PASS (2.93e-06 and 1.15e-04), on a
+#                 triton_shared this repo does not yet pin. Both were one bug:
+#                 PtrState::rebuildAsGatherScatter zeroed the constant offset
+#                 that distinguishes a pool window's four loads, so the four
+#                 became one, CSE merged them and canonicalize folded the max
+#                 away -- v3 returned silu of the top-left element, v9's
+#                 avg_pool returned (a+a+a+a)/4. Fixed in PSAL-POSTECH/
+#                 triton_shared b6c3e60 (1304 of 1311 dumped kernels
+#                 byte-identical after it; all 7 that changed are pools).
+#                 THEY ARE NOT GATED because setup/versions.env still pins
+#                 TRITON_SHARED_SHA 9017bd4e, which needs a prebuilt release to
+#                 move; on the pinned binary they still fail.
 #   v10 11 12 26  SEGFAULTED on the old pin -- the PSA depthwise conv faults on
 #                 its SECOND grid iteration. Fixed by triton-npu a616ea5, which
 #                 removed a p11 repair measured as never firing and which this
