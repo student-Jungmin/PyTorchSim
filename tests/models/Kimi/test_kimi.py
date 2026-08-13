@@ -89,7 +89,27 @@ _PRESETS = {
     "tiny":   (0.06, 2, 1, 16),
     "small":  (0.12, 2, 1, 32),
     "medium": (0.25, 4, 1, 32),
+    # THE REAL WIDTHS, TWO LAYERS -- the same gate BERT and GPT-2 use. Nothing
+    # is scaled here: hidden 2048, 16 heads, 64 routed experts, moe 1408. Two
+    # layers is what makes it runnable, and it is enough because layer 0 is the
+    # dense MLP and layer 1 is the MoE block, so both kinds are present. The
+    # 27-layer model is the same two blocks repeated.
+    "block":  (1.00, 2, 1, 32),
     "full":   (1.00, None, 1, 32),
+}
+
+#: preset -> (hidden, heads, layers, intermediate, grid_h, grid_w) for MoonViT.
+#: The vision tower is sized OUTRIGHT rather than by `scale`, because two of its
+#: numbers are not free: the 2D rope splits each head into an h half and a w
+#: half, so head_dim has to stay a multiple of 4, and the patch merger folds a
+#: 2x2 block, so the grid has to stay even. A proportional scale lands on
+#: head_dim 69 and the rope asserts. `patch_size` stays 14 -- it is the shape of
+#: the conv, and shrinking it would make the patch embed a different op.
+_VISION_PRESETS = {
+    "tiny":   (128, 4, 2, 256,  4, 4),
+    "small":  (256, 8, 2, 512,  4, 4),
+    "medium": (384, 8, 4, 768,  6, 6),
+    "full":   (1152, 16, 27, 4304, 8, 8),
 }
 
 
@@ -197,6 +217,43 @@ def _build_inputs(batch, seq_len, vocab_size, device):
     return ids.to(device)
 
 
+def _size_vision(vision, preset):
+    """MoonViT is sized outright. See `_VISION_PRESETS` for why, and note that
+    `patch_size` and `merge_kernel_size` are left at the real model's values."""
+    hidden, heads, layers, inter, grid_h, grid_w = _VISION_PRESETS[preset]
+    vision.hidden_size = hidden
+    vision.num_attention_heads = heads
+    vision.num_hidden_layers = layers
+    vision.intermediate_size = inter
+    return grid_h, grid_w
+
+
+def _vision_inputs(config, ids, grid_h, grid_w):
+    """One image, and the placeholder tokens that reserve room for it.
+
+    The image arrives already cut into patches -- `pixel_values` is
+    (patches, 3, patch, patch) and `image_grid_hws` says how those patches are
+    laid out -- because the HF image processor, not the model, does the cutting.
+    The 2x2 patch merger then turns four patches into one image token, so the
+    prompt has to hold exactly grid_h*grid_w/4 placeholders: the model asserts
+    that count against the features it produced.
+    """
+    ps = config.vision_config.patch_size
+    mh, mw = config.vision_config.merge_kernel_size
+    n_patches = grid_h * grid_w
+    n_tokens = n_patches // (mh * mw)
+
+    g = torch.Generator().manual_seed(1)
+    pixel_values = torch.randn(n_patches, 3, ps, ps, generator=g)
+    image_grid_hws = torch.tensor([[grid_h, grid_w]], dtype=torch.int64)
+
+    ids = ids.clone()
+    if ids.numel() < n_tokens + 1:
+        raise ValueError(f"seq_len {ids.numel()} is too short for {n_tokens} image tokens")
+    ids[:, 1:1 + n_tokens] = config.media_placeholder_token_id
+    return ids, {"pixel_values": pixel_values, "image_grid_hws": image_grid_hws}
+
+
 def _logits(output):
     if isinstance(output, torch.Tensor):
         return output
@@ -218,15 +275,18 @@ def run_rung(rung, device, preset="tiny", dtype="float32", batch=None,
     seq_len = seq_len if seq_len is not None else preset_seq
     max_layers = layers if layers is not None else max_layers
 
+    grid = None
     config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
     if kind == "vision2seq":
-        # The vision rung carries two configs; the text half is the rung below.
-        text = getattr(config, "text_config", None)
-        if text is not None:
-            _scale_config(text, scale, max_layers)
-        vision = getattr(config, "vision_config", None)
-        if vision is not None:
-            _scale_config(vision, scale, max_layers)
+        # The vision rung carries two configs, and the text half IS the rung
+        # below -- same DeepseekV3Config, same remote code.
+        _scale_config(config.text_config, scale, max_layers)
+        grid = _size_vision(config.vision_config, preset)
+        # MoonViT offers eager/sdpa/flash_attention_2 and this image has no
+        # flash_attn, so say eager rather than let the default pick.
+        config._attn_implementation = "eager"
+        config.vision_config._attn_implementation = "eager"
+        config.text_config._attn_implementation = "eager"
     else:
         _scale_config(config, scale, max_layers)
     config.use_cache = False
@@ -238,22 +298,38 @@ def run_rung(rung, device, preset="tiny", dtype="float32", batch=None,
     model = AutoModelForCausalLM.from_config(config, trust_remote_code=True).eval()
     model = model.to(dtype=_dtype_from_str(dtype))
 
-    vocab = getattr(config, "vocab_size", None) or getattr(config.text_config, "vocab_size")
+    text_config = getattr(config, "text_config", config)
+    vocab = text_config.vocab_size
     print(f"rung {rung}: {model_id}")
-    print("  hidden_size:", getattr(config, "hidden_size", "n/a"),
-          " layers:", getattr(config, "num_hidden_layers", "n/a"),
-          " heads:", getattr(config, "num_attention_heads", "n/a"),
-          " routed experts:", getattr(config, "n_routed_experts", "n/a"))
+    print("  hidden_size:", text_config.hidden_size,
+          " layers:", text_config.num_hidden_layers,
+          " heads:", text_config.num_attention_heads,
+          " routed experts:", getattr(text_config, "n_routed_experts", "n/a"))
+    if grid is not None:
+        print("  vision:", config.vision_config.hidden_size, "wide,",
+              config.vision_config.num_hidden_layers, "layers, grid", grid)
     print("  params:", sum(p.numel() for p in model.parameters()))
 
     cpu_ids = _build_inputs(batch, seq_len, vocab, torch.device("cpu"))
-    model_cpu = copy.deepcopy(model).cpu().eval()
-    cpu_out = _logits(model_cpu(cpu_ids))
+    extra = {}
+    if grid is not None:
+        cpu_ids, extra = _vision_inputs(config, cpu_ids, *grid)
 
-    model_npu = copy.deepcopy(model_cpu).to(device).eval()
+    # BOTH COPIES ARE TAKEN BEFORE EITHER RUNS. MoonViT's 2D rope caches its
+    # cis table in a plain attribute (`Rope2DPosEmb.freqs_cis`, not a buffer)
+    # on the device of the first call, so copying the npu model out of the
+    # already-run cpu model hands it a CPU complex64 table that `.to(device)`
+    # does not move -- and the multiply inside apply_rope then fails device
+    # inference before a kernel is ever emitted.
+    model_cpu = copy.deepcopy(model).cpu().eval()
+    model_npu = copy.deepcopy(model).to(device).eval()
+
+    cpu_out = _logits(model_cpu(cpu_ids, **extra))
+
     if compile_model:
         model_npu = torch.compile(model_npu, dynamic=False)
-    npu_out = _logits(model_npu(cpu_ids.to(device)))
+    npu_out = _logits(model_npu(cpu_ids.to(device),
+                                **{k: v.to(device) for k, v in extra.items()}))
 
     # Print the worst element whether or not it passes: the threshold says
     # pass/fail, this says how much room is left, and it is the number the
