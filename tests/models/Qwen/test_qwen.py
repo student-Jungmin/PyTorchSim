@@ -245,6 +245,24 @@ def _layer0(model):
     return body.layers[0]
 
 
+
+def _expert_count(block):
+    """How many experts this MoE block has, in either spelling.
+
+    A ModuleList of per-expert MLPs up to transformers 4.x; ONE fused module
+    from 5.x, holding `gate_up_proj` and `down_proj` as [experts, ...] tensors
+    with no `__len__`. The count is the same claim either way, and it is the
+    claim the preset makes -- but the SHAPE OF THE GRAPH IS NOT: eight experts
+    lower to eight MLPs in the first spelling and to one batched matmul in the
+    second, which is why the kernel counts in the docstring are stated against
+    the version they were measured on.
+    """
+    experts = block.experts
+    if hasattr(experts, "__len__"):
+        return len(experts)
+    return getattr(experts, "num_experts", None)
+
+
 def _assert_character(preset, cfg, model):
     """Fail if the model did not actually get the feature the preset claims.
 
@@ -294,13 +312,13 @@ def _assert_character(preset, cfg, model):
         block = layer.mlp
         assert hasattr(block, "shared_expert") and hasattr(block, "shared_expert_gate"), \
             "the 2-moe preset exists for the gated shared expert; this block has none"
-        assert len(block.experts) == p["experts"] and block.top_k == p["top_k"]
+        assert _expert_count(block) == p["experts"] and block.top_k == p["top_k"]
         assert block.norm_topk_prob is False, "Qwen1.5-MoE does not renormalise the top-k weights"
     if p["family"] == "qwen3_moe":
         block = layer.mlp
         assert not hasattr(block, "shared_expert"), \
             "Qwen3-MoE has no shared expert; if this block has one it is a Qwen2-MoE block"
-        assert len(block.experts) == p["experts"] and block.top_k == p["top_k"]
+        assert _expert_count(block) == p["experts"] and block.top_k == p["top_k"]
         assert block.norm_topk_prob is True, "Qwen3-MoE renormalises the top-k weights"
 
     if p.get("tie", False):
