@@ -370,7 +370,7 @@ def reduction_axes(numels):
 #: -- fused with a patch convolution, an addmm and a transpose -- keeps 41
 #: scratchpad globals live, and no constant that serves that kernel is tolerable
 #: for an ordinary reduction (it would cost three quarters of the tile). So
-#: codecache._shrink_reduction_blocks corrects it instead: tnpu measures the
+#: codecache._shrink_tile corrects it instead: tnpu measures the
 #: real usage, says by how much it is over, and the kernel is recompiled with a
 #: block divided by that ratio. Guessing low now costs one recompile rather than
 #: a failure, which is what makes 12 an acceptable guess rather than a bet.
@@ -851,11 +851,17 @@ def _tnpu_remainder_integer(a, b):
     return tl.where((remainder != 0) & ((a < 0) != (b < 0)),
                     remainder + b, remainder)
 
-# masked_scatter lowers to this: pick the one lane the mask selects along `dim`.
-# The bitcast to an unsigned integer of the same width is what makes a SUM able
-# to stand in for a select -- summing the masked payload as bits cannot round or
-# lose a float that tl.sum over the float itself might, and the mask is exactly
-# one-hot so no two lanes ever add. Keep the bitcasts.
+# Inductor's answer to "pick the one element the mask selects" -- a masked SUM
+# over the reduction axis, done on the BITS so it works for any dtype, not just
+# an addable one. Two paths reach it: Qwen2-VL's M-RoPE brought it in
+# (`mrope_section` selects one of three position bands per element), and
+# masked_scatter emits it as well, which is how Gemma 3's multimodal half and
+# PaliGemma arrive -- splicing image embeddings into a text sequence.
+#
+# KEEP THE BITCASTS. They are what lets a sum stand in for a select at all:
+# summing the payload as bits cannot round or lose a float the way a tl.sum
+# over the float itself might, and the mask is exactly one-hot so no two lanes
+# ever add.
 @triton.jit
 def _tnpu_select_one(x, mask, dim, keep_dims=False):
     idtype = tl.core.get_int_dtype(x.dtype.primitive_bitwidth, signed=False)

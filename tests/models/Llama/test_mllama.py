@@ -34,36 +34,32 @@ with a different class name. Its "26 ops, OK" says nothing about this file.
     python tests/models/Llama/test_mllama.py --part vision
     python tests/models/Llama/test_mllama.py --part text
 
-MEASURED 2026-08-13, triton-npu pinned to develop 3434608:
+MEASURED 2026-08-13, triton-npu 2988424:
 
     part    result  params      max diff    time
     vision  PASS    6,964,741   4.2915e-06  190s
-    text    FAIL    55,592,196  --          41s   stops in stage 4
+    text    PASS    55,592,196  3.4019e-06  360s
+    both    PASS    -- the gate, run with no arguments  487s
 
-The tower runs. Tiles, the local/global split and the aspect-ratio embedding
-all survive the route, so the vision side needs nothing from anyone.
+WHAT THE TEXT TOWER NEEDED, and it was this suite's kind of defect rather than
+anything about Mllama. The cross-attention layer leaves a unit middle axis --
+tensor<32x1x1024xf32> -- on a single-input elementwise generic whose two maps
+are both the identity. Absorbing the move drops that axis, and with no third
+operand naming the dim, linalg can no longer infer that loop's bound, so
+triton-npu's absorb_layout refused:
 
-WHERE THE TEXT SIDE STOPS, and it is not where this file's header guessed. The
-gate is fine: kernel 23 carries the same scalar tanh gate and compiles through
-all sixteen tnpu passes. Kernel 24 adds the mask and dies in p09_absorb_layout
-(triton-npu), on a linalg.generic whose two operands disagree about the middle
-iterator:
+    _Fatal: indexing map cannot take the move
 
-    indexing_maps = [ (d0,d1,d2) -> (d0,d1,d2)      the value
-                      (d0,d1,d2) -> (d0,d2) ]       the mask, broadcast over d1
-    iterator_types = [parallel, parallel, parallel]
-    (tensor<32x1024xf32>, tensor<32x1024xf32>) -> tensor<32x1024xf32>
+The bound it could not infer is 1. Fixed in triton-npu 2988424, which had to
+teach that to two places at once: dropping the last bare mention of a dim is
+exactly the condition that blinds the extent lookup, so the refusal and the
+cleanup below it went blind together. Relaxing only the refusal left
+iterator_types three long against maps naming two dims -- IR that does not
+verify, and that one-shot-bufferize segfaults on rather than declining.
 
-    tnpu.passes.p09_absorb_layout._Fatal: indexing map cannot take the move
-
-The body is an arith.select whose predicate ANDs a d2 bound with a d0 bound, so
-the mask is genuinely two-dimensional while the operand it multiplies is
-broadcast along d1. Two masks of different rank meeting in one layer was the
-risk this file was written to find, and this is it -- just one pass lower than
-expected, and owned by triton-npu rather than by anything here.
-
-STATUS: bring-up. --part vision passes; --part text does not, so the file stays
-out of scripts/ci/triton_route_passing.txt until both do.
+NOT the tanh gate the failing kernel's name advertised (..._select_tanh_24): a
+sibling kernel carries the same scalar gate and compiles through every pass.
+Measured by deletion, not read off the name.
 """
 
 import argparse

@@ -87,6 +87,35 @@
 #
 # Nothing was blocked: all three generations ran end to end on the first
 # attempt, with no backend change. The entry is a floor, not a fix.
+# test_mllama.py IS THE ONE THAT NEEDED A BACKEND FIX. Llama 3.2 Vision's
+# cross-attention decoder layer stopped in triton-npu's absorb_layout with
+# "indexing map cannot take the move": a single-input elementwise generic whose
+# move drops a unit middle axis, leaving no operand naming that dim, so linalg
+# could not infer the loop's bound -- which for a unit dim is 1. Fixed in
+# triton-npu 2988424, and the pin in thirdparty/triton-npu.json moves with it.
+# Both towers run: vision 4.2915e-06, text 3.4019e-06, 8m07s for the pair.
+# The vision width is NOT the real 1280 on purpose -- test_vit.py and
+# test_clip.py already gate ViT-shaped attention at 768, and what was unproven
+# was the tile structure and the local/global split, which scaling keeps.
+#
+# WHY tests/models/Qwen/test_qwen.py RUNS TWO PRESETS WHERE EVERY OTHER ENTRY
+# RUNS ONE. It gates a family, not a model: Qwen2/2.5 carry a QKV bias that no
+# other block in this suite has, Qwen3 drops it and adds an RMSNorm per head
+# over head_dim (q_norm/k_norm), and the two MoE lines differ from each other by
+# a gated shared expert. No single preset is the whole claim, so the default
+# runs `3-8b` (Qwen3 at its real 4096 width, 260M params, 19 kernels, 6.68e-06)
+# and `2-moe` (the QKV bias plus routed + shared-expert MoE, 36 kernels,
+# 2.42e-06) -- 519s for the no-argument run, on a machine that was running four
+# other model tests at the time. n_rep=7 at the real 7B width, Qwen3-MoE and the decoupled
+# head_dim are one `--preset` each and are not in the gate.
+#
+# AND WHAT IT COST TO GET THERE, since the entry would otherwise look free:
+# Qwen3's q_norm fuses with rope into a persistent reduction, 27 live
+# scratchpad tiles, 1625120 bytes/lane against a 131072 budget. The retry in
+# triton_backend/codecache.py halved R0_BLOCK, which a persistent reduction
+# bakes into its own body -- so 128, 8 and 1 all measured the SAME overflow and
+# the kernel was refused. It now shrinks only a block the kernel takes as an
+# argument, XBLOCK when a reduction takes none.
 tests/models/BERT/test_bert.py
 tests/models/DeepSeek/test_deepseek_v3_base.py
 tests/models/Diffusion/test_diffusion.py
@@ -95,8 +124,10 @@ tests/models/GPT2/test_gpt2.py
 tests/models/Llama/test_llama.py
 tests/models/Llama/test_llama3.py
 tests/models/Llama/test_llama3x.py
+tests/models/Llama/test_mllama.py
 tests/models/Mixtral8x7B/test_mistral.py
 tests/models/MobileNet/test_mobilenet.py
+tests/models/Qwen/test_qwen.py
 tests/models/Yolov5/test_yolov5.py
 tests/models/test_clip.py
 tests/models/test_convnextv2.py
