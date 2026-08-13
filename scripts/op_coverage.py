@@ -187,6 +187,71 @@ def build_gemma3(batch=1, seq_len=32, dtype=torch.float32):
     return _build_lm(cfg, Gemma3TextModel, batch, seq_len, dtype)
 
 
+def _build_vlm(cfg, ModelCls, batch, seq_len, dtype, image_token_index,
+               n_image_tokens, image_size):
+    """Shared helper for a vision-language model: tokens WITH image placeholders,
+    plus the pixel_values those placeholders stand for.
+
+    The text builders above make `input_ids` only, which is why every
+    multimodal entry in this file used to scan its text branch alone. A VLM
+    refuses a forward unless the count of image-placeholder tokens in
+    `input_ids` matches what the vision tower will produce, so the caller passes
+    that count rather than guessing: it is patches for PaliGemma and
+    `mm_tokens_per_image` for Gemma 3, which are not the same number in general.
+    Tokens start at 10 so a random one cannot collide with the placeholder.
+    """
+    model = ModelCls(cfg).eval().to(dtype=dtype)
+    vocab = cfg.text_config.vocab_size
+    input_ids = torch.randint(10, vocab, (batch, seq_len))
+    input_ids[:, :n_image_tokens] = image_token_index
+    pixel_values = torch.randn(batch, 3, image_size, image_size, dtype=dtype)
+    return model, {"input_ids": input_ids, "pixel_values": pixel_values}
+
+
+def build_gemma3_mm(batch=1, seq_len=32, dtype=torch.float32):
+    # Gemma 3's multimodal half: a SigLIP tower in front of the text tower that
+    # `gemma3` already scans. What is new here is the tower and the projector,
+    # not the decoder.
+    from transformers import Gemma3Config, Gemma3ForConditionalGeneration
+    text = dict(vocab_size=512, hidden_size=128, intermediate_size=256,
+                num_hidden_layers=2, num_attention_heads=2, num_key_value_heads=1,
+                head_dim=64, sliding_window=8, sliding_window_pattern=2,
+                rope_theta=1000000.0, rope_local_base_freq=10000.0,
+                use_cache=False, cache_implementation=None)
+    vision = dict(hidden_size=64, intermediate_size=128, num_hidden_layers=2,
+                  num_attention_heads=2, image_size=32, patch_size=16)
+    cfg = Gemma3Config(text_config=text, vision_config=vision,
+                       mm_tokens_per_image=4, image_token_index=7,
+                       torch_dtype=dtype)
+    cfg._attn_implementation = "eager"
+    return _build_vlm(cfg, Gemma3ForConditionalGeneration, batch, seq_len, dtype,
+                      image_token_index=7, n_image_tokens=4, image_size=32)
+
+
+def build_paligemma(batch=1, seq_len=32, dtype=torch.float32):
+    # PaliGemma is a SigLIP tower in front of a GEMMA 1 text tower, so against
+    # gemma3_mm it isolates the tower from the Gemma 3 decoder's own novelties.
+    from transformers import PaliGemmaConfig, PaliGemmaForConditionalGeneration
+    text = dict(vocab_size=512, hidden_size=128, intermediate_size=256,
+                num_hidden_layers=2, num_attention_heads=2, num_key_value_heads=1,
+                head_dim=64, use_cache=False)
+    vision = dict(hidden_size=64, intermediate_size=128, num_hidden_layers=2,
+                  num_attention_heads=2, image_size=32, patch_size=16)
+    cfg = PaliGemmaConfig(text_config=text, vision_config=vision,
+                          image_token_index=7, projection_dim=128,
+                          torch_dtype=dtype)
+    cfg._attn_implementation = "eager"
+    # PaliGemma emits one token per patch, unpooled: (32 // 16) ** 2 == 4.
+    return _build_vlm(cfg, PaliGemmaForConditionalGeneration, batch, seq_len, dtype,
+                      image_token_index=7, n_image_tokens=4, image_size=32)
+
+
+# ShieldGemma 2 is deliberately absent. It is ShieldGemma2ForImageClassification
+# wrapping Gemma 3 with a classification head -- a checkpoint and a head, not an
+# architecture -- so its op set is gemma3_mm's and scanning it would add a row
+# that repeats one already here.
+
+
 def build_recurrent_gemma(batch=1, seq_len=32, dtype=torch.float32):
     # RecurrentGemma is a Gemma checkpoint family but NOT a Gemma block: it is
     # Griffin, a linear recurrence interleaved with local attention. Scanned
@@ -331,6 +396,8 @@ BUILDERS = {
     "qwen3": build_qwen3,
     "qwen3_moe": build_qwen3_moe,
     "gemma3": build_gemma3,
+    "gemma3_mm": build_gemma3_mm,
+    "paligemma": build_paligemma,
     "recurrent_gemma": build_recurrent_gemma,
     "deepseek_v3": build_deepseek_v3,
     "llama4": build_llama4,
@@ -417,6 +484,18 @@ def _extern_hint(tb_text):
     """
     m = EXTERN_RE.search(tb_text)
     return m.group(1) if m else None
+
+
+def _last_exception_line(tb_text):
+    """Last resort: the traceback's final line, which is the exception itself.
+
+    Not every stop is an op. RecurrentGemma's is a stage of the tnpu pipeline
+    refusing a command ("args must not exceed 2048 bytes") -- no aten token, no
+    extern kernel, no NotImplementedError -- and a summary that shrugs at that
+    is a summary you have to go around.
+    """
+    lines = [l.strip() for l in tb_text.strip().splitlines() if l.strip()]
+    return lines[-1][:70] if lines else None
 
 
 def parse_failure(tb_text):
@@ -514,7 +593,8 @@ def run_model(name, args, out_dir):
                 "status": "FAIL",
                 "ops": ops,
                 "fail_op": hits[0] if hits else (
-                    _extern_hint(tb) or (msg[:60] if msg else None) or "?"),
+                    _extern_hint(tb) or (msg[:60] if msg else None)
+                    or _last_exception_line(tb) or "?"),
                 "msg": msg,
             }
 
