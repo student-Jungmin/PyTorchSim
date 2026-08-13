@@ -85,13 +85,16 @@ def run_rotary_embedding_test(
         rope_theta=10000.0,
         tie_word_embeddings=True,
         torch_dtype=dtype,
-        transformers_version="4.43.4",
+        transformers_version="4.51.3",
         use_cache=True,
         vocab_size=8192,
         _attn_implementation = "sdpa"
     )
-    # Pass dim explicitly to avoid config parsing issues
-    base_rope = LlamaRotaryEmbedding(dim=head_dim, max_position_embeddings=cfg.max_position_embeddings, base=cfg.rope_theta, config=cfg)
+    # The config carries dim, max_position_embeddings and base. Passing them
+    # again as kwargs was the 4.43 spelling; transformers removed them, and the
+    # config path computes the same inv_freq. head_dim below stays because the
+    # test still shapes its own value tensor.
+    base_rope = LlamaRotaryEmbedding(config=cfg)
 
     cpu_rope = copy.deepcopy(base_rope)
 
@@ -157,7 +160,7 @@ def run_decoder_layer_test(
         rope_theta=10000.0,
         tie_word_embeddings=True,
         torch_dtype=dtype,
-        transformers_version="4.43.4",
+        transformers_version="4.51.3",
         use_cache=True,
         vocab_size=8192,
         _attn_implementation = "sdpa"
@@ -249,7 +252,7 @@ def run_custom_llama_test(
         rope_theta=10000.0,
         tie_word_embeddings=True,
         torch_dtype=dtype,
-        transformers_version="4.43.4",
+        transformers_version="4.51.3",
         use_cache=True,
         vocab_size=8192,
     )

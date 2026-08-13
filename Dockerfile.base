@@ -67,9 +67,21 @@ RUN python3.11 -m pip install --no-cache-dir \
 RUN python3.11 -m pip install --no-cache-dir triton==3.6.0
 
 # TorchSim Python dependencies (numpy pinned <2 for transformers/diffusers compat).
+#
+# transformers is pinned exactly rather than by upper bound: the model code the
+# tests build against ships inside it, so a float here changes what the suite
+# means. 4.51.3 is the floor for llama4 and mllama (Llama 3.2 Vision) and for
+# the qwen3, gemma3, glm4, olmo2, granite, phimoe and mamba2 builders already
+# registered in scripts/op_coverage.py, none of which existed at 4.43.
+#
+# One call site moved across the jump: LlamaRotaryEmbedding dropped its dim,
+# max_position_embeddings and base kwargs in favour of the config, which
+# tests/models/Llama/test_llama.py now uses. Everything else in the suite --
+# GPT-2, BERT, CLIP, SwinV2, ConvNeXtV2, the Llama 3.x shapes, and diffusers
+# 0.34.0's UNet -- constructs and runs unchanged.
 RUN python3.11 -m pip install --no-cache-dir \
     "numpy<2" onnx matplotlib scikit-learn pydot tabulate \
-    "transformers<4.44" diffusers==0.34.0 \
+    transformers==4.51.3 diffusers==0.34.0 \
     conan==1.56.0 cmake==3.26.4 && \
     python3.11 -m pip install --no-cache-dir --no-deps ultralytics && \
     python3.11 -m pip install --no-cache-dir opencv-python-headless pandas seaborn \
