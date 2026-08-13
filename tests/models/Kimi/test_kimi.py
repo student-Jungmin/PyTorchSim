@@ -352,6 +352,31 @@ def _vision_inputs(config, ids, grid_h, grid_w):
     return ids, {"pixel_values": pixel_values, "image_grid_hws": image_grid_hws}
 
 
+def _vision_inputs_thw(config, ids, grid_h, grid_w):
+    """The same image, in transformers' own spelling for this family.
+
+    `image_grid_thw` is (images, 3) with a time axis in front -- one frame for a
+    still image -- and the token count is prod(thw) over the merge kernel, which
+    `get_image_features` computes exactly that way. The placeholder is
+    `config.image_token_id` rather than a media_placeholder attribute.
+    """
+    vision = config.vision_config
+    ps = vision.patch_size
+    mh, mw = vision.merge_kernel_size
+    n_patches = grid_h * grid_w
+    n_tokens = n_patches // (mh * mw)
+
+    g = torch.Generator().manual_seed(1)
+    pixel_values = torch.randn(n_patches, 3, ps, ps, generator=g)
+    grid_thw = torch.tensor([[1, grid_h, grid_w]], dtype=torch.int64)
+
+    ids = ids.clone()
+    if ids.numel() < n_tokens + 1:
+        raise ValueError(f"seq_len {ids.numel()} is too short for {n_tokens} image tokens")
+    ids[:, 1:1 + n_tokens] = config.image_token_id
+    return ids, {"pixel_values": pixel_values, "image_grid_thw": grid_thw}
+
+
 def _logits(output):
     if isinstance(output, torch.Tensor):
         return output
@@ -376,9 +401,22 @@ def run_rung(rung, device, preset="tiny", dtype="float32", batch=None,
     grid = None
     config = _load_config(model_id, source)
     if kind == "image-text":
-        # Composite config, text half only: no image is passed, and its vision
-        # tower is not MoonViT so _size_vision has nothing to say about it.
+        # ITS VISION TOWER **IS** MoonViT, maintained inside transformers: the
+        # native kimi_k25 vision config carries Kimi-VL's numbers exactly --
+        # hidden 1152, 27 layers, 16 heads, intermediate 4304, patch 14, merge
+        # (2, 2). So the same sizing applies, and the same two constraints
+        # (head_dim a multiple of 4 for the 2D rope, an even grid for the
+        # merger). pixel_values has the same (patches, 3, patch, patch) layout;
+        # only the grid spelling differs -- thw here, hw in the Hub's Kimi-VL.
         _scale_config(getattr(config, "text_config", config), scale, max_layers)
+        grid = _size_vision(config.vision_config, preset)
+        # THE WIDTH IS STATED TWICE. `Kimi_K25MultimodalProjection` sizes its
+        # in_proj from `vision_config.hidden_size` but its pre_norm from the
+        # top-level `projection_hidden_size`, which carries the same 1152. Move
+        # one and the norm rejects the tower's output:
+        #   normalized_shape=[1152], but got input of size [4, 4, 128]
+        if hasattr(config, "projection_hidden_size"):
+            config.projection_hidden_size = config.vision_config.hidden_size
     elif kind == "vision2seq":
         # The vision rung carries two configs, and the text half IS the rung
         # below -- same DeepseekV3Config, same remote code.
@@ -419,7 +457,9 @@ def run_rung(rung, device, preset="tiny", dtype="float32", batch=None,
 
     cpu_ids = _build_inputs(batch, seq_len, vocab, torch.device("cpu"))
     extra = {}
-    if grid is not None:
+    if grid is not None and kind == "image-text":
+        cpu_ids, extra = _vision_inputs_thw(config, cpu_ids, *grid)
+    elif grid is not None:
         cpu_ids, extra = _vision_inputs(config, cpu_ids, *grid)
 
     # BOTH COPIES ARE TAKEN BEFORE EITHER RUNS. MoonViT's 2D rope caches its
