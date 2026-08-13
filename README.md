@@ -41,7 +41,8 @@ PyTorchSim **supports**:
 | ResNet-18 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | channel last format |
 | ResNet-50 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | channel last format |
 | MobileNet-v2 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/MobileNet/` (torchvision) |
-| YOLOv5 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/Yolov5/` |
+| YOLOv5 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/Yolov5/` — pretrained weights via torch.hub, and the only anchor-based YOLO head in the suite |
+| YOLO v5 / v8 (ultralytics parser) | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/Yolo/test_yolo.py` — one preset per version directory in `ultralytics/cfg/models`, built from YAML with random weights. v5 (C3+SPPF) and v8 (C2f) pass; `--version` also builds v3, v6, v9, v10, 11, 12, 26, each of which has a measured stopping point in the test docstring |
 | BERT | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ |  |
 | GPT-2 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ |  |
 | ViT | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/test_vit.py` |
