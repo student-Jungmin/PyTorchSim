@@ -113,8 +113,8 @@ def _spad_overflow(exc):
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
-def _shrink_reduction_blocks(meta, usage, budget):
-    """Divide every reduction block by enough to fit, in place. False if stuck.
+def _shrink_tile(meta, usage, budget):
+    """Divide the tile by enough to fit, in place. False if stuck.
 
     WHY THE BLOCK SIZE IS THE FREE VARIABLE AND THE BUFFER COUNT IS NOT.
     `fixed_config_for` sizes R0_BLOCK against a budget divided by
@@ -137,18 +137,51 @@ def _shrink_reduction_blocks(meta, usage, budget):
 
     `usage / budget` rounded up to a power of two, so an overshoot of 1.18x
     halves once and an overshoot of 5x goes straight to an eighth rather than
-    walking there. Only reduction blocks move: XBLOCK is the lane axis and
-    shrinking it would leave lanes idle without freeing a byte per lane.
+    walking there. A reduction block moves first: XBLOCK is usually the lane
+    axis, and shrinking it would leave lanes idle without freeing a byte.
+
+    ONLY A BLOCK THE KERNEL ACCEPTS AS AN ARGUMENT MOVES ANYTHING. A PERSISTENT
+    reduction -- Inductor's choice when r0_numel is small enough to hold the
+    whole reduction in one tile -- writes the block size into the kernel BODY:
+
+        @triton_heuristics.persistent_reduction(size_hints={'x': 1, 'r0_': 64})
+        def triton_npu_fused_copy__sort_40(..., XBLOCK : tl.constexpr):
+            R0_BLOCK: tl.constexpr = 64         # <- not an argument
+
+    so R0_BLOCK is absent from the signature and rewriting it here changes the
+    spec, recompiles, and produces THE SAME KERNEL.
+
+        measured   Qwen3's fused q_norm + rope, 27 scratchpad globals over a
+                   [XBLOCK, 128] tile (develop-e2e-qwen f8deeb3, where this
+                   was first diagnosed):
+                     R0_BLOCK 128 -> 8 -> 1  1625120 bytes/lane, all three
+                     XBLOCK   128 -> 64      fits
+
+        measured   Moonlight's MoE router sort at 16 experts, xnumel 1,
+                   r0_numel 64: R0_BLOCK 32 and 16 both 104224 bytes/lane.
+                   Same shape, and the same lever is the one that moves.
+
+    Hence: reduction blocks if the kernel takes any, XBLOCK only when it takes
+    none, and never both.
     """
     factor = 1
     while usage > budget * factor:
         factor *= 2
-    blocks = {k: v for k, v in (meta.get("fixed_config") or {}).items()
-              if k.startswith("R") and k.endswith("_BLOCK") and v and v > 1}
+    cfg = meta.get("fixed_config") or {}
+    signature = meta.get("signature") or {}
+
+    def _movable(names):
+        return {k: v for k, v in cfg.items()
+                if k in names and k in signature and v and v > 1}
+
+    blocks = _movable([k for k in cfg
+                       if k.startswith("R") and k.endswith("_BLOCK")])
+    if not blocks:
+        blocks = _movable(["XBLOCK"])
     if not blocks:
         return False
     for k, v in blocks.items():
-        meta["fixed_config"][k] = max(1, v // factor)
+        cfg[k] = max(1, v // factor)
     return True
 
 
@@ -208,14 +241,20 @@ def triton_npu_compile(src_code, meta, kernel_name):
                             "not what sizes it -- not retrying", kernel_name,
                             over[0])
                         raise
-                    if not _shrink_reduction_blocks(meta, *over):
+                    if not _shrink_tile(meta, *over):
                         raise
                     last_usage = over[0]
                     logger.info(
                         "[triton-npu] %s: %d bytes/lane over a budget of %d, "
                         "retrying with %s", kernel_name, over[0], over[1],
+                        # `XBLOCK` HAS NO UNDERSCORE, so `endswith("_BLOCK")`
+                        # printed every block EXCEPT the one _shrink_tile had
+                        # just moved -- and the unchanged R0_BLOCK next to it
+                        # read as "the retry did nothing". Measured on the
+                        # router sort: the line said {'R0_BLOCK': 64} while the
+                        # spec said XBLOCK 128 -> 64.
                         {k: v for k, v in meta["fixed_config"].items()
-                         if k.endswith("_BLOCK")})
+                         if k.endswith("BLOCK")})
             # The spec now records the block sizes that actually compiled, and
             # timing.store_meta above wrote the ones that did not. Restate it so
             # a standalone timing run launches the grid the ELF was built for.
