@@ -42,6 +42,7 @@ triton_shared with the i64 fix:
     tiny    Qwen2-VL      256         128      16      1,825,536    1.2517e-06
     tiny    Qwen2.5-VL    256         128      16      1,792,384    1.0729e-06
     2b      Qwen2-VL     1536        1280      64  114,652,928    4.2021e-06*
+    2b      Qwen2.5-VL   1536        1280      64  114,676,408    4.3809e-06*
 
     * with --eager-splice; see below.
 
