@@ -187,6 +187,26 @@ def build_gemma3(batch=1, seq_len=32, dtype=torch.float32):
     return _build_lm(cfg, Gemma3TextModel, batch, seq_len, dtype)
 
 
+def build_recurrent_gemma(batch=1, seq_len=32, dtype=torch.float32):
+    # RecurrentGemma is a Gemma checkpoint family but NOT a Gemma block: it is
+    # Griffin, a linear recurrence interleaved with local attention. Scanned
+    # here rather than tested because the recurrence is what would be new, and
+    # an op scan says whether it is reachable before a bring-up pays for it.
+    # block_types is given both kinds so the scan sees the recurrent block and
+    # the attention block, which is the whole point of the model.
+    from transformers.models.recurrent_gemma.configuration_recurrent_gemma import RecurrentGemmaConfig
+    from transformers.models.recurrent_gemma.modeling_recurrent_gemma import RecurrentGemmaModel
+    cfg = RecurrentGemmaConfig(
+        vocab_size=4096, hidden_size=1024, num_attention_heads=8, num_key_value_heads=1,
+        intermediate_size=3072, head_dim=128, num_hidden_layers=2,
+        block_types=("recurrent", "attention"),
+        attention_window_size=16,
+        max_position_embeddings=4096, rms_norm_eps=1e-6,
+        torch_dtype=dtype, use_cache=False, _attn_implementation="eager",
+    )
+    return _build_lm(cfg, RecurrentGemmaModel, batch, seq_len, dtype)
+
+
 def build_deepseek_v3(batch=1, seq_len=32, dtype=torch.float32):
     from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3Config
     from transformers.models.deepseek_v3.modeling_deepseek_v3 import DeepseekV3Model
@@ -311,6 +331,7 @@ BUILDERS = {
     "qwen3": build_qwen3,
     "qwen3_moe": build_qwen3_moe,
     "gemma3": build_gemma3,
+    "recurrent_gemma": build_recurrent_gemma,
     "deepseek_v3": build_deepseek_v3,
     "llama4": build_llama4,
     "glm4": build_glm4,
@@ -490,6 +511,21 @@ def main():
                    help="Skip NPU compile; just list aten ops per model (fast).")
     p.add_argument("--out-dir", default=None)
     args = p.parse_args()
+
+    # Phase 2 compiles for real, so it needs the route this project actually
+    # runs. Without TORCHSIM_TRITON_CODEGEN the MLIR route is selected instead,
+    # and against the pinned torch 2.10 it dies in the scheduler before it
+    # reaches any model:
+    #     MLIRScheduling.can_fuse_with_exceptions() takes 3 positional
+    #     arguments but 4 were given
+    # Every model then reports FAIL with no fail_op, which reads as "this model
+    # is unsupported" and is nothing of the kind -- gemma3 scored FAIL that way
+    # on the same afternoon its e2e test passed. Refuse rather than emit a
+    # column of results that mean the opposite of what they look like.
+    if not args.enumerate_only and os.environ.get("TORCHSIM_TRITON_CODEGEN") != "1":
+        p.error("phase 2 needs the Triton route: set TORCHSIM_TRITON_CODEGEN=1 "
+                "(source /workspace/tnpu-env.sh), or pass --enumerate-only to "
+                "list ops without compiling")
 
     ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = args.out_dir or os.path.join(
