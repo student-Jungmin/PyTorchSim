@@ -116,11 +116,30 @@ RUN python3.11 -m pip install --no-cache-dir triton==3.6.0
 #       4.x code. The way out is transformers' OWN deepseek_v3, which exists
 #       from 4.51 -- i.e. stop using trust_remote_code for this model.
 #
-#   tests/models/test_clip.py            THE BACKEND, on a graph only v5 emits.
+#   tests/models/test_clip.py            THE BACKEND, and the same at 4.57.6.
 #       Stage 6 refuses it by name: "llc spilled a vector register GROUP to the
 #       stack", with 2 x <32 x i64> live at the peak, 17 of 32 registers. Spike
 #       would die at stage 7 with an invalid spad address, so the refusal is
 #       correct and the work is real.
+#
+#       IT NEEDS TWO FIXES, NOT ONE, and that is why it is not done here.
+#       Measured on that kernel's spec directly, walking the reduction block:
+#
+#           R0_BLOCK 512, 256   the spill above
+#           R0_BLOCK 128        a DIFFERENT refusal -- 'vector.load' op most
+#                               minor memref dim must have unit stride, on a
+#                               memref<128xf32, strided<[128]>> that a
+#                               memref.subview took as a COLUMN of a
+#                               [128, 128] tile
+#           R0_BLOCK 64         compiles
+#
+#       So a spill-triggered shrink (the answer the spad overflow already gets)
+#       walks into the second one on its way down. The second is a missing
+#       contiguity test where the vector loop is marked (bank_vectorize) and
+#       sized (fit_to_hardware) -- a strided access wants a gather or a scalar
+#       loop. A minimal coverage kernel for it was attempted twice and BOTH
+#       PASSED, so it is not pinned yet; the reproduction is the CLIP kernel
+#       spec at R0_BLOCK 128.
 #
 # NOT SWITCHED HERE YET -- the pin below stays at 4.51.3 until the suite is
 # green under 5.15.0. 4.57.6 is the last 4.x and needs none of the new
