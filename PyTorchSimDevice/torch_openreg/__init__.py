@@ -19,6 +19,9 @@ torch.utils.generate_methods_for_privateuse1_backend(for_storage=True)
 sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
 import PyTorchSimFrontend.extension_config  # noqa: F401
 from PyTorchSimFrontend import extension_config as _extension_config
+# Above the route branch because it is not about the route: what an op falls
+# back TO is the CPU, whichever backend emits the kernels around it.
+import PyTorchSimFrontend.extension_decomposition  # noqa: F401
 from PyTorchSimFrontend.mlir.mlir_codegen_backend import ExtensionWrapperCodegen
 
 # Two mutually exclusive codegen routes for `npu`, chosen here because Inductor
