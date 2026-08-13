@@ -214,7 +214,13 @@ def collect_meta(kernel, kernel_name):
     constants = dict(triton_meta.get("constants") or {})
 
     roles = _roles(kernel)
-    arg_defs, _call_args, _precompile, _arg_types = kernel.args.python_argdefs()
+    arg_defs, _call_args, _precompile, arg_types = kernel.args.python_argdefs()
+
+    # A COMBO KERNEL HAS NO triton_meta ON THE OBJECT -- see
+    # `_signature_from_argdefs`. Fill only what is missing, so a kernel that
+    # does carry one keeps every token exactly as Inductor wrote it.
+    if not signature:
+        signature = _signature_from_argdefs(arg_defs, arg_types)
 
     args = []
     for a in arg_defs:
@@ -243,14 +249,19 @@ def collect_meta(kernel, kernel_name):
 
     return {
         "kernel_name": kernel_name,
-        "template_grid": _template_grid(kernel),
+        # TWO KINDS OF KERNEL STATE THEIR OWN GRID rather than leaving it to be
+        # derived from the numels: a template, which tiles with its own BLOCK_M
+        # and reads program_id directly, and a combo kernel, whose grid is the
+        # sum of the pieces it fused. Neither's numels answer the question. The
+        # key was also listed twice in this dict, which meant the first
+        # spelling never survived to be read.
+        "template_grid": _template_grid(kernel) or _combo_grid(kernel),
         "signature": {str(k): str(v) for k, v in signature.items()},
         "constants": {str(k): v for k, v in constants.items()},
         "args": args,
         "numels": numels,
         "inside_reduction": bool(getattr(kernel, "inside_reduction", False)),
         "fixed_config": fixed_config_for(kernel, numels, args),
-        "template_grid": _template_grid(kernel),
     }
 
 
@@ -286,6 +297,83 @@ def _template_grid(kernel):
             f"rather than falling back to the numels, which describe the output "
             f"tensor and not this kernel's iteration space.")
     return extents
+
+
+def _combo_grid(kernel):
+    """A ComboKernel's grid as (gridX, 1, 1), else None.
+
+    A COMBO KERNEL IS N KERNELS IN ONE, AND IT STATES ITS OWN GRID. Inductor
+    fuses independent small kernels horizontally -- `aten.cat` of twelve expert
+    outputs, `torch._foreach_*` over a parameter list -- into one @foreach
+    kernel that splits `program_id` into one range per piece:
+
+        num_xblocks_0 = tl.cdiv(5120, XBLOCK)
+        num_xblocks_1 = num_xblocks_0 + tl.cdiv(512, XBLOCK)   # twelve of these
+
+    So the launch is the SUM of the pieces' block counts, and `kernel.numels`
+    does not describe it -- there is no single iteration space. That is the same
+    situation a template kernel is in, which is why this answers in the shape
+    `_template_grid` does and rides the same `template_grid` path from here on.
+
+    `combo_grid_meta` is Inductor's own answer to the same question (it is what
+    the emitted `inductor_meta` carries), so this asks it rather than
+    reconstructing the ranges.
+    """
+    meta_fn = getattr(kernel, "combo_grid_meta", None)
+    if meta_fn is None:
+        return None
+    grid_meta = meta_fn()
+    xblock = (grid_meta.get("default_config") or {}).get("XBLOCK")
+    if not xblock:
+        return None
+    blocks = 0
+    for i in range(int(grid_meta.get("num_kernels", 0))):
+        n = grid_meta.get(f"xnumel_{i}")
+        if n is None:
+            return None
+        blocks += -(-int(n) // int(xblock))
+    return (blocks, 1, 1) if blocks else None
+
+
+def _signature_from_argdefs(arg_defs, arg_types):
+    """Triton signature tokens read off the ARG TYPES, for a kernel with no
+    `triton_meta`.
+
+    A ComboKernel builds its triton_meta as a local inside `codegen_kernel` and
+    writes it into the emitted source; it never lands on the object, so
+    `collect_meta`'s usual read comes back empty and every argument loses its
+    dtype. The types are still there -- `python_argdefs` returns one per arg,
+    from `V.graph.get_dtype` -- so the token is derivable, and derived here
+    rather than parsed back out of the generated text.
+    """
+    import torch
+
+    table = _dtype_tokens()
+    tokens = {}
+    for a, t in zip(arg_defs, arg_types):
+        if not isinstance(t, torch.dtype):
+            continue
+        token = table.get(t)
+        if token:
+            tokens[getattr(a, "name", str(a))] = token
+    return tokens
+
+
+#: torch dtype -> the pointer token triton's signature uses for it.
+_TORCH_DTYPE_TOKEN = None      # filled below, once torch is importable
+
+
+def _dtype_tokens():
+    global _TORCH_DTYPE_TOKEN
+    if _TORCH_DTYPE_TOKEN is None:
+        import torch
+        _TORCH_DTYPE_TOKEN = {
+            torch.float64: "*fp64", torch.float32: "*fp32",
+            torch.float16: "*fp16", torch.bfloat16: "*bf16",
+            torch.int64: "*i64", torch.int32: "*i32", torch.int16: "*i16",
+            torch.int8: "*i8", torch.uint8: "*u8", torch.bool: "*i1",
+        }
+    return _TORCH_DTYPE_TOKEN
 
 
 #: Parallel iteration prefixes, OUTERMOST first. Inductor's `x` is the
