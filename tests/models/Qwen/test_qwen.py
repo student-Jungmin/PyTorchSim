@@ -36,10 +36,29 @@ WHAT EACH VERSION ADDS, and why it needs its own preset:
              what makes the shared-expert path a tested difference rather than
              an assumed one.
 
-Qwen 1 (``QWenLMHeadModel``, 2023) is deliberately absent: it ships only as
-remote code on the Hub, it is not in ``transformers``, and its block is the
-1.5 block with a different rope/ln arrangement.  Adding it would mean
-trust_remote_code and a network fetch in CI for no new kernel.
+WHAT IS ABSENT, and what was measured about each rather than assumed:
+
+  * Qwen 1 (``QWenLMHeadModel``, 2023) ships only as remote code on the Hub.
+    Remote code IS supported here -- the DeepSeek-V3 test drives that path,
+    import shim and all -- so the cost is the network fetch in CI plus einops
+    and transformers_stream_generator, which nothing else needs.  It is also
+    NOT free of new lowering, which an earlier version of this note claimed:
+    against the Qwen2 block it brings aten::_safe_softmax, split, unbind and
+    tril.  It does not reach the backend at all today.  Its rotary cache is
+    built inside the remote modeling file and is not a registered buffer, so
+    ``.to(device)`` leaves it on the host and dynamo stops at "failed to run
+    FX node with fake tensors: mul(npu:0 (1,8,8,32), cpu (1,8,1,32))".
+  * Qwen2-VL and Qwen2.5-VL build and run on CPU from config alone (no
+    checkpoint), and compile 16 kernels here before stopping in triton_shared:
+    the ``masked_scatter`` that splices image embeddings into the text
+    sequence lowers to a ``tts.get_structured_state`` whose operand type that
+    pass rejects.  Getting that far needed ``triton_helpers.select_one``
+    vendored into kernel_spec (M-RoPE emits it); that is in this branch.
+  * Qwen2-Audio stops in tnpu's p13_bank_vectorize, on the check that counts
+    audio tokens against audio features: one operand is ONE_LANE and the other
+    is banked across 128 lanes.
+  * Qwen2.5-Coder / Math, QwQ and Qwen3-Embedding are the Qwen2 and Qwen3
+    classes at other shapes, so a preset here already describes them.
 
 ``_assert_character`` cashes each claim above against the built model.  Without
 it a preset can pass while proving nothing -- "qwen3 runs" is worth nothing if
