@@ -49,6 +49,7 @@ PyTorchSim **supports**:
 | Stable-diffusion v1 | 🤗 | ✅ |  |
 | Llama 2 / 3 / 3.1 / 3.2 (text) / 3.3 | 🤗 | ✅ | `tests/models/Llama/` — `test_llama3x.py` runs one block at the real 8B width (4096 hidden, head_dim 128, SwiGLU 14336) plus the 3.2 1B/3B shapes and 3.1's rope scaling. 3.3 is config-identical to 3.1 70B. Llama 3.2 Vision (Mllama) is not covered |
 | Qwen 1.5 / 2 / 2.5 / 3 | 🤗 | ✅ | `tests/models/Qwen/` — one block per version. `3-8b` runs Qwen3 at its real 4096 width (q_norm/k_norm, head_dim 128); `2.5-7b` at the real 7B width (QKV bias, n_rep=7). Qwen 1 (remote-code `QWenLMHeadModel`) is not covered |
+| Qwen2-VL / Qwen2.5-VL | 🤗 | ⚠️ | `tests/models/Qwen/test_qwen_vl.py` — runs end to end at reduced width (M-RoPE, 3D patchifier, image splice all exercised). The real vision width stops in the toolchain on transformers' image-token count check, not on the model. Needs triton_shared with the i64 `get_structured_state` fix |
 | Qwen1.5-MoE / Qwen3-MoE | 🤗 | ✅ | `tests/models/Qwen/test_qwen.py --preset 2-moe / 3-moe` — 8 experts instead of the shipped 60 and 128; the shared expert and its sigmoid gate are the tested difference |
 | DeepSeek-V3 (base) | 🤗 | ✅ | `tests/models/DeepSeek/` — several ops(e.g., gate ops) are not cycle-modeled |
 | SwinV2 | 🤗 | ✅ | `tests/models/test_swinv2.py` (shifted-window attention) |
