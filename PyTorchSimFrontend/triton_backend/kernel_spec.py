@@ -633,7 +633,7 @@ _HELPER_USE_RE = re.compile(r"\btriton_helpers\.(\w+)")
 _VENDORED_HELPERS = {"promote_to_tensor", "is_floating",
                      "minimum", "maximum", "min2", "max2", "any",
                      "welford_reduce", "welford_combine", "welford",
-                     "sort_with_index",
+                     "sort_with_index", "select_one",
                      "div_floor_integer", "remainder_integer"}
 
 _HELPERS_SRC = '''
@@ -851,6 +851,18 @@ def _tnpu_remainder_integer(a, b):
     return tl.where((remainder != 0) & ((a < 0) != (b < 0)),
                     remainder + b, remainder)
 
+# masked_scatter lowers to this: pick the one lane the mask selects along `dim`.
+# The bitcast to an unsigned integer of the same width is what makes a SUM able
+# to stand in for a select -- summing the masked payload as bits cannot round or
+# lose a float that tl.sum over the float itself might, and the mask is exactly
+# one-hot so no two lanes ever add. Keep the bitcasts.
+@triton.jit
+def _tnpu_select_one(x, mask, dim, keep_dims=False):
+    idtype = tl.core.get_int_dtype(x.dtype.primitive_bitwidth, signed=False)
+    ix = x.to(idtype, bitcast=True)
+    iy = tl.sum(ix * mask, dim, keep_dims=keep_dims)
+    return iy.to(x.dtype, bitcast=True)
+
 triton_helpers = _types.ModuleType("triton_helpers")
 triton_helpers.any = _tnpu_any
 triton_helpers.welford_reduce = _tnpu_welford_reduce
@@ -863,6 +875,7 @@ triton_helpers.maximum = _tnpu_maximum
 triton_helpers.min2 = _tnpu_min2
 triton_helpers.max2 = _tnpu_max2
 triton_helpers.sort_with_index = _tnpu_sort_with_index
+triton_helpers.select_one = _tnpu_select_one
 triton_helpers.div_floor_integer = _tnpu_div_floor_integer
 triton_helpers.remainder_integer = _tnpu_remainder_integer
 '''
