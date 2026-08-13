@@ -172,6 +172,24 @@ def triton_npu_compile(src_code, meta, kernel_name):
             with open(os.path.join(write_path, "kernel.py"), "w") as f:
                 f.write(src_code)      # the unmodified Inductor source
             timing.store_meta(write_path, meta)   # lets the timing step run standalone
+            # THE CORRECTION IS ONLY A CORRECTION IF THE NUMBER MOVES. Halving
+            # the reduction block is a guess about what the kernel keeps live,
+            # and for a kernel whose scratchpad is sized by something else the
+            # remeasured usage comes back IDENTICAL -- so the loop walks
+            # R0_BLOCK down to 1, paying one full recompile per step, and fails
+            # for the reason it already knew at the first retry.
+            #
+            #     measured   Moonlight at 16 experts, `sort_40` (the MoE
+            #                router): 104224 bytes/lane at R0_BLOCK 32 and
+            #                104224 again at 16, each measurement about eight
+            #                minutes because the sort's IR is 277 KB. Five more
+            #                steps were queued behind it.
+            #
+            # So a retry that does not reduce the usage ends it: the block size
+            # is not this kernel's free variable, and the caller gets the spad
+            # overflow with the kernel's name on it instead of forty minutes
+            # later.
+            last_usage = None
             while True:
                 kernel_spec.write_spec_file(src_code, meta, spec_path,
                                             tnpu_bridge.tnpu_dir())
@@ -181,8 +199,18 @@ def triton_npu_compile(src_code, meta, kernel_name):
                     break
                 except tnpu_bridge.TnpuError as exc:
                     over = _spad_overflow(exc)
-                    if over is None or not _shrink_reduction_blocks(meta, *over):
+                    if over is None:
                         raise
+                    if last_usage is not None and over[0] >= last_usage:
+                        logger.info(
+                            "[triton-npu] %s: %d bytes/lane did not move when "
+                            "the reduction block was halved, so the block is "
+                            "not what sizes it -- not retrying", kernel_name,
+                            over[0])
+                        raise
+                    if not _shrink_reduction_blocks(meta, *over):
+                        raise
+                    last_usage = over[0]
                     logger.info(
                         "[triton-npu] %s: %d bytes/lane over a budget of %d, "
                         "retrying with %s", kernel_name, over[0], over[1],
