@@ -95,12 +95,32 @@ RUN python3.11 -m pip install --no-cache-dir triton==3.6.0
 # diffusers 0.34.0 asks for it only in its test and dev extras and its UNet
 # builds and runs under 5.15.0 (measured).
 #
-# THREE THINGS BREAK AT 5.15.0, all in code this repo owns:
-#   config.rope_scaling  -> rope_parameters   (Qwen2VLConfig and friends)
-#   MoE experts are a fused module, not a ModuleList, so `len(block.experts)`
-#   DeepSeek-V3's n_group/topk_group defaults changed shape
-# BERT, GPT-2, CLIP, SwinV2, ConvNeXtV2, Llama, Gemma and the diffusers UNet
-# all construct and run unchanged.
+# WHAT BREAKS AT 5.15.0, from running all 18 model tests on the Triton route
+# against an isolated 5.15.0 rather than from reading the changelog. 14 pass --
+# BERT, GPT-2, both Llama files plus test_llama.py, Mistral, MobileNet, YOLOv5,
+# SwinV2, ConvNeXtV2, ResNet, ViT, Transformer and SD1.5, the last at its usual
+# 18 minutes. Four fail, and they are four different kinds of thing:
+#
+#   tests/models/Qwen/test_qwen.py       OURS. A MoE block's experts are a
+#       fused `Qwen2MoeExperts` module now, not a ModuleList, so the character
+#       assert's `len(block.experts)` raises. One line, and it can be written
+#       to hold on both versions.
+#
+#   tests/models/Qwen/test_qwen_vl.py    OURS, and more than a line. The VL
+#       configs are restructured: `Qwen2VLConfig.hidden_size` is gone (it lives
+#       under text_config) and `rope_scaling` is `rope_parameters`.
+#
+#   tests/models/DeepSeek/...            NOT OURS AND NOT FIXABLE HERE. The
+#       Hub's remote modeling file imports `is_torch_fx_available` from
+#       transformers.utils.import_utils, which v5 removed. That file is pinned
+#       4.x code. The way out is transformers' OWN deepseek_v3, which exists
+#       from 4.51 -- i.e. stop using trust_remote_code for this model.
+#
+#   tests/models/test_clip.py            THE BACKEND, on a graph only v5 emits.
+#       Stage 6 refuses it by name: "llc spilled a vector register GROUP to the
+#       stack", with 2 x <32 x i64> live at the peak, 17 of 32 registers. Spike
+#       would die at stage 7 with an invalid spad address, so the refusal is
+#       correct and the work is real.
 #
 # NOT SWITCHED HERE YET -- the pin below stays at 4.51.3 until the suite is
 # green under 5.15.0. 4.57.6 is the last 4.x and needs none of the new
