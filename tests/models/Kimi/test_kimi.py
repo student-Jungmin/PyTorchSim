@@ -91,13 +91,71 @@ sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspa
 from _pytorchsim_utils import test_result
 
 
-#: Rung -> (model id, auto class). Release order; climb it in this order.
+#: Rung -> (model id, kind, remote). Release order; climb it in this order.
+#:
+#: `remote` IS WHERE THE MODEL CODE COMES FROM, and on transformers 5 it decides
+#: whether the rung runs at all. The Hub files these repos ship are 4.x code:
+#: they import `is_torch_fx_available` from transformers.utils.import_utils,
+#: which v5 removed, so `trust_remote_code=True` fails at import before a config
+#: is built. Where transformers implements the architecture itself, the
+#: maintained implementation is the one to use -- and it is the same network:
+#: Moonlight's config says model_type deepseek_v3, which transformers has had
+#: since 4.51.
+#:
+#:     kimi_k25       native   (Kimi K2.5, and it is the newest rung here)
+#:     deepseek_v3    native   (Moonlight, and Kimi-VL's language half)
+#:     kimi_vl        remote   MoonViT has no transformers implementation
+#:     kimi_k2        remote   but the architecture IS deepseek_v3
+#:     kimi_linear    remote   KDA has no transformers implementation
 _RUNGS = {
-    "moonlight":   ("moonshotai/Moonlight-16B-A3B-Instruct",   "causal-lm"),
-    "kimi-vl":     ("moonshotai/Kimi-VL-A3B-Instruct",         "vision2seq"),
-    "kimi-k2":     ("moonshotai/Kimi-K2-Instruct",             "causal-lm"),
-    "kimi-linear": ("moonshotai/Kimi-Linear-48B-A3B-Instruct", "causal-lm"),
+    "moonlight":   ("moonshotai/Moonlight-16B-A3B-Instruct",   "causal-lm",  "native"),
+    "kimi-vl":     ("moonshotai/Kimi-VL-A3B-Instruct",         "vision2seq", "remote"),
+    "kimi-k2":     ("moonshotai/Kimi-K2-Instruct",             "causal-lm",  "deepseek_v3"),
+    "kimi-linear": ("moonshotai/Kimi-Linear-48B-A3B-Instruct", "causal-lm",  "remote"),
+    # K2.5 IS A VISION-LANGUAGE MODEL and transformers registers it under
+    # AutoModelForImageTextToText, not AutoModelForCausalLM. This rung runs its
+    # TEXT half only for now -- no pixel_values -- so what it adds over kimi-k2
+    # is the 2026 config, not the tower.
+    "kimi-k25":    ("moonshotai/Kimi-K2.5",                    "image-text", "kimi_k25"),
 }
+
+
+def _load_config(model_id, source):
+    """The rung's config, from whichever implementation can build it.
+
+    THREE SOURCES, AND THE THIRD IS THE INTERESTING ONE.
+
+      native        the model_type is one transformers implements
+                    (Moonlight says deepseek_v3, which it has had since 4.51)
+      remote        the Hub file, for an architecture transformers does not
+                    have -- MoonViT, KDA. On transformers 5 these repos'
+                    files are 4.x code and fail at import.
+      <model_type>  REBUILT on a native config class. Kimi K2 is DeepSeek-V3
+                    with different numbers -- same key names, same meanings,
+                    kv_lora_rank / qk_nope_head_dim / n_routed_experts and the
+                    rest -- so its config.json is read as data and handed to
+                    DeepseekV3Config. That keeps what the rung is about (7168
+                    wide, 384 experts, noaux_tc) without running 4.x-only code
+                    to get it.
+
+    The rebuild drops the keys that name the remote implementation --
+    `auto_map`, `architectures`, `model_type` -- and keeps every other value.
+    """
+    from transformers import AutoConfig
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+
+    if source in ("native", "remote"):
+        return AutoConfig.from_pretrained(model_id,
+                                          trust_remote_code=(source == "remote"))
+
+    import json
+    from transformers.utils import cached_file
+
+    with open(cached_file(model_id, "config.json")) as fh:
+        raw = json.load(fh)
+    for key in ("auto_map", "architectures", "model_type", "_name_or_path"):
+        raw.pop(key, None)
+    return CONFIG_MAPPING[source](**raw)
 
 #: preset -> (scale, layers, batch, seq_len). `scale` multiplies the widths and
 #: the expert counts; layers is an absolute cap. Two layers is the minimum that
@@ -208,24 +266,46 @@ def _scale_config(config, scale, max_layers):
         if hasattr(config, name) and getattr(config, name) is not None:
             setattr(config, name, _scaled(getattr(config, name), scale))
 
+    # WIDTHS A FUSED EXPERT MATMUL CAN ADDRESS. transformers 5.x runs the routed
+    # experts through `torch.nn.functional.grouped_mm` -- one batched matmul over
+    # the expert dimension instead of a loop of MLPs -- and that kernel wants
+    # strides that are a multiple of 16 bytes ("strides should be multiple of 16
+    # bytes"). Sixteen ELEMENTS covers both dtypes with one number. 4.51.3
+    # looped over per-expert MLPs and never asked. Measured and reasoned out in
+    # PyTorchSim 44814bd on the DeepSeek test, which is the same architecture.
+    for name in ("intermediate_size", "moe_intermediate_size",
+                 "shared_expert_intermediate_size"):
+        if hasattr(config, name) and getattr(config, name):
+            setattr(config, name, max(16, (int(getattr(config, name)) // 16) * 16))
+
     # The gate groups the experts, so the count has to stay a multiple of the
-    # group count -- a scale that breaks that divisibility fails inside the
-    # gate, not here.
+    # group count -- AND EVERY GROUP NEEDS TWO EXPERTS IN IT, because the group
+    # score is the sum of the top TWO experts in that group. A group of one asks
+    # topk for a second element that is not there ("selected index k out of
+    # range"). The group COUNT is what gives: shrinking it keeps both halves of
+    # the structure (several groups, a choice inside each) and leaves the expert
+    # count where the preset put it.
     n_group = getattr(config, "n_group", None) or getattr(config, "num_expert_group", None)
     if n_group and getattr(config, "n_routed_experts", None):
-        g = int(n_group)
-        config.n_routed_experts = max(g, ((config.n_routed_experts + g - 1) // g) * g)
+        g = max(1, min(int(n_group), max(1, int(config.n_routed_experts) // 2)))
+        config.n_routed_experts = max(2 * g, ((config.n_routed_experts + g - 1) // g) * g)
+        if hasattr(config, "n_group"):
+            config.n_group = g
+        if hasattr(config, "topk_group"):
+            config.topk_group = max(1, min(int(config.topk_group), g))
 
     if max_layers is not None and hasattr(config, "num_hidden_layers"):
         config.num_hidden_layers = max(1, min(int(max_layers), int(config.num_hidden_layers)))
 
-    # hidden_size has to stay divisible by the head count for the dense
-    # projections; MLA's own heads are sized by the head dims above.
+    # A MULTIPLE OF THE HEAD COUNT **AND** OF 16 ELEMENTS. The head count is for
+    # the dense projections (MLA's own heads are sized by the head dims above);
+    # the 16 is the same grouped_mm stride rule as the widths. Asked of the two
+    # together rather than of either alone, so both hold at once.
     if getattr(config, "num_attention_heads", 0):
-        config.hidden_size = max(
-            config.num_attention_heads,
-            (config.hidden_size // config.num_attention_heads) * config.num_attention_heads,
-        )
+        step = int(config.num_attention_heads)
+        while step % 16:
+            step *= 2
+        config.hidden_size = max(step, (config.hidden_size // step) * step)
     return config
 
 
@@ -287,15 +367,19 @@ def run_rung(rung, device, preset="tiny", dtype="float32", batch=None,
              seq_len=None, layers=None, compile_model=True, rtol=1e-3, atol=1e-3):
     from transformers import AutoConfig, AutoModelForCausalLM
 
-    model_id, kind = _RUNGS[rung]
+    model_id, kind, source = _RUNGS[rung]
     scale, max_layers, preset_batch, preset_seq = _PRESETS[preset]
     batch = batch if batch is not None else preset_batch
     seq_len = seq_len if seq_len is not None else preset_seq
     max_layers = layers if layers is not None else max_layers
 
     grid = None
-    config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
-    if kind == "vision2seq":
+    config = _load_config(model_id, source)
+    if kind == "image-text":
+        # Composite config, text half only: no image is passed, and its vision
+        # tower is not MoonViT so _size_vision has nothing to say about it.
+        _scale_config(getattr(config, "text_config", config), scale, max_layers)
+    elif kind == "vision2seq":
         # The vision rung carries two configs, and the text half IS the rung
         # below -- same DeepseekV3Config, same remote code.
         _scale_config(config.text_config, scale, max_layers)
@@ -313,7 +397,12 @@ def run_rung(rung, device, preset="tiny", dtype="float32", batch=None,
     # every run is a different network and the worst-element error wanders
     # across the threshold.
     torch.manual_seed(0)
-    model = AutoModelForCausalLM.from_config(config, trust_remote_code=True).eval()
+    auto_class = AutoModelForCausalLM
+    if kind == "image-text":
+        from transformers import AutoModelForImageTextToText
+        auto_class = AutoModelForImageTextToText
+    model = auto_class.from_config(
+        config, trust_remote_code=(source == "remote")).eval()
     model = model.to(dtype=_dtype_from_str(dtype))
 
     text_config = getattr(config, "text_config", config)
