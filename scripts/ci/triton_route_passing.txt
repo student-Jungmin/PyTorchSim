@@ -69,9 +69,15 @@
 # answered WRONG at max abs diff 1.31, because the MoE router fills with -inf
 # and scatters the top-k in and `_roles` gave that buffer a fresh allocation.
 # 8d8e2ed fixed it and tests/ops/misc/test_inplace_partial_write.py pins it.
-# 147,874,816 parameters, 30 kernels, 4.7684e-06, 7m53s at --preset small.
-# Thirty-five ops still run eager, mostly complex arithmetic that Inductor
-# declines to codegen at all; the entry gates the 30 kernels around them.
+# 147,874,816 parameters, 31 kernels, 4.7684e-06, 8m00s at --preset small.
+# Fifteen ops run eager, 11 fill_ and 4 topk; the complex rotary is NOT among
+# them any more -- extension_complex_to_real (84ad277), written against
+# DeepSeek-V2, covers Llama 4's complex path unchanged and took twenty calls off
+# that list. The gate is 1024 hidden on purpose: --preset scout builds Scout's
+# real 5120 width, compiles all 30 kernels, and dies in spike because tnpu's
+# wrapper doubles every buffer and the 1.25 GiB expert stack then fails to
+# calloc. That is a wrapper limit, not a model one, and it is written up in the
+# test's docstring.
 #
 # WHY tests/models/Qwen/test_qwen.py RUNS TWO PRESETS WHERE EVERY OTHER ENTRY
 # RUNS ONE. It gates a family, not a model: Qwen2/2.5 carry a QKV bias that no
@@ -103,15 +109,26 @@
 #
 # v5 (C3 + SPPF) and v8 (C2f) pass at 1.85e-05 and 1.15e-05 relative and are
 # the gate: 1128s for the no-argument run, measured the way the sweep runs it.
-# The other seven do not pass, and none of them is merely "not tried" -- each
-# has a measured stop, written out in the test's docstring:
-#   v6            stops in the DEVICE. Its ConvTranspose2d neck is not lowered
-#                 by Inductor, so it goes out as extern_kernels.convolution and
-#                 dispatches to convolution_overrideable, which
-#                 PyTorchSimDevice/csrc does not register. Same gap as
-#                 RecurrentGemma's conv1d, and v6 shows it is not 1-D specific.
-#   v3, v9        WERE wrong and now PASS (2.93e-06 and 1.15e-04), on a
-#                 triton_shared this repo does not yet pin. Both were one bug:
+# ALL NINE PASS. The other seven are out of the gate, not out of coverage, and
+# none of them was ever merely "not tried" -- each had a measured stop, written
+# out in the test's docstring, and each is fixed:
+#   v6            PASSES at 1.98e-05, 72 kernels, 498s. It had stopped in the
+#                 DEVICE: Inductor's conv lowering does not offer the Triton
+#                 template a transposed convolution, so its ConvTranspose2d
+#                 neck went out as extern_kernels.convolution and dispatched to
+#                 convolution_overrideable, which raises. Registering that op
+#                 would have been the wrong fix -- PyTorch's own
+#                 CompositeExplicitAutograd kernel for it IS the raise and an
+#                 alias key covers PrivateUse1, so the CPU fallback never gets
+#                 a turn, and a kernel would run the convolution on the host
+#                 and simulate nothing. Fixed by not emitting it:
+#                 triton_backend/inductor_templates.py rewrites a transposed
+#                 convolution as the direct one it is, wrapped around the
+#                 convolution lowering. OUT OF THE GATE ON RUNTIME -- 498s
+#                 would take the gate to about 1600s against an 1800s budget
+#                 already seen to swell to 1578s under load. It is the only
+#                 version here kept out by a budget rather than by a toolchain.
+#   v3, v9        PASS at 2.93e-06 and 1.15e-04. Both were one bug:
 #                 PtrState::rebuildAsGatherScatter zeroed the constant offset
 #                 that distinguishes a pool window's four loads, so the four
 #                 became one, CSE merged them and canonicalize folded the max
@@ -119,10 +136,7 @@
 #                 avg_pool returned (a+a+a+a)/4. Fixed in PSAL-POSTECH/
 #                 triton_shared b6c3e60 (1304 of 1311 dumped kernels
 #                 byte-identical after it; all 7 that changed are pools).
-#                 THEY ARE NOT GATED because setup/versions.env still pins
-#                 TRITON_SHARED_SHA 9017bd4e, which needs a prebuilt release to
-#                 move; on the pinned binary they still fail.
-#   v10 11 12 26  PASS now (2.64e-05, 1.25e-05, 2.67e-05, 5.65e-05) after TWO
+#   v10 11 12 26  PASS at 2.64e-05, 1.25e-05, 2.67e-05, 5.65e-05, after TWO
 #                 defects in the same kernel -- the PSA depthwise conv. It
 #                 SEGFAULTED on the old pin (fixed by triton-npu a616ea5, which
 #                 removed a p11 repair measured as never firing and which this
@@ -131,7 +145,18 @@
 #                 parameters: applyUnstructuredMask rebuilds the load as a
 #                 gather for its MASK, not its address, and divided the parked
 #                 `group` offset by the broadcast dim's stride of 0. Fixed in
-#                 triton_shared 99dc6bc. NOT GATED, same reason as v3 and v9.
+#                 triton_shared 99dc6bc. That defect has a far cheaper witness
+#                 than a PSA block, found while verifying v6: a plain
+#                 nn.Conv2d at groups > 1 WITH A BIAS. The convolution comes
+#                 out exact and the bias lands on the wrong channels --
+#                 channel c gets bias[c % (OUT_C // GROUPS)], so a depthwise
+#                 layer gets bias[0] everywhere. MobileNet-v2 does not see it
+#                 because its convolutions are bias=False.
+#
+# ADDING THE SEVEN TO THE GATE is a runtime decision, not a correctness one:
+# the six above cost 1652s + 384s + 1024s + 907s + 1252s + 1169s run separately,
+# which is several sweep budgets. Whoever adds them should split the file's
+# no-argument run rather than lengthen one job.
 #
 # THE PIN MOVED WITH THIS, and it is a MERGE rather than a bump. 2988424 (the
 # p09 unit-axis fix test_mllama.py is gated on) is NOT an ancestor of triton-npu
@@ -179,6 +204,7 @@ tests/ops/misc/test_complex_to_real.py
 tests/ops/misc/test_eager_to_compile_recursion.py
 tests/ops/misc/test_expert_mask.py
 tests/ops/misc/test_histc.py
+tests/ops/misc/test_inplace_partial_write.py
 tests/ops/misc/test_polar.py
 tests/ops/misc/test_widen_dtype.py
 tests/ops/reduce/test_batchnorm.py
