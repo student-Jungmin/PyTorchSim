@@ -104,6 +104,17 @@ for another's.
     3-1b            3      6    21 / 96  3.6955e-06   500s   25/100, 4.5896e-06
     3-mm            3      1    25 / 38  FAILS        169s   44/61, 1.0133e-06
     pali            1      1    25 / 38  FAILS        187s   42/59, 1.2517e-06
+    rg-2b           G      3    24 / 45  1.2159e-05   441s   did not reach the backend
+
+`rg-2b` is Griffin, marked G: a linear recurrence with a temporal conv1d where
+the other families put attention, and two layers in three are that recurrence.
+Its diff is a decade above the rest of the file, which is where a scan over the
+sequence would put it, but that is an observation and not a measured account.
+It reaches the backend at all because of two fixes made the same day -- torch's
+own conv1d_to_conv2d registered so the conv is lowered rather than sent to an
+extern kernel, and triton-npu d846ff4 so the fused block's 24 arguments fit the
+2048 bytes riscv-pk gives a guest's argv. Either one missing and it stops before
+a kernel runs.
 
 GEMMA 1 IS BIT-IDENTICAL ACROSS THE BUMP -- same kernels, same last digit, at
 all three widths.  Gemma 2 and 3 keep passing but fuse differently, and where a
@@ -245,6 +256,23 @@ _PRESETS = {
     # PaliGemma is the same SigLIP tower in front of a GEMMA 1 text tower, so
     # against 3-mm it separates the tower from Gemma 3's own decoder.  It emits
     # one token per patch, unpooled -- 4x4 = 16.
+    # RecurrentGemma-2B at its real width, THREE layers -- block_types cycles
+    # ("recurrent", "recurrent", "attention"), so three is one full period and
+    # anything less runs the recurrence without ever reaching the attention it
+    # alternates with.  The same rule that put Gemma 2 at two layers and Gemma 3
+    # at six.
+    #
+    # IT IS NOT A GEMMA BLOCK.  It is Griffin: a linear recurrence with a
+    # temporal conv1d where the other families put attention.  What it shares is
+    # the RMSNorm's (1 + w) offset and the GeGLU, which is why it belongs in
+    # this file at all, and the shared assertions cash both.  The conv1d is the
+    # reason it needs `conv1d_to_conv2d` registered; the fused block is what
+    # overran pk's argv buffer.
+    "rg-2b": dict(family="recurrentgemma", layers=3, hidden=2560, heads=10,
+                  kv_heads=10, head_dim=256, intermediate=7680, vocab=8192,
+                  seq=32, tie=True, window=8, lru_width=2560,
+                  block_types=("recurrent", "recurrent", "attention")),
+
     "pali": dict(family="paligemma", layers=1, hidden=256, heads=2, kv_heads=1,
                  head_dim=256, intermediate=512, vocab=1024, seq=32, tie=True,
                  vision=dict(hidden=384, intermediate=768, layers=2, heads=6,
@@ -264,6 +292,10 @@ _FAMILIES = {
     "gemma3_mm": ("transformers.models.gemma3.configuration_gemma3", "Gemma3Config",
                   "transformers.models.gemma3.modeling_gemma3",
                   "Gemma3ForConditionalGeneration", "Gemma3ForConditionalGeneration"),
+    "recurrentgemma": ("transformers.models.recurrent_gemma.configuration_recurrent_gemma",
+                       "RecurrentGemmaConfig",
+                       "transformers.models.recurrent_gemma.modeling_recurrent_gemma",
+                       "RecurrentGemmaModel", "RecurrentGemmaForCausalLM"),
     "paligemma": ("transformers.models.paligemma.configuration_paligemma", "PaliGemmaConfig",
                   "transformers.models.paligemma.modeling_paligemma",
                   "PaliGemmaForConditionalGeneration", "PaliGemmaForConditionalGeneration"),
@@ -422,7 +454,18 @@ def _build_config(preset, seq_len):
         attn_implementation="eager",
     )
 
-    if text_family == "gemma":
+    if text_family == "recurrentgemma":
+        # Griffin's own knobs. attention_window_size is the band on the ONE
+        # attention layer in each period, and it is shrunk to fit inside seq for
+        # the same reason Gemma 2/3's sliding_window is: shipped it is 2048, and
+        # at seq 32 a 2048-wide band is the whole row, so the local attention
+        # would be indistinguishable from full and the preset would prove
+        # nothing about it.
+        kwargs["attention_window_size"] = p["window"]
+        kwargs["lru_width"] = p["lru_width"]
+        kwargs["block_types"] = p["block_types"]
+        kwargs.pop("attention_bias", None)
+    elif text_family == "gemma":
         kwargs["rope_theta"] = 10000.0
     else:
         # The window is shrunk to fit inside seq on purpose; see the module
@@ -477,6 +520,41 @@ def _build_config(preset, seq_len):
     return cfg, seq_len
 
 
+def _layer_norm0(layer):
+    """The norm before the layer's first block, in either family.
+
+    Gemma 1/2/3 call it `input_layernorm`; RecurrentGemma splits the block into
+    a temporal half and a channel half and calls the first one
+    `temporal_pre_norm`. The claim being checked is the same either way -- that
+    it is a Gemma RMSNorm with the (1 + w) offset.
+    """
+    for name in ("input_layernorm", "temporal_pre_norm"):
+        if hasattr(layer, name):
+            return getattr(layer, name)
+    raise AttributeError(f"no leading norm on {type(layer).__name__}")
+
+
+def _layer_mixer(layer):
+    """What mixes across positions: attention, or Griffin's recurrence.
+
+    `self_attn` in the Gemma families. RecurrentGemma names it `temporal_block`
+    and it is a RecurrentGemmaRecurrentBlock on two layers out of three and a
+    RecurrentGemmaAttention on the third, which is the whole point of that
+    model.
+    """
+    for name in ("self_attn", "temporal_block"):
+        if hasattr(layer, name):
+            return getattr(layer, name)
+    raise AttributeError(f"no mixer on {type(layer).__name__}")
+
+
+def _layer_mlp(layer):
+    for name in ("mlp", "mlp_block"):
+        if hasattr(layer, name):
+            return getattr(layer, name)
+    raise AttributeError(f"no mlp on {type(layer).__name__}")
+
+
 def _text_body(model):
     """The stack of decoder layers, under whichever wrappers this model has."""
     body = _descend(model, "layers")
@@ -503,7 +581,13 @@ def _assert_character(preset, cfg, model, seq_len):
     full_cfg, cfg = cfg, _text_cfg(cfg)
     body = _text_body(model)
     layer = _layer0(model)
-    attn = layer.self_attn
+    attn = _layer_mixer(layer)
+    if not hasattr(attn, "q_proj"):
+        # Griffin's layer 0 is the recurrence, which has no projections to
+        # check. The attention claims below belong to the ONE layer in the
+        # period that has one, so find it rather than reading layer 0 twice.
+        attn = next((m for m in (_layer_mixer(l) for l in body.layers)
+                     if hasattr(m, "q_proj")), attn)
     n_rep = cfg.num_attention_heads // cfg.num_key_value_heads
     head_dim = getattr(cfg, "head_dim", None) or cfg.hidden_size // cfg.num_attention_heads
 
@@ -512,10 +596,12 @@ def _assert_character(preset, cfg, model, seq_len):
     # module rather than on the config, because the config cannot express it: a
     # zero weight that still passes the activation through is only visible in
     # the module's own arithmetic.
-    norm = layer.input_layernorm
+    norm = _layer_norm0(layer)
     norm_name = type(norm).__name__
-    assert norm_name.startswith("Gemma") and norm_name.endswith("RMSNorm"), \
-        f"expected a Gemma*RMSNorm, got {norm_name}; the (1 + w) offset is the point of this test"
+    # "Gemma" anywhere, not as a prefix: RecurrentGemmaRMSNorm carries the same
+    # (1 + w) offset and is the reason that family can share these assertions.
+    assert "Gemma" in norm_name and norm_name.endswith("RMSNorm"), \
+        f"expected a *Gemma*RMSNorm, got {norm_name}; the (1 + w) offset is the point of this test"
     probe = torch.ones(1, 1, cfg.hidden_size)
     with torch.no_grad():
         scaled = norm(probe)
@@ -524,12 +610,13 @@ def _assert_character(preset, cfg, model, seq_len):
          "a Llama-style x*w would return zeros here")
 
     assert attn.q_proj.bias is None, "Gemma has attention_bias=False; a bias here makes this a Qwen2 block"
-    assert type(layer.mlp).__name__.endswith("MLP")
+    mlp = _layer_mlp(layer)
+    assert type(mlp).__name__.endswith(("MLP", "Mlp"))
     for name in ("gate_proj", "up_proj", "down_proj"):
-        assert hasattr(layer.mlp, name), f"GeGLU needs {name}; this MLP is not gated"
-    act = type(layer.mlp.act_fn).__name__.lower()
+        assert hasattr(mlp, name), f"GeGLU needs {name}; this MLP is not gated"
+    act = type(mlp.act_fn).__name__.lower()
     assert "gelu" in act or "tanh" in act, \
-        f"the gated MLP must use a gelu, got {type(layer.mlp.act_fn).__name__}; silu here means this is a SwiGLU block"
+        f"the gated MLP must use a gelu, got {type(mlp.act_fn).__name__}; silu here means this is a SwiGLU block"
 
     # head_dim 256 is the reason the attention tiles differ from the rest of the
     # suite, so a preset that quietly fell back to hidden/heads proves nothing.
@@ -644,6 +731,30 @@ def _assert_character(preset, cfg, model, seq_len):
             "3-4b preset must run at the real Gemma3-4B width"
         assert cfg.num_hidden_layers < p["pattern"], \
             "3-4b is a width claim; if it ran a full period it would duplicate 3-1b's job at higher cost"
+
+    # -- Griffin: the recurrence, and the one attention it alternates with -----
+    if family == "recurrentgemma":
+        kinds = [type(_layer_mixer(l)).__name__ for l in body.layers]
+        assert cfg.num_hidden_layers == len(p["block_types"]), \
+            (f"block_types cycles every {len(p['block_types'])} layers, so that is "
+             f"the period; got {cfg.num_hidden_layers} layers")
+        assert any("Recurrent" in k for k in kinds), \
+            f"a RecurrentGemma preset must run the recurrence; got {kinds}"
+        assert any("Attention" in k for k in kinds), \
+            ("the period exists because the recurrence ALTERNATES with attention; "
+             f"without one this preset is a recurrence-only model: {kinds}")
+        # The band on that attention layer, same guard as Gemma 2/3's window.
+        win = cfg.attention_window_size
+        assert win < seq_len, \
+            (f"attention_window_size ({win}) must be strictly inside seq ({seq_len}); "
+             "the shipped 2048 at seq 32 is the whole row and tests nothing")
+        # The temporal conv1d is what needs conv1d_to_conv2d registered. It is
+        # the reason this model reached the backend at all, so it is asserted
+        # rather than assumed.
+        rec = next(m for m, k in zip((_layer_mixer(l) for l in body.layers), kinds)
+                   if "Recurrent" in k)
+        assert hasattr(rec, "conv_1d"), \
+            "Griffin's recurrent block convolves along time; no conv_1d here"
 
     # -- multimodal: the tower, the projector, and the splice ------------------
     if _is_vlm(preset):
