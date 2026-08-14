@@ -5,12 +5,14 @@ Reads `togsim_results/*.log` -- no re-run and no `--log_level trace` needed, sin
 the periodic `Core stat` blocks every `core_stats_print_period_cycles` already carry
 the whole time series. For per-instruction Gantt detail use `trace_timeline.py`.
 
-Compile wall clock comes from the tnpu `timing.json` each kernel workdir holds, and
-is joined to a run by the `triton_<hash>` beside its `trace_so`.
+Compile wall clock comes from the tnpu `timing.json` each kernel workdir holds,
+joined to a run by the `triton_<hash>` beside its `trace_so`. A PyTorchSim
+`breakdown.json` (TORCHSIM_BREAKDOWN=1) adds Spike, gem5 and TOGSim on top.
 
 Usage:
   python scripts/util_viewer.py togsim_results -o util.html
   python scripts/util_viewer.py togsim_results --timing outputs -o util.html
+  python scripts/util_viewer.py togsim_results --breakdown outputs -o util.html
 """
 import argparse
 import glob
@@ -219,6 +221,65 @@ def find_timing(roots):
     return out
 
 
+def read_breakdown(path):
+    """Load one PyTorchSim breakdown.json, or None if it is unreadable."""
+    try:
+        with open(path) as fh:
+            rec = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return rec if isinstance(rec, dict) and rec.get("components") else None
+
+
+def find_breakdowns(roots):
+    """Collect every PyTorchSim breakdown.json under the given roots."""
+    out = []
+    for root in roots:
+        if os.path.isdir(root):
+            files = glob.glob(os.path.join(root, "**", "breakdown.json"), recursive=True)
+        elif os.path.basename(root) == "breakdown.json":
+            files = [root]
+        else:
+            files = glob.glob(root)
+        for f in sorted(files):
+            rec = read_breakdown(f)
+            if rec:
+                out.append(dict(rec, path=os.path.abspath(f)))
+    return out
+
+
+def breakdown_groups(rec):
+    """Fold a breakdown's components into tnpu/spike/gem5/togsim plus elsewhere."""
+    groups = {}
+    for comp, e in (rec.get("components") or {}).items():
+        g = comp.split("/")[0]
+        cur = groups.setdefault(g, {"calls": 0, "seconds": 0.0, "parts": []})
+        cur["calls"] += e["calls"]
+        cur["seconds"] += e["seconds"]
+        cur["parts"].append({"name": comp, "calls": e["calls"], "seconds": e["seconds"]})
+    wall = rec.get("wall") or 0.0
+    elsewhere = wall - (rec.get("measured") or 0.0)
+    order = [g for g in ("tnpu", "spike", "gem5", "togsim") if g in groups]
+    order += [g for g in sorted(groups) if g not in order]
+    out = [dict(groups[g], name=g) for g in order]
+    if elsewhere > 0:
+        out.append({"name": "elsewhere", "calls": 0, "seconds": elsewhere, "parts": []})
+    return out
+
+
+def timing_from_breakdowns(breakdowns):
+    """Pull the tnpu compile records a breakdown embeds, keyed by kernel label."""
+    out = {}
+    for bd in breakdowns:
+        for e in bd.get("tnpu") or []:
+            if e.get("kind", "compile") != "compile":
+                continue
+            rec = e.get("timing")
+            if isinstance(rec, dict) and rec.get("stages"):
+                out.setdefault(e.get("kernel") or rec.get("label"), rec)
+    return out
+
+
 def merge_timing(records):
     """Sum per-kernel tnpu records into one of the same shape, in stage order."""
     stages, passes, tools, order = {}, {}, {}, []
@@ -264,7 +325,7 @@ def collect(paths):
     return runs
 
 
-def build_payload(runs, timing=None):
+def build_payload(runs, timing=None, breakdowns=None):
     """Shape parsed runs into the JSON the page renders from, collapsing replays."""
     timing = timing or {}
     items, seen = [], {}
@@ -309,8 +370,23 @@ def build_payload(runs, timing=None):
             orphans.append(len(records))
             records.append(dict(rec, workdir=wd, kernel=rec.get("label") or os.path.basename(wd)))
     merged = merge_timing(records) if records else None
+
+    per_kernel = {}
+    for bd in breakdowns or []:
+        for label, comps in (bd.get("kernels") or {}).items():
+            acc = per_kernel.setdefault(label, {})
+            for comp, dt in comps.items():
+                acc[comp] = acc.get(comp, 0.0) + dt
+    for item in items:
+        label = records[item["timing"]].get("label") if item["timing"] is not None else None
+        item["wall"] = per_kernel.get(label) if label else None
+
+    bds = [{"path": bd.get("path", ""), "wall": bd.get("wall") or 0.0,
+            "measured": bd.get("measured") or 0.0, "kernels": len(bd.get("kernels") or {}),
+            "groups": breakdown_groups(bd)} for bd in (breakdowns or [])]
     return {"runs": items, "logs": len(runs),
-            "timing": {"records": records, "merged": merged, "orphans": orphans}}
+            "timing": {"records": records, "merged": merged, "orphans": orphans},
+            "breakdowns": bds}
 
 
 _PAGE_HEAD = """<title>TOGSim Utilization</title>
@@ -471,11 +547,11 @@ _PAGE_BODY = r"""
     <div class="seg" id="ct-seg"></div>
     <div class="ct-grid">
       <div>
-        <h3>Pipeline stages</h3>
+        <h3 id="ct-h-left">Pipeline stages</h3>
         <div class="chart-scroll"><svg id="ct-stage" width="500" height="10"></svg></div>
       </div>
       <div>
-        <h3>Passes and tools</h3>
+        <h3 id="ct-h-right">Passes and tools</h3>
         <div class="chart-scroll"><svg id="ct-pass" width="500" height="10"></svg></div>
       </div>
     </div>
@@ -825,6 +901,7 @@ function drawTable() {
 }
 
 const TIMING = DATA.timing || {records: [], merged: null, orphans: []};
+const BREAKDOWNS = DATA.breakdowns || [];
 let ctScope = 'kernel';
 
 function secs(v) { return v >= 10 ? v.toFixed(1) + 's' : v.toFixed(2) + 's'; }
@@ -862,23 +939,50 @@ function ctRecord() {
 
 function drawCompile() {
   const card = document.getElementById('ct-card');
-  if (!TIMING.records.length) { card.style.display = 'none'; return; }
+  if (!TIMING.records.length && !BREAKDOWNS.length) { card.style.display = 'none'; return; }
   card.style.display = '';
   const r = RUNS[sel], has = r && r.timing != null;
   const seg = document.getElementById('ct-seg');
   if (!has && ctScope === 'kernel') ctScope = 'all';
+  if (ctScope === 'run' && !BREAKDOWNS.length) ctScope = 'all';
   seg.innerHTML =
     `<button data-s="kernel" aria-pressed="${ctScope === 'kernel'}"` +
     `${has ? '' : ' disabled'}>This kernel</button>` +
     `<button data-s="all" aria-pressed="${ctScope === 'all'}">` +
-    `All ${TIMING.records.length} compiles</button>`;
+    `All ${TIMING.records.length} compiles</button>` +
+    (BREAKDOWNS.length ? `<button data-s="run" aria-pressed="${ctScope === 'run'}">` +
+      `Whole run</button>` : '');
   seg.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
     ctScope = b.dataset.s; drawCompile();
   }));
 
-  const rec = ctRecord();
   const note = document.getElementById('ct-note');
   const stageSvg = freshSvg('ct-stage'), passSvg = freshSvg('ct-pass');
+  const hLeft = document.getElementById('ct-h-left');
+
+  if (ctScope === 'run') {
+    hLeft.textContent = 'Where the wall clock went';
+    const wall = BREAKDOWNS.reduce((a, b) => a + b.wall, 0);
+    const kern = BREAKDOWNS.reduce((a, b) => a + b.kernels, 0);
+    note.innerHTML = `Wall clock of ${BREAKDOWNS.length} instrumented run(s): ` +
+      `${secs(wall)} over ${kern} kernel(s). Components are self time, so a simulator ` +
+      `nested inside another is not counted twice; <b>elsewhere</b> is torch, Inductor ` +
+      `and Python. Written by TORCHSIM_BREAKDOWN=1.`;
+    const acc = {};
+    BREAKDOWNS.forEach(b => b.groups.forEach(g => {
+      acc[g.name] = (acc[g.name] || 0) + g.seconds;
+    }));
+    hbars(stageSvg, Object.entries(acc), wall);
+    const parts = {};
+    BREAKDOWNS.forEach(b => b.groups.forEach(g => g.parts.forEach(pt => {
+      parts[pt.name] = (parts[pt.name] || 0) + pt.seconds;
+    })));
+    hbars(passSvg, Object.entries(parts), wall, 14);
+    return;
+  }
+  hLeft.textContent = 'Pipeline stages';
+
+  const rec = ctRecord();
   if (!rec) { note.textContent = 'No tnpu timing.json for this kernel.'; return; }
 
   const total = rec.total || 0;
@@ -944,10 +1048,15 @@ def main(argv=None):
     ap.add_argument("--timing", nargs="*", default=None, metavar="ROOT",
                     help="extra roots to scan for tnpu timing.json; the workdir beside "
                          "each log's trace_so is always checked")
+    ap.add_argument("--breakdown", nargs="*", default=None, metavar="ROOT",
+                    help="roots to scan for PyTorchSim breakdown.json (TORCHSIM_BREAKDOWN=1), "
+                         "which adds Spike, gem5 and TOGSim wall clock")
     args = ap.parse_args(argv)
 
     runs = collect(args.paths or ["togsim_results"])
+    breakdowns = find_breakdowns(args.breakdown or [])
     timing = find_timing(args.timing or [])
+    embedded = timing_from_breakdowns(breakdowns)
     for r in runs:
         if not r["trace_so"]:
             continue
@@ -956,12 +1065,17 @@ def main(argv=None):
             rec = read_timing(os.path.join(wd, "timing.json"))
             if rec:
                 timing[wd] = rec
-    if not runs and not timing:
-        print("no TOGSim logs with statistics and no timing.json found", file=sys.stderr)
+    seen_labels = {rec.get("label") for rec in timing.values()}
+    for label, rec in embedded.items():
+        if label not in seen_labels:
+            timing["label:" + label] = rec
+    if not runs and not timing and not breakdowns:
+        print("no TOGSim logs, no timing.json and no breakdown.json found", file=sys.stderr)
         return 1
     with open(args.out, "w") as fh:
-        fh.write(render(build_payload(runs, timing)))
-    print(f"{len(runs)} run(s), {len(timing)} compile record(s) -> {args.out}")
+        fh.write(render(build_payload(runs, timing, breakdowns)))
+    print(f"{len(runs)} run(s), {len(timing)} compile record(s), "
+          f"{len(breakdowns)} breakdown(s) -> {args.out}")
     return 0
 
 
