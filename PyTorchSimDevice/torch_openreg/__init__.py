@@ -23,8 +23,10 @@ from PyTorchSimFrontend import extension_config as _extension_config
 # back TO is the CPU, whichever backend emits the kernels around it.
 import PyTorchSimFrontend.extension_decomposition  # noqa: F401
 from PyTorchSimFrontend import extension_counting_sort as _counting_sort
+from PyTorchSimFrontend import extension_grouped_mm as _grouped_mm
 
 _counting_sort.install()
+_grouped_mm.install()
 # Same reason, one level up: Inductor refuses to generate code for complex
 # operators whichever backend is registered, so the rewrite is not the route's.
 import PyTorchSimFrontend.extension_complex_to_real  # noqa: F401
