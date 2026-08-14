@@ -89,6 +89,15 @@ def tnpu_env():
     pointing at LLVM 20's mlir_core is picked up before tnpu's own
     activate_bindings() runs, and the two LLVMs merge silently.
 
+    The device backend autoload goes for the same reason, one layer down. tnpu
+    imports torch only as CPU numerics (from_numpy, matmul, allclose) and never
+    names `npu`, but `import torch` would still autoload whichever
+    PyTorchSimDevice the editable install records -- which is one worktree's,
+    while TORCHSIM_DIR below points the frontend at another's. That pairing is
+    what a second worktree makes possible, and it fails as an unrelated
+    ModuleNotFoundError from inside torch's autoload. The subprocess does not
+    need the device, so it does not load it.
+
     The three TNPU_* names are the ones tnpu/config.py reads for exactly these
     quantities, so this is telling it rather than overriding it. Anything the
     caller already set in the environment wins, which keeps the pinned-worktree
@@ -96,6 +105,7 @@ def tnpu_env():
     """
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
+    env["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
     m = machine()
     env.setdefault("TNPU_VECTORLANE_SIZE", str(m["lanes"]))
     env.setdefault("TNPU_VLEN_BITS", str(m["vlen_bits"]))
