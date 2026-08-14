@@ -87,21 +87,42 @@ above against the built model, so a preset cannot pass while proving nothing.
     source /workspace/tnpu-env.sh
     python tests/models/Gemma/test_gemma.py --preset 7b
 
-MEASURED, 2026-08-13, triton-npu pinned to develop 3434608, functional-only
-config (Spike decides correctness; no cycles are reported).  Every preset ran
-with its OWN TORCHSIM_DUMP_PATH: the kernel cache is keyed on Triton source
-text alone, and a bmm template's text is identical for two presets that differ
-only in head COUNT, so a shared dump lets one preset's kernel answer for
-another's.
+MEASURED ON TRANSFORMERS 5.15.0, 2026-08-14, triton-npu develop c6e9d7f,
+functional-only config (Spike decides correctness; no cycles are reported).
+Every preset ran with its OWN TORCHSIM_DUMP_PATH: the kernel cache is keyed on
+Triton source text alone, and a bmm template's text is identical for two presets
+that differ only in head COUNT, so a shared dump lets one preset's kernel answer
+for another's.
 
-    preset         gen  layers  params   kernels    max diff    time
-    tiny            1      1      1.0M    15 /  18  9.5367e-07    73s
-    2b              1      1    126.9M    16 /  18  5.7220e-06   269s
-    7b              1      1    302.0M    15 /  17  7.6294e-06   394s
-    2-27b-scalar    2      1     11.5M    20 /  22  3.8147e-06   101s
-    2-2b            2      2    174.6M    24 /  38  5.7220e-06   317s
-    3-4b            3      1    115.4M    23 /  24  5.7220e-06   226s
-    3-1b            3      6    170.5M    25 / 100  4.5896e-06   487s
+    preset         gen  layers  kernels   max diff    time   (4.51.3 was)
+    tiny            1      1    15 / 18  9.5367e-07   101s   same, same
+    2b              1      1    16 / 18  5.7220e-06   231s   same, same
+    7b              1      1    15 / 17  7.6294e-06   348s   same, same
+    2-27b-scalar    2      1    17 / 19  3.8147e-06   108s   20/22, same
+    2-2b            2      2    20 / 35  4.0717e-06   323s   24/38, 5.7220e-06
+    3-4b            3      1    20 / 21  7.6294e-06   240s   23/24, 5.7220e-06
+    3-1b            3      6    21 / 96  3.6955e-06   500s   25/100, 4.5896e-06
+    3-mm            3      1    25 / 38  FAILS        169s   44/61, 1.0133e-06
+    pali            1      1    25 / 38  FAILS        187s   42/59, 1.2517e-06
+
+GEMMA 1 IS BIT-IDENTICAL ACROSS THE BUMP -- same kernels, same last digit, at
+all three widths.  Gemma 2 and 3 keep passing but fuse differently, and where a
+fusion boundary moves the accumulation order moves with it, so the last digit
+drifts in both directions.  The tolerance is 1e-2 and these are float32 noise;
+none of it is a regression.
+
+THE TWO MULTIMODAL PRESETS ARE.  They passed at 4.51.3 and fail here, and the
+cause is not the version-agnostic accessors below.  5.15.0 stops fusing the
+splice into its neighbours: what was
+``..._embedding_eq_expand_masked_scatter_unsqueeze_42`` at 4.51.3 is a
+standalone ``masked_scatter`` kernel here, holding two <32 x i64> index vectors
+at once, and llc answers that with a ``vs2r.v`` -- a whole register GROUP on the
+stack.  The tnpu pipeline refuses a spilled kernel because there is no working
+spill path behind it; Spike would die at the next stage on an invalid spad
+address.  Both families reach the identical 25/38 despite different towers and
+different text widths, which is what says the stop belongs to the shared splice
+path rather than to either model.  The index range is 32 x 256, so i32 would
+carry it -- narrowing it is the open lead and is NOT done here.
 
 "kernels" is unique / executed.  Three things the counts say:
 
@@ -181,6 +202,54 @@ _PRESETS = {
     "3-4b": dict(family="gemma3", layers=1, hidden=2560, heads=8, kv_heads=4,
                  head_dim=256, intermediate=10240, vocab=8192, seq=32, tie=True,
                  window=8, rope_local=10000.0, rope_global=1000000.0, pattern=6, qpas=256),
+
+    # -- multimodal.  These two claim the TOWER and the SPLICE, not width ------
+    # The text side is deliberately small: 3-1b already gates the Gemma 3
+    # decoder, and repeating it here would only make the preset slower without
+    # making it say more.  head_dim stays 256 so the shared assertion below
+    # still holds.
+    #
+    # What they add is `masked_scatter`: the image embeddings are spliced into
+    # the text sequence at the placeholder positions, which is the op every
+    # VLM in this suite stops at.  A SigLIP tower and a projector come with it.
+    #
+    # WIDTH 256 WAS A CEILING ON 4.51.3, bisected rather than guessed: above it
+    # Inductor lowered the splice's scan as a MULTI-BLOCK one --
+    # `triton_helpers.exclusive_scan_decoupled_lookback_64`, which publishes
+    # each block's sum and spins on `tl.atomic_xchg` until its predecessors
+    # publish theirs.  This backend compiles one binary per kernel and its C
+    # wrapper walks the grid as a sequential loop, so that channel does not
+    # exist.  Measured there, everything else held fixed:
+    #
+    #     hidden   pali        3-mm
+    #     128      1.0133e-06  7.1526e-07
+    #     256      1.2517e-06  1.0133e-06     <- the presets
+    #     512      exclusive_scan_decoupled_lookback_64, both
+    #
+    # ON 5.15.0 THE WIDTH IS NOT WHAT STOPS THEM, and reading it as the same
+    # wall cost a wrong diagnosis.  Those logs contain no decoupled-lookback
+    # scan at any width: the splice simply stops being fused, and the standalone
+    # kernel spills.  See the module docstring.  The width is left at 256
+    # because that is where both were last known to pass, not because 5.15.0
+    # would accept it and 512 would not -- neither compiles there.
+    "3-mm": dict(family="gemma3_mm", layers=1, hidden=256, heads=2, kv_heads=1,
+                 head_dim=256, intermediate=512, vocab=1024, seq=32, tie=True,
+                 window=8, rope_local=10000.0, rope_global=1000000.0, pattern=2,
+                 qpas=256,
+                 vision=dict(hidden=384, intermediate=768, layers=2, heads=6,
+                             image=64, patch=16),
+                 # 4x4 patches pooled to 2x2: Gemma 3 avg-pools the tower's
+                 # output down to mm_tokens_per_image, which PaliGemma does not.
+                 mm_tokens=4),
+
+    # PaliGemma is the same SigLIP tower in front of a GEMMA 1 text tower, so
+    # against 3-mm it separates the tower from Gemma 3's own decoder.  It emits
+    # one token per patch, unpooled -- 4x4 = 16.
+    "pali": dict(family="paligemma", layers=1, hidden=256, heads=2, kv_heads=1,
+                 head_dim=256, intermediate=512, vocab=1024, seq=32, tie=True,
+                 vision=dict(hidden=384, intermediate=768, layers=2, heads=6,
+                             image=64, patch=16),
+                 mm_tokens=16),
 }
 
 _FAMILIES = {
@@ -190,7 +259,113 @@ _FAMILIES = {
                "transformers.models.gemma2.modeling_gemma2", "Gemma2Model", "Gemma2ForCausalLM"),
     "gemma3": ("transformers.models.gemma3.configuration_gemma3", "Gemma3TextConfig",
                "transformers.models.gemma3.modeling_gemma3", "Gemma3TextModel", "Gemma3ForCausalLM"),
+    # A conditional-generation class is both the body and the LM head, so
+    # --part has nothing to choose between for these two.
+    "gemma3_mm": ("transformers.models.gemma3.configuration_gemma3", "Gemma3Config",
+                  "transformers.models.gemma3.modeling_gemma3",
+                  "Gemma3ForConditionalGeneration", "Gemma3ForConditionalGeneration"),
+    "paligemma": ("transformers.models.paligemma.configuration_paligemma", "PaliGemmaConfig",
+                  "transformers.models.paligemma.modeling_paligemma",
+                  "PaliGemmaForConditionalGeneration", "PaliGemmaForConditionalGeneration"),
 }
+
+
+def _is_vlm(preset):
+    return "vision" in _PRESETS[preset]
+
+
+def _text_cfg(cfg):
+    """The text half of a config, whichever kind it is."""
+    return getattr(cfg, "text_config", cfg)
+
+
+def _text_model(model):
+    """The causal-LM half of a model, whichever kind it is."""
+    return getattr(model, "language_model", model)
+
+
+def _descend(model, attr, depth=4):
+    """Walk `.model` / `.language_model` until a module has `attr`.
+
+    The wrappers moved between transformers versions and they moved in
+    OPPOSITE directions for the two things this file reads:
+
+        4.51.3   ForConditionalGeneration -> language_model (a ForCausalLM)
+                                          -> model (the layer stack)
+        5.15.0   ForConditionalGeneration -> model (a Gemma3Model)
+                                          -> language_model (the layer stack)
+
+    and `lm_head` sits on the inner ForCausalLM in the first and on the OUTER
+    module in the second. Naming the attribute wanted and walking to it is the
+    one formulation that holds for both, and for the plain text models where
+    there is no wrapper at all.
+    """
+    seen = model
+    for _ in range(depth):
+        if hasattr(seen, attr):
+            return seen
+        nxt = getattr(seen, "language_model", None)
+        if nxt is None or nxt is seen:
+            nxt = getattr(seen, "model", None)
+        if nxt is None or nxt is seen:
+            break
+        seen = nxt
+    return None
+
+
+def _lm_head(model):
+    holder = _descend(model, "lm_head")
+    return getattr(holder, "lm_head", None) if holder is not None else None
+
+
+def _vision_tower(model):
+    holder = _descend(model, "vision_tower")
+    return getattr(holder, "vision_tower", None) if holder is not None else None
+
+
+def _projector(model):
+    holder = _descend(model, "multi_modal_projector")
+    return getattr(holder, "multi_modal_projector", None) if holder is not None else None
+
+
+def _layer_is_sliding(body, idx, cfg):
+    """Does layer `idx` attend locally, in either spelling?
+
+    4.51.3 decides per layer and stores the answer on the decoder layer
+    (`layer.is_sliding`). 5.15.0 makes it declarative: `config.layer_types` is a
+    list of "sliding_attention" / "full_attention", mirrored onto the attention
+    as `layer_type`. The claim is the same -- which layers see a band mask --
+    and the presets are written against the claim, not the spelling.
+    """
+    layer = body.layers[idx]
+    flag = getattr(layer, "is_sliding", None)
+    if flag is not None:
+        return bool(flag)
+    kind = getattr(getattr(layer, "self_attn", None), "layer_type", None)
+    if kind is None:
+        types = getattr(cfg, "layer_types", None)
+        kind = types[idx] if types else None
+    return kind == "sliding_attention"
+
+
+def _rope_bases(cfg, body):
+    """(local, global) rope bases, in either spelling, or None if not split.
+
+    4.51.3 carries `rope_theta` and `rope_local_base_freq` on the config and
+    builds TWO rotary modules (`rotary_emb`, `rotary_emb_local`). 5.15.0 keeps
+    one rotary module and moves both bases into `rope_parameters`, keyed by the
+    same layer-type names `layer_types` uses. Reading the config works for both
+    and does not depend on how many modules got built.
+    """
+    params = getattr(cfg, "rope_parameters", None)
+    if isinstance(params, dict) and "sliding_attention" in params:
+        return (params["sliding_attention"].get("rope_theta"),
+                params["full_attention"].get("rope_theta"))
+    local = getattr(cfg, "rope_local_base_freq", None)
+    glob = getattr(cfg, "rope_theta", None)
+    if local is None or glob is None:
+        return None
+    return (local, glob)
 
 
 def _dtype_from_str(name):
@@ -207,11 +382,22 @@ def _import(module, name):
     return getattr(importlib.import_module(module), name)
 
 
+#: The token that stands in for an image.  Random text tokens are drawn ABOVE
+#: it so a draw cannot accidentally become a placeholder and change the count
+#: the vision tower has to match.
+_IMAGE_TOKEN = 7
+
+#: A multimodal family's text tower is one of the three text families, and the
+#: config branches below are about the tower, not the wrapper.
+_TEXT_FAMILY = {"gemma3_mm": "gemma3", "paligemma": "gemma"}
+
+
 def _build_config(preset, seq_len):
     p = _PRESETS[preset]
     cfg_mod, cfg_name, _, _, _ = _FAMILIES[p["family"]]
     Config = _import(cfg_mod, cfg_name)
     seq_len = seq_len if seq_len is not None else p["seq"]
+    text_family = _TEXT_FAMILY.get(p["family"], p["family"])
 
     kwargs = dict(
         vocab_size=p["vocab"],
@@ -236,7 +422,7 @@ def _build_config(preset, seq_len):
         attn_implementation="eager",
     )
 
-    if p["family"] == "gemma":
+    if text_family == "gemma":
         kwargs["rope_theta"] = 10000.0
     else:
         # The window is shrunk to fit inside seq on purpose; see the module
@@ -249,12 +435,12 @@ def _build_config(preset, seq_len):
         # describe the run.
         kwargs["cache_implementation"] = None
 
-    if p["family"] == "gemma2":
+    if text_family == "gemma2":
         kwargs["rope_theta"] = 10000.0
         kwargs["attn_logit_softcapping"] = p["attn_softcap"]
         kwargs["final_logit_softcapping"] = p["final_softcap"]
 
-    if p["family"] == "gemma3":
+    if text_family == "gemma3":
         kwargs["rope_theta"] = p["rope_global"]
         kwargs["rope_local_base_freq"] = p["rope_local"]
         kwargs["sliding_window_pattern"] = p["pattern"]
@@ -263,12 +449,43 @@ def _build_config(preset, seq_len):
         kwargs["attn_logit_softcapping"] = None
         kwargs["final_logit_softcapping"] = None
 
-    return Config(**kwargs), seq_len
+    if not _is_vlm(preset):
+        return Config(**kwargs), seq_len
+
+    # Multimodal: the text kwargs above become the nested text config, and the
+    # tower is sized outright.  The tower is SMALL on purpose -- this preset
+    # claims that a SigLIP tower, a projector and the masked_scatter splice run
+    # and agree with CPU, not that they do so at a shipped vision width.
+    v = p["vision"]
+    composite = dict(
+        text_config=kwargs,
+        vision_config=dict(hidden_size=v["hidden"], intermediate_size=v["intermediate"],
+                           num_hidden_layers=v["layers"], num_attention_heads=v["heads"],
+                           image_size=v["image"], patch_size=v["patch"]),
+        image_token_index=_IMAGE_TOKEN,
+    )
+    if p["family"] == "gemma3_mm":
+        composite["mm_tokens_per_image"] = p["mm_tokens"]
+    else:
+        composite["projection_dim"] = p["hidden"]
+
+    cfg = Config(**composite)
+    # The composite constructor does not forward attn_implementation into the
+    # towers, and an sdpa dispatch here would make a failure about which kernel
+    # transformers picked rather than about this backend.
+    cfg._attn_implementation = "eager"
+    return cfg, seq_len
+
+
+def _text_body(model):
+    """The stack of decoder layers, under whichever wrappers this model has."""
+    body = _descend(model, "layers")
+    assert body is not None, f"no layer stack under {type(model).__name__}"
+    return body
 
 
 def _layer0(model):
-    body = model.model if hasattr(model, "model") else model
-    return body.layers[0]
+    return _text_body(model).layers[0]
 
 
 def _assert_character(preset, cfg, model, seq_len):
@@ -279,8 +496,12 @@ def _assert_character(preset, cfg, model, seq_len):
     without exercising anything the suite does not already cover.
     """
     p = _PRESETS[preset]
-    family = p["family"]
-    body = model.model if hasattr(model, "model") else model
+    family = _TEXT_FAMILY.get(p["family"], p["family"])
+    # Everything below the multimodal section is a claim about the TEXT tower,
+    # so it reads the text config and the text body whichever kind of model
+    # this is.  `full_cfg` keeps the composite for the multimodal checks.
+    full_cfg, cfg = cfg, _text_cfg(cfg)
+    body = _text_body(model)
     layer = _layer0(model)
     attn = layer.self_attn
     n_rep = cfg.num_attention_heads // cfg.num_key_value_heads
@@ -337,7 +558,8 @@ def _assert_character(preset, cfg, model, seq_len):
 
         # is_sliding lives on the decoder layer in both generations; Gemma 3
         # also mirrors it onto the attention, Gemma 2 does not.
-        sliding = [bool(l.is_sliding) for l in body.layers]
+        sliding = [_layer_is_sliding(body, i, cfg)
+                   for i in range(cfg.num_hidden_layers)]
         assert len(sliding) == cfg.num_hidden_layers
         assert cfg.query_pre_attn_scalar == p["qpas"], \
             f"query_pre_attn_scalar must be {p['qpas']}, got {cfg.query_pre_attn_scalar}"
@@ -359,13 +581,11 @@ def _assert_character(preset, cfg, model, seq_len):
     if family == "gemma3":
         assert cfg.attn_logit_softcapping is None and cfg.final_logit_softcapping is None, \
             "Gemma 3 dropped soft-capping; a cap here means the preset is really a Gemma 2"
-        assert hasattr(body, "rotary_emb") and hasattr(body, "rotary_emb_local"), \
-            "Gemma 3 needs both a global and a local rotary; one of them is missing"
-        glob = body.rotary_emb.inv_freq
-        loc = body.rotary_emb_local.inv_freq
-        assert not torch.allclose(glob, loc), \
-            ("the two rope bases must differ -- that is the whole point of the Gemma 3 preset; "
-             f"rope_theta={cfg.rope_theta} rope_local_base_freq={cfg.rope_local_base_freq}")
+        bases = _rope_bases(cfg, body)
+        assert bases is not None, "Gemma 3 must carry a local AND a global rope base"
+        assert bases[0] != bases[1], \
+            ("the two rope bases must differ -- that is the whole point of the Gemma 3 "
+             f"preset; got local={bases[0]} global={bases[1]}")
         if cfg.num_hidden_layers >= p["pattern"]:
             assert sliding.count(False) == cfg.num_hidden_layers // p["pattern"], \
                 f"one layer in {p['pattern']} must be global; got {sliding}"
@@ -425,8 +645,35 @@ def _assert_character(preset, cfg, model, seq_len):
         assert cfg.num_hidden_layers < p["pattern"], \
             "3-4b is a width claim; if it ran a full period it would duplicate 3-1b's job at higher cost"
 
+    # -- multimodal: the tower, the projector, and the splice ------------------
+    if _is_vlm(preset):
+        tower, proj = _vision_tower(model), _projector(model)
+        assert tower is not None and proj is not None, \
+            "a multimodal preset must carry a vision tower and a projector"
+        assert type(tower).__name__.startswith("Siglip"), \
+            (f"both Gemma VLMs use a SigLIP tower; got {type(tower).__name__}")
+
+        v = p["vision"]
+        patches = (v["image"] // v["patch"]) ** 2
+        assert full_cfg.image_token_index == _IMAGE_TOKEN
+
+        # The placeholder count must equal what the tower emits, or the splice
+        # has nothing coherent to scatter into and transformers refuses the
+        # forward.  The two families differ here and that is the point of
+        # running both: Gemma 3 POOLS the tower's patches down to
+        # mm_tokens_per_image, PaliGemma emits one token per patch.
+        if p["family"] == "gemma3_mm":
+            assert full_cfg.mm_tokens_per_image == p["mm_tokens"]
+            assert p["mm_tokens"] < patches, \
+                (f"Gemma 3 pools {patches} patches down to mm_tokens_per_image; "
+                 f"{p['mm_tokens']} == {patches} would leave the pooling untested")
+        else:
+            assert p["mm_tokens"] == patches, \
+                (f"PaliGemma emits one token per patch, so mm_tokens must be {patches}, "
+                 f"got {p['mm_tokens']}")
+
     if p["tie"]:
-        head = getattr(model, "lm_head", None)
+        head = _lm_head(model)
         assert head is not None, "tie check needs the LM head; run this preset with --part lm"
         assert head.weight.data_ptr() == body.embed_tokens.weight.data_ptr(), \
             "tie_word_embeddings was requested but lm_head does not share the embedding storage"
@@ -468,48 +715,71 @@ def run_gemma(
     torch.manual_seed(0)
     model_cpu = cls(cfg).to(dtype=torch_dtype).eval()
 
-    head_dim = getattr(cfg, "head_dim", None) or cfg.hidden_size // cfg.num_attention_heads
-    n_rep = cfg.num_attention_heads // cfg.num_key_value_heads
-    print(f"preset={preset} family={p['family']} part={part} layers={cfg.num_hidden_layers} "
-          f"hidden={cfg.hidden_size} heads={cfg.num_attention_heads}/{cfg.num_key_value_heads} "
-          f"head_dim={head_dim} n_rep={n_rep} interm={cfg.intermediate_size} "
-          f"vocab={cfg.vocab_size} seq={seq_len} dtype={dtype}")
-    act = getattr(cfg, "hidden_activation", None) or getattr(cfg, "hidden_act", None)
-    print(f"  gemma: act={act} embed_scale=sqrt({cfg.hidden_size})={cfg.hidden_size ** 0.5:.4f} "
-          f"tie={cfg.tie_word_embeddings}")
-    if p["family"] in ("gemma2", "gemma3"):
-        body_cpu = model_cpu.model if hasattr(model_cpu, "model") else model_cpu
-        sliding = ["local" if l.is_sliding else "GLOBAL" for l in body_cpu.layers]
-        print(f"  window={cfg.sliding_window} (seq={seq_len}) qpas={cfg.query_pre_attn_scalar} "
+    tcfg = _text_cfg(cfg)
+    text_family = _TEXT_FAMILY.get(p["family"], p["family"])
+    head_dim = getattr(tcfg, "head_dim", None) or tcfg.hidden_size // tcfg.num_attention_heads
+    n_rep = tcfg.num_attention_heads // tcfg.num_key_value_heads
+    print(f"preset={preset} family={p['family']} part={part} layers={tcfg.num_hidden_layers} "
+          f"hidden={tcfg.hidden_size} heads={tcfg.num_attention_heads}/{tcfg.num_key_value_heads} "
+          f"head_dim={head_dim} n_rep={n_rep} interm={tcfg.intermediate_size} "
+          f"vocab={tcfg.vocab_size} seq={seq_len} dtype={dtype}")
+    act = getattr(tcfg, "hidden_activation", None) or getattr(tcfg, "hidden_act", None)
+    print(f"  gemma: act={act} embed_scale=sqrt({tcfg.hidden_size})={tcfg.hidden_size ** 0.5:.4f} "
+          f"tie={tcfg.tie_word_embeddings}")
+    if text_family in ("gemma2", "gemma3"):
+        _body = _text_body(model_cpu)
+        sliding = ["local" if _layer_is_sliding(_body, i, tcfg) else "GLOBAL"
+                   for i in range(tcfg.num_hidden_layers)]
+        print(f"  window={tcfg.sliding_window} (seq={seq_len}) qpas={tcfg.query_pre_attn_scalar} "
               f"layers={'/'.join(sliding)}")
-        if p["family"] == "gemma2":
-            print(f"  softcap: attn={cfg.attn_logit_softcapping} final={cfg.final_logit_softcapping}")
+        if text_family == "gemma2":
+            print(f"  softcap: attn={tcfg.attn_logit_softcapping} final={tcfg.final_logit_softcapping}")
         else:
-            print(f"  rope: global={cfg.rope_theta} local={cfg.rope_local_base_freq} "
-                  f"pattern={cfg.sliding_window_pattern}")
+            _b = _rope_bases(tcfg, _body)
+            print(f"  rope: local={_b[0]} global={_b[1]} "
+                  f"pattern={getattr(tcfg, 'sliding_window_pattern', None)}")
+    if _is_vlm(preset):
+        v = p["vision"]
+        print(f"  vision: {type(_vision_tower(model_cpu)).__name__} hidden={v['hidden']} "
+              f"layers={v['layers']} image={v['image']} patch={v['patch']} "
+              f"patches={(v['image'] // v['patch']) ** 2} image_tokens={p['mm_tokens']}")
     print("model params:", sum(x.numel() for x in model_cpu.parameters()))
 
     _assert_character(preset, cfg, model_cpu, seq_len)
 
     g = torch.Generator().manual_seed(0)
-    input_ids = torch.randint(0, cfg.vocab_size, (batch, seq_len), generator=g, dtype=torch.int64)
 
-    # The explicit 4D causal mask is test_llama3x.py's, kept so a failure here is
-    # comparable to that file's rather than to whatever _update_causal_mask
-    # decided to build.
-    min_dtype = torch.finfo(torch_dtype).min
-    causal_mask = torch.full((seq_len, seq_len), fill_value=min_dtype, dtype=torch_dtype)
-    if seq_len > 1:
-        causal_mask = torch.triu(causal_mask, diagonal=1)
-    attn_mask = causal_mask[None, None, :, :].expand(batch, 1, -1, -1)
+    if _is_vlm(preset):
+        # Tokens are drawn ABOVE the placeholder so a random draw cannot become
+        # one and break the count the tower has to match.  No explicit mask:
+        # a VLM's mask depends on which positions are image, and building one
+        # here by hand would test our arithmetic rather than the model's.
+        input_ids = torch.randint(_IMAGE_TOKEN + 1, tcfg.vocab_size, (batch, seq_len),
+                                  generator=g, dtype=torch.int64)
+        input_ids[:, :p["mm_tokens"]] = _IMAGE_TOKEN
+        v = p["vision"]
+        pixel_values = torch.randn(batch, 3, v["image"], v["image"],
+                                   generator=g, dtype=torch.float32).to(torch_dtype)
+        cpu_inputs = {"input_ids": input_ids, "pixel_values": pixel_values}
+    else:
+        input_ids = torch.randint(0, tcfg.vocab_size, (batch, seq_len),
+                                  generator=g, dtype=torch.int64)
+        # The explicit 4D causal mask is test_llama3x.py's, kept so a failure
+        # here is comparable to that file's rather than to whatever
+        # _update_causal_mask decided to build.
+        min_dtype = torch.finfo(torch_dtype).min
+        causal_mask = torch.full((seq_len, seq_len), fill_value=min_dtype, dtype=torch_dtype)
+        if seq_len > 1:
+            causal_mask = torch.triu(causal_mask, diagonal=1)
+        attn_mask = causal_mask[None, None, :, :].expand(batch, 1, -1, -1)
+        cpu_inputs = {"input_ids": input_ids, "attention_mask": attn_mask}
 
-    cpu_out = _out(model_cpu(input_ids=input_ids, attention_mask=attn_mask))
+    cpu_out = _out(model_cpu(**cpu_inputs))
 
     model_npu = copy.deepcopy(model_cpu).to(device).eval()
     if compile_model:
         model_npu = torch.compile(model_npu, dynamic=False)
-    npu_out = _out(model_npu(input_ids=input_ids.to(device),
-                             attention_mask=attn_mask.to(device)))
+    npu_out = _out(model_npu(**{k: v.to(device) for k, v in cpu_inputs.items()}))
 
     test_result(f"Gemma {part} ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
