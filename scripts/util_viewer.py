@@ -5,9 +5,12 @@ Reads `togsim_results/*.log` -- no re-run and no `--log_level trace` needed, sin
 the periodic `Core stat` blocks every `core_stats_print_period_cycles` already carry
 the whole time series. For per-instruction Gantt detail use `trace_timeline.py`.
 
+Compile wall clock comes from the tnpu `timing.json` each kernel workdir holds, and
+is joined to a run by the `triton_<hash>` beside its `trace_so`.
+
 Usage:
   python scripts/util_viewer.py togsim_results -o util.html
-  python scripts/util_viewer.py togsim_results/2026*.log -o util.html
+  python scripts/util_viewer.py togsim_results --timing outputs -o util.html
 """
 import argparse
 import glob
@@ -189,6 +192,58 @@ def series(run):
     return out
 
 
+def read_timing(path):
+    """Load one tnpu timing.json, or None if it is unreadable or mid-write."""
+    try:
+        with open(path) as fh:
+            rec = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return rec if isinstance(rec, dict) and rec.get("stages") else None
+
+
+def find_timing(roots):
+    """Map each workdir holding a tnpu timing.json to its record."""
+    out = {}
+    for root in roots:
+        if os.path.isdir(root):
+            files = glob.glob(os.path.join(root, "**", "timing.json"), recursive=True)
+        elif os.path.basename(root) == "timing.json":
+            files = [root]
+        else:
+            files = glob.glob(root)
+        for f in files:
+            rec = read_timing(f)
+            if rec:
+                out[os.path.dirname(os.path.abspath(f))] = rec
+    return out
+
+
+def merge_timing(records):
+    """Sum per-kernel tnpu records into one of the same shape, in stage order."""
+    stages, passes, tools, order = {}, {}, {}, []
+    for rec in records:
+        for s in rec.get("stages", []):
+            if s["name"] not in stages:
+                order.append(s["name"])
+            stages[s["name"]] = stages.get(s["name"], 0.0) + s["seconds"]
+        for stage, entries in (rec.get("passes") or {}).items():
+            acc = passes.setdefault(stage, {})
+            for e in entries:
+                acc[e["name"]] = acc.get(e["name"], 0.0) + e["seconds"]
+        for stage, entries in (rec.get("tools") or {}).items():
+            acc = tools.setdefault(stage, {})
+            for t, e in entries.items():
+                cur = acc.setdefault(t, {"calls": 0, "seconds": 0.0})
+                cur["calls"] += e["calls"]
+                cur["seconds"] += e["seconds"]
+    return {"label": None, "total": sum(stages.values()),
+            "stages": [{"name": n, "seconds": stages[n]} for n in order],
+            "passes": {s: [{"name": n, "seconds": dt} for n, dt in v.items()]
+                       for s, v in passes.items()},
+            "tools": tools, "kernels": len(records)}
+
+
 def collect(paths):
     """Expand dirs and globs into parsed runs, newest log last."""
     files = []
@@ -209,8 +264,9 @@ def collect(paths):
     return runs
 
 
-def build_payload(runs):
+def build_payload(runs, timing=None):
     """Shape parsed runs into the JSON the page renders from, collapsing replays."""
+    timing = timing or {}
     items, seen = [], {}
     for r in runs:
         key = (r["kernel"], r["cycles"])
@@ -220,6 +276,7 @@ def build_payload(runs):
             prev["source"] = prev["source"] or r["source"]
             continue
         item = {"log": r["log"], "kernel": r["kernel"], "source": r["source"], "repeats": 1,
+                "workdir": os.path.dirname(os.path.abspath(r["trace_so"])) if r["trace_so"] else "",
                 "config": r["config"], "summary": summarize(r), "series": series(r),
                 "dram_channels": r["dram_channels"], "interval": r["interval"],
                 "cores": {str(k): {"sa": v["sa"], "vu": v["vu"], "dma": v["dma"],
@@ -228,7 +285,32 @@ def build_payload(runs):
         seen[key] = item
         items.append(item)
     items.sort(key=lambda i: -i["summary"]["cycles"])
-    return {"runs": items, "logs": len(runs)}
+
+    by_base = {}
+    for wd in timing:
+        by_base.setdefault(os.path.basename(wd), wd)
+    records, index, used = [], {}, set()
+    for item in items:
+        wd = item["workdir"]
+        if wd not in timing:
+            wd = by_base.get(os.path.basename(wd), wd)
+        rec = timing.get(wd)
+        if rec is None:
+            item["timing"] = None
+            continue
+        if wd not in index:
+            index[wd] = len(records)
+            records.append(dict(rec, workdir=wd, kernel=item["kernel"]))
+        item["timing"] = index[wd]
+        used.add(wd)
+    orphans = []
+    for wd, rec in sorted(timing.items()):
+        if wd not in used:
+            orphans.append(len(records))
+            records.append(dict(rec, workdir=wd, kernel=rec.get("label") or os.path.basename(wd)))
+    merged = merge_timing(records) if records else None
+    return {"runs": items, "logs": len(runs),
+            "timing": {"records": records, "merged": merged, "orphans": orphans}}
 
 
 _PAGE_HEAD = """<title>TOGSim Utilization</title>
@@ -288,13 +370,10 @@ h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em
 .meter { height: 6px; border-radius: 3px; background: var(--track); margin-top: 8px;
          overflow: hidden; }
 .meter > i { display: block; height: 100%; border-radius: 3px; background: var(--s1); }
-.legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 0 0 10px; font-size: 12px;
-          color: var(--ink-2); }
-.legend b { display: inline-block; width: 10px; height: 10px; border-radius: 3px;
-            margin-right: 6px; vertical-align: -1px; }
 .chart-scroll { overflow-x: auto; }
 svg { display: block; }
-svg text { fill: var(--muted); font-size: 11px; }
+svg text:not([fill]) { fill: var(--muted); }
+svg text { font-size: 11px; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th, td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--grid);
          font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -318,6 +397,16 @@ td .src { color: var(--muted); font-size: 11px; }
 #tip .r { display: flex; gap: 10px; justify-content: space-between; }
 #tip .r b { display: inline-block; width: 9px; height: 9px; border-radius: 2px;
             margin-right: 5px; vertical-align: 0; }
+.ct-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 24px; }
+.ct-grid h3 { font-size: 11px; font-weight: 600; color: var(--muted); margin: 0 0 10px;
+              text-transform: uppercase; letter-spacing: 0.04em; }
+.seg { display: inline-flex; border: 1px solid var(--ring); border-radius: 7px;
+       overflow: hidden; margin-bottom: 18px; }
+.seg button { appearance: none; border: 0; background: var(--surface-1); color: var(--ink-2);
+              font: inherit; font-size: 12px; padding: 5px 13px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--ring); }
+.seg button[aria-pressed="true"] { background: var(--s1); color: #fff; }
+.seg button:focus-visible { outline: 2px solid var(--s1); outline-offset: -2px; }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px 2px 7px;
         border-radius: 999px; border: 1px solid var(--ring); font-size: 11px;
         color: var(--ink-2); white-space: nowrap; }
@@ -349,7 +438,6 @@ _PAGE_BODY = r"""
   <div class="card">
     <h2>Utilization over time</h2>
     <p class="note" id="tl-note"></p>
-    <div class="legend" id="legend"></div>
     <div class="chart-scroll"><svg id="tl" width="1040" height="270"></svg></div>
   </div>
 
@@ -368,11 +456,28 @@ _PAGE_BODY = r"""
           <th data-k="kernel">Kernel</th><th data-k="bound">Bound by</th>
           <th data-k="cycles">Cycles</th><th data-k="us">Time (us)</th>
           <th data-k="sa">Systolic</th><th data-k="vu">Vector</th><th data-k="dma">DMA</th>
-          <th data-k="dram_util">DRAM</th><th data-k="gbps">GB/s</th><th data-k="comp">COMP</th>
+          <th data-k="dram_util">DRAM</th><th data-k="gbps">GB/s</th>
+          <th data-k="compile">Compile</th><th data-k="comp">COMP</th>
           <th data-k="movin">MOVIN</th><th data-k="movout">MOVOUT</th>
         </tr></thead>
         <tbody></tbody>
       </table>
+    </div>
+  </div>
+
+  <div class="card" id="ct-card">
+    <h2>Compile time</h2>
+    <p class="note" id="ct-note"></p>
+    <div class="seg" id="ct-seg"></div>
+    <div class="ct-grid">
+      <div>
+        <h3>Pipeline stages</h3>
+        <div class="chart-scroll"><svg id="ct-stage" width="500" height="10"></svg></div>
+      </div>
+      <div>
+        <h3>Passes and tools</h3>
+        <div class="chart-scroll"><svg id="ct-pass" width="500" height="10"></svg></div>
+      </div>
     </div>
   </div>
 
@@ -409,12 +514,21 @@ function el(p, tag, attrs, text) {
 }
 function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); }
 
+function freshSvg(id) {
+  const old = document.getElementById(id);
+  const n = old.cloneNode(false);
+  clear(n);
+  old.replaceWith(n);
+  return n;
+}
+
 function rowOf(r) {
   const s = r.summary, i = s.inst || {};
   return {kernel: r.kernel, source: r.source, cycles: s.cycles, us: s.us, sa: s.sa,
           vu: s.vu, dma: s.dma, dram_util: s.dram_util, gbps: s.dram_gbps,
           comp: i.COMP || 0, movin: i.MOVIN || 0, movout: i.MOVOUT || 0,
-          gemm: i.GEMM || 0, vector: i.VECTOR || 0, bound: classify(s).name, s: s};
+          gemm: i.GEMM || 0, vector: i.VECTOR || 0, bound: classify(s).name, s: s,
+          compile: r.timing != null ? (TIMING.records[r.timing].total || 0) : -1};
 }
 
 function classify(s) {
@@ -523,40 +637,104 @@ function hover(svg, W, H, P, sc, cyc, rows, unit) {
   });
 }
 
+const BUSY = 5;
+
+function coactivity(s) {
+  let compute = 0, memory = 0, both = 0, either = 0;
+  for (let i = 0; i < s.cycle.length; i++) {
+    const c = s.sa[i] > BUSY || s.vu[i] > BUSY;
+    const m = s.dram[i] > BUSY || s.dma[i] > BUSY;
+    if (c) compute++;
+    if (m) memory++;
+    if (c && m) both++;
+    if (c || m) either++;
+  }
+  return {compute, memory, both, either, n: s.cycle.length};
+}
+
 function drawTimeline() {
-  const r = RUNS[sel], s = r.series, svg = document.getElementById('tl');
-  clear(svg);
-  const W = 1040, H = 270, P = {l: 44, r: 92, t: 12, b: 30};
+  const r = RUNS[sel], s = r.series, svg = freshSvg('tl');
   const note = document.getElementById('tl-note');
-  const leg = document.getElementById('legend');
-  leg.innerHTML = SERIES.map(x =>
-    `<span><b style="background:var(${x.v})"></b>${x.label}</span>`).join('');
+  const W = 1040, LH = 44, LG = 16, P = {l: 116, r: 78, t: 8, b: 30};
   if (!s.cycle.length) {
+    svg.setAttribute('height', 40);
     note.textContent = `No samples: this kernel ran ${fmt(r.summary.cycles)} cycles, ` +
       `inside a single ${fmt(r.interval)}-cycle sampling window. Lower ` +
       `core_stats_print_period_cycles in the config and re-run to sample it.`;
     return;
   }
-  note.textContent = `${s.cycle.length} samples, one per ${fmt(r.interval)} cycles, ` +
-    `averaged across ${r.summary.cores} core(s).`;
-  const xmax = s.cycle[s.cycle.length - 1];
-  const sc = axes(svg, W, H, P, xmax, 100, '%', 'cycle');
-  const rows = SERIES.map(x => ({label: x.label, color: css(x.v), data: s[x.k]}));
-  rows.forEach(row => {
-    const d = row.data.map((v, i) => `${i ? 'L' : 'M'}${sc.x(s.cycle[i]).toFixed(1)} ` +
-                                     `${sc.y(v).toFixed(1)}`).join(' ');
-    el(svg, 'path', {d, fill: 'none', stroke: row.color, 'stroke-width': 2,
-                     'stroke-linejoin': 'round', 'stroke-linecap': 'round'});
-    const last = row.data[row.data.length - 1];
-    el(svg, 'text', {x: W - P.r + 8, y: sc.y(last) + 4, fill: row.color,
-                     'font-weight': 600}, f1(last) + '%');
+  const co = coactivity(s);
+  note.textContent = `${co.n} samples, one per ${fmt(r.interval)} cycles, averaged across ` +
+    `${r.summary.cores} core(s). Each lane is 0-100% of that window. Compute and memory ` +
+    `were both busy in ${co.both} of ${co.either} active windows ` +
+    `(${co.either ? Math.round(100 * co.both / co.either) : 0}% overlap; busy means above ` +
+    `${BUSY}%).`;
+
+  const nl = SERIES.length;
+  const H = P.t + nl * LH + (nl - 1) * LG + P.b;
+  svg.setAttribute('height', H);
+  const plotW = W - P.l - P.r;
+  const bw = plotW / co.n;
+  const x = v => P.l + plotW * (v / s.cycle[co.n - 1]);
+  const laneTop = i => P.t + i * (LH + LG);
+
+  const rows = SERIES.map((sp, i) => {
+    const data = s[sp.k], color = css(sp.v), top = laneTop(i), base = top + LH;
+    el(svg, 'rect', {x: P.l, y: top, width: plotW, height: LH, rx: 3,
+                     fill: color, opacity: 0.07});
+    el(svg, 'line', {x1: P.l, x2: W - P.r, y1: base, y2: base,
+                     stroke: css('--axis'), 'stroke-width': 1});
+    el(svg, 'line', {x1: P.l, x2: W - P.r, y1: top + LH / 2, y2: top + LH / 2,
+                     stroke: css('--grid'), 'stroke-width': 1, 'stroke-dasharray': '3 5'});
+    data.forEach((v, j) => {
+      const h = LH * Math.min(100, v) / 100;
+      if (h < 0.4) return;
+      el(svg, 'rect', {x: P.l + j * bw, y: base - h, width: Math.max(0.6, bw - (bw > 3 ? 1 : 0)),
+                       height: h, rx: bw > 5 ? 2 : 0, fill: color});
+    });
+    el(svg, 'text', {x: P.l - 12, y: top + LH / 2 - 2, 'text-anchor': 'end',
+                     fill: css('--ink-2'), 'font-weight': 600}, sp.label);
+    const mean = data.reduce((a, b) => a + b, 0) / data.length;
+    const busy = data.filter(v => v > BUSY).length;
+    el(svg, 'text', {x: P.l - 12, y: top + LH / 2 + 12, 'text-anchor': 'end'},
+       `busy ${Math.round(100 * busy / data.length)}% of time`);
+    el(svg, 'text', {x: W - P.r + 8, y: top + LH / 2 - 2, fill: color, 'font-weight': 600},
+       f1(mean) + '%');
+    el(svg, 'text', {x: W - P.r + 8, y: top + LH / 2 + 12}, 'peak ' + Math.round(Math.max(...data)));
+    return {label: sp.label, color, data};
   });
-  hover(svg, W, H, P, sc, s.cycle, rows, '%');
+
+  for (let i = 0; i <= 5; i++) {
+    const v = s.cycle[co.n - 1] * i / 5;
+    el(svg, 'text', {x: x(v), y: H - P.b + 18, 'text-anchor': i === 0 ? 'start' :
+                     (i === 5 ? 'end' : 'middle')},
+       v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' :
+                  (v >= 1e3 ? Math.round(v / 1e3) + 'k' : Math.round(v)));
+  }
+  el(svg, 'text', {x: P.l + plotW / 2, y: H - 2, 'text-anchor': 'middle'}, 'cycle');
+
+  const cross = el(svg, 'rect', {y: P.t, width: Math.max(1, bw), height: nl * LH + (nl - 1) * LG,
+                                 fill: css('--ink'), opacity: 0});
+  svg.addEventListener('mousemove', ev => {
+    const b = svg.getBoundingClientRect();
+    const j = Math.max(0, Math.min(co.n - 1,
+      Math.floor(((ev.clientX - b.left) * (W / b.width) - P.l) / bw)));
+    cross.setAttribute('x', P.l + j * bw);
+    cross.setAttribute('opacity', 0.14);
+    tip.innerHTML = `<div class="th">cycle ${fmt(s.cycle[j] - r.interval)}-${fmt(s.cycle[j])}</div>` +
+      rows.map(row => `<div class="r"><span><b style="background:${row.color}"></b>` +
+                      `${row.label}</span><span>${f1(row.data[j])}%</span></div>`).join('');
+    tip.style.opacity = 1;
+    tip.style.left = Math.min(ev.clientX + 14, innerWidth - tip.offsetWidth - 10) + 'px';
+    tip.style.top = Math.max(8, ev.clientY - tip.offsetHeight - 12) + 'px';
+  });
+  svg.addEventListener('mouseleave', () => {
+    tip.style.opacity = 0; cross.setAttribute('opacity', 0);
+  });
 }
 
 function drawBW() {
-  const r = RUNS[sel], s = r.series, svg = document.getElementById('bw');
-  clear(svg);
+  const r = RUNS[sel], s = r.series, svg = freshSvg('bw');
   const W = 1040, H = 180, P = {l: 44, r: 92, t: 12, b: 30};
   const note = document.getElementById('bw-note');
   const peak = r.config.peak_dram_gbps || 0;
@@ -584,8 +762,7 @@ function drawBW() {
 }
 
 function drawChannels() {
-  const r = RUNS[sel], svg = document.getElementById('ch');
-  clear(svg);
+  const r = RUNS[sel], svg = freshSvg('ch');
   const ch = r.dram_channels || [];
   const note = document.getElementById('ch-note');
   if (!ch.length) { note.textContent = 'No per-channel statistics in this log.'; return; }
@@ -638,14 +815,106 @@ function drawTable() {
     `<td>${fmt(r.cycles)}</td><td>${f1(r.us)}</td>` +
     `<td>${bar(r.sa, '--s1')}</td><td>${bar(r.vu, '--s2')}</td>` +
     `<td>${bar(r.dma, '--s3')}</td><td>${bar(r.dram_util, '--s4')}</td>` +
-    `<td>${f1(r.gbps)}</td><td>${fmt(r.comp)}</td>` +
+    `<td>${f1(r.gbps)}</td>` +
+    `<td>${r.compile < 0 ? '<span class="src">-</span>' : secs(r.compile)}</td>` +
+    `<td>${fmt(r.comp)}</td>` +
     `<td>${fmt(r.movin)}</td><td>${fmt(r.movout)}</td></tr>`).join('');
   tb.querySelectorAll('tr').forEach(tr => tr.addEventListener('click', () => {
     sel = +tr.dataset.i; drawAll();
   }));
 }
 
-function drawAll() { drawKPIs(); drawTimeline(); drawBW(); drawChannels(); drawTable(); }
+const TIMING = DATA.timing || {records: [], merged: null, orphans: []};
+let ctScope = 'kernel';
+
+function secs(v) { return v >= 10 ? v.toFixed(1) + 's' : v.toFixed(2) + 's'; }
+
+function hbars(svg, entries, total, limit) {
+  const W = 500, RH = 22, P = {l: 168, r: 74, t: 4, b: 4};
+  let rows = entries.slice().sort((a, b) => b[1] - a[1]);
+  if (limit && rows.length > limit) {
+    const rest = rows.slice(limit);
+    rows = rows.slice(0, limit);
+    rows.push([`(${rest.length} smaller)`, rest.reduce((a, e) => a + e[1], 0), true]);
+  }
+  const H = P.t + rows.length * RH + P.b;
+  svg.setAttribute('height', Math.max(10, H));
+  const max = Math.max(...rows.map(r => r[1]), 1e-9);
+  const plotW = W - P.l - P.r;
+  rows.forEach((row, i) => {
+    const y = P.t + i * RH, w = Math.max(1, plotW * row[1] / max);
+    el(svg, 'rect', {x: P.l, y: y + 5, width: plotW, height: RH - 12, rx: 3,
+                     fill: css('--track')});
+    el(svg, 'rect', {x: P.l, y: y + 5, width: w, height: RH - 12, rx: 3,
+                     fill: row[2] ? css('--muted') : css('--s1')});
+    el(svg, 'text', {x: P.l - 10, y: y + RH / 2 + 3, 'text-anchor': 'end',
+                     fill: css('--ink-2')}, row[0]);
+    const pct = total ? (100 * row[1] / total).toFixed(1) + '%' : '';
+    el(svg, 'text', {x: W - P.r + 8, y: y + RH / 2 + 3}, `${secs(row[1])}  ${pct}`);
+  });
+}
+
+function ctRecord() {
+  const r = RUNS[sel];
+  if (ctScope === 'kernel' && r && r.timing != null) return TIMING.records[r.timing];
+  return TIMING.merged;
+}
+
+function drawCompile() {
+  const card = document.getElementById('ct-card');
+  if (!TIMING.records.length) { card.style.display = 'none'; return; }
+  card.style.display = '';
+  const r = RUNS[sel], has = r && r.timing != null;
+  const seg = document.getElementById('ct-seg');
+  if (!has && ctScope === 'kernel') ctScope = 'all';
+  seg.innerHTML =
+    `<button data-s="kernel" aria-pressed="${ctScope === 'kernel'}"` +
+    `${has ? '' : ' disabled'}>This kernel</button>` +
+    `<button data-s="all" aria-pressed="${ctScope === 'all'}">` +
+    `All ${TIMING.records.length} compiles</button>`;
+  seg.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+    ctScope = b.dataset.s; drawCompile();
+  }));
+
+  const rec = ctRecord();
+  const note = document.getElementById('ct-note');
+  const stageSvg = freshSvg('ct-stage'), passSvg = freshSvg('ct-pass');
+  if (!rec) { note.textContent = 'No tnpu timing.json for this kernel.'; return; }
+
+  const total = rec.total || 0;
+  note.innerHTML = ctScope === 'kernel'
+    ? `Wall clock of the tnpu compile for <b>${rec.label || rec.kernel}</b>: ` +
+      `${secs(total)} across ${rec.stages.length} stages. This is compile time, not ` +
+      `simulated cycles.`
+    : `Wall clock summed over ${TIMING.records.length} compiles: ${secs(total)}. ` +
+      (has ? '' : 'The selected kernel has no timing.json. ') +
+      `This is compile time, not simulated cycles.`;
+
+  hbars(stageSvg, rec.stages.map(s => [s.name, s.seconds]), total);
+
+  const items = [];
+  for (const stage in (rec.passes || {})) {
+    for (const e of rec.passes[stage]) items.push([`${stage}/${e.name}`, e.seconds]);
+  }
+  for (const stage in (rec.tools || {})) {
+    for (const t in rec.tools[stage]) {
+      const e = rec.tools[stage][t];
+      items.push([`${stage}/${t} x${e.calls}`, e.seconds]);
+    }
+  }
+  hbars(passSvg, items, total, 14);
+}
+
+function drawAll() {
+  if (!RUNS.length) {
+    document.querySelectorAll('.card').forEach(c => {
+      if (c.id !== 'ct-card') c.style.display = 'none';
+    });
+    drawCompile();
+    return;
+  }
+  drawKPIs(); drawTimeline(); drawBW(); drawChannels(); drawTable(); drawCompile();
+}
 
 document.querySelectorAll('#tbl th').forEach(th => th.addEventListener('click', () => {
   const k = th.dataset.k;
@@ -672,15 +941,27 @@ def main(argv=None):
     ap.add_argument("paths", nargs="*", default=["togsim_results"],
                     help="log files, globs, or directories (default: togsim_results)")
     ap.add_argument("-o", "--out", default="util.html", help="output HTML path")
+    ap.add_argument("--timing", nargs="*", default=None, metavar="ROOT",
+                    help="extra roots to scan for tnpu timing.json; the workdir beside "
+                         "each log's trace_so is always checked")
     args = ap.parse_args(argv)
 
     runs = collect(args.paths or ["togsim_results"])
-    if not runs:
-        print("no TOGSim logs with statistics found", file=sys.stderr)
+    timing = find_timing(args.timing or [])
+    for r in runs:
+        if not r["trace_so"]:
+            continue
+        wd = os.path.dirname(os.path.abspath(r["trace_so"]))
+        if wd not in timing:
+            rec = read_timing(os.path.join(wd, "timing.json"))
+            if rec:
+                timing[wd] = rec
+    if not runs and not timing:
+        print("no TOGSim logs with statistics and no timing.json found", file=sys.stderr)
         return 1
     with open(args.out, "w") as fh:
-        fh.write(render(build_payload(runs)))
-    print(f"{len(runs)} run(s) -> {args.out}")
+        fh.write(render(build_payload(runs, timing)))
+    print(f"{len(runs)} run(s), {len(timing)} compile record(s) -> {args.out}")
     return 0
 
 
