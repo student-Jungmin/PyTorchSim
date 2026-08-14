@@ -53,10 +53,25 @@
 # move drops a unit middle axis, leaving no operand naming that dim, so linalg
 # could not infer the loop's bound -- which for a unit dim is 1. Fixed in
 # triton-npu 2988424, and the pin in thirdparty/triton-npu.json moves with it.
-# Both towers run: vision 4.2915e-06, text 3.4019e-06, 8m07s for the pair.
+# Both towers run: vision 4.5300e-06, text 4.1723e-06, 8m07s for the pair
+# (4.2915e-06 / 3.4019e-06 before the transformers 4.51 -> 5.15 step; the numbers
+# moved within the decade and the entry did not need a source change).
 # The vision width is NOT the real 1280 on purpose -- test_vit.py and
 # test_clip.py already gate ViT-shaped attention at 768, and what was unproven
 # was the tile structure and the local/global split, which scaling keeps.
+#
+# test_llama4.py IS THE ONE THAT NEEDED TWO. Llama 4 is the first break in the
+# family since 3 and it carries four new things at once -- MoE in every layer,
+# a NoPE period, per-head qk_norm, and chunked attention -- so it stopped three
+# times and only the last stop was about any of those four. `aten.polar` (the
+# complex-valued rotary, which no other model here builds) needed PyTorchSim
+# 3fdcab7 to become a view over a real pair; then the model compiled and
+# answered WRONG at max abs diff 1.31, because the MoE router fills with -inf
+# and scatters the top-k in and `_roles` gave that buffer a fresh allocation.
+# 8d8e2ed fixed it and tests/ops/misc/test_inplace_partial_write.py pins it.
+# 147,874,816 parameters, 30 kernels, 4.7684e-06, 7m53s at --preset small.
+# Thirty-five ops still run eager, mostly complex arithmetic that Inductor
+# declines to codegen at all; the entry gates the 30 kernels around them.
 #
 # WHY tests/models/Qwen/test_qwen.py RUNS TWO PRESETS WHERE EVERY OTHER ENTRY
 # RUNS ONE. It gates a family, not a model: Qwen2/2.5 carry a QKV bias that no
@@ -83,6 +98,7 @@ tests/models/GPT2/test_gpt2.py
 tests/models/Llama/test_llama.py
 tests/models/Llama/test_llama3.py
 tests/models/Llama/test_llama3x.py
+tests/models/Llama/test_llama4.py
 tests/models/Llama/test_mllama.py
 tests/models/Mixtral8x7B/test_mistral.py
 tests/models/MobileNet/test_mobilenet.py
