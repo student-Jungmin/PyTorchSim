@@ -78,6 +78,7 @@ Read in `PyTorchSimFrontend/extension_config.py`:
 | `TORCHSIM_LOG_PATH` | `$TORCHSIM_DIR/togsim_results` | where TOGSim logs go |
 | `TORCHSIM_DUMP_PATH` | `$TORCHSIM_DIR` | misc dumps |
 | `TORCHSIM_DEBUG_MODE` | `0` | extra debug |
+| `TORCHSIM_BREAKDOWN` | `0` | `1` prints where the run's wall clock went (tnpu compile per stage/pass, Spike, gem5, TOGSim) at exit, and writes `breakdown.json` into the dump path |
 | `TNPU_DIR` | `$TORCHSIM_DIR/triton-npu` | triton-npu checkout (stages 1-5) |
 | `TNPU_PYTHON` | `sys.executable` | interpreter tnpu runs under (it needs LLVM 23's MLIR bindings, this process holds LLVM 20's) |
 | `SRAM_BUFFER_PLAN_PATH` | unset | L2/CMEM persistent-cache tensor plan (Python file with `plan = {...}`) |

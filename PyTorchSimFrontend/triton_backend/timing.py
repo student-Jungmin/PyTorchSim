@@ -9,7 +9,7 @@ import os
 
 from PyTorchSimFrontend import extension_config
 
-from . import launch
+from . import breakdown, launch
 
 logger = extension_config.setup_logger()
 
@@ -45,20 +45,25 @@ def measure_tile_cycles(workdir, meta):
         logger.warning("[Gem5] %s not found; cannot sample cycles", spec)
         return None
 
-    run_tog(stage_artifact(workdir, "custom.mlir"),
-            os.path.join(workdir, "tog_sample.py"),
-            os.path.join(workdir, SAMPLE_MLIR), sample_mode=True)
+    with breakdown.span(breakdown.GEM5_SAMPLE, kernel_name):
+        run_tog(stage_artifact(workdir, "custom.mlir"),
+                os.path.join(workdir, "tog_sample.py"),
+                os.path.join(workdir, SAMPLE_MLIR), sample_mode=True)
 
-    rc, output = tnpu_bridge.run_module("tnpu.cycle", spec, workdir)
+    with breakdown.span(breakdown.GEM5_BUILD, kernel_name):
+        rc, output = tnpu_bridge.run_module("tnpu.cycle", spec, workdir)
+    breakdown.ingest_tnpu(workdir, kernel_name, kind="cycle",
+                          name="timing-cycle.json")
     if rc != 0:
         logger.warning("[Gem5] cycle binary build failed:\n%s", output[-2000:])
         return None
 
     from Simulator.simulator import CycleSimulator
     try:
-        return CycleSimulator().compile_and_simulate(
-            os.path.join(workdir, CYCLE_BIN), int(extension_config.vpu_num_lanes),
-            silent_mode=True)
+        with breakdown.span(breakdown.GEM5_RUN, kernel_name):
+            return CycleSimulator().compile_and_simulate(
+                os.path.join(workdir, CYCLE_BIN),
+                int(extension_config.vpu_num_lanes), silent_mode=True)
     except Exception as e:
         logger.warning("[Gem5] sampling failed: %s", e)
         return None
