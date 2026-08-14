@@ -22,6 +22,9 @@ from PyTorchSimFrontend import extension_config as _extension_config
 # Above the route branch because it is not about the route: what an op falls
 # back TO is the CPU, whichever backend emits the kernels around it.
 import PyTorchSimFrontend.extension_decomposition  # noqa: F401
+from PyTorchSimFrontend import extension_counting_sort as _counting_sort
+
+_counting_sort.install()
 from PyTorchSimFrontend.mlir.mlir_codegen_backend import ExtensionWrapperCodegen
 
 # Two mutually exclusive codegen routes for `npu`, chosen here because Inductor
