@@ -42,7 +42,25 @@ if importlib.util.find_spec("flash_attn") is None:
 torch.npu.register_eager_to_compile([
     "aten::zero_",
     "aten::sum.IntList_out",
-    "aten::mul.out",
+    # NOT aten::mul.out, and the reason has changed since it was taken out.
+    #
+    # Registering an op makes the wrapper compile it, which is safe exactly
+    # while Inductor can generate code for it. When it cannot, the aten call
+    # comes back as a fallback and an ATen implementation that reaches the same
+    # overload re-enters the wrapper -- mul.Tensor allocates an out and calls
+    # mul.out -- until
+    #
+    #     RecursionError: maximum recursion depth exceeded
+    #
+    # DeepSeek-V2's complex RoPE closed that loop. It no longer does:
+    # extension_complex_to_real.py rewrites the complex multiply into real
+    # arithmetic, Inductor generates a kernel, and no fallback is emitted.
+    # Measured both ways, and pinned by
+    # tests/ops/misc/test_eager_to_compile_recursion.py.
+    #
+    # It stays out anyway. The trigger is gone, the SHAPE is not: any op whose
+    # compiled form can fall back to itself does this, and nothing in
+    # eager_to_compile guards against re-entry.
     "aten::floor_divide",
     "aten::floor_divide.Tensor",
     "aten::floor_divide.Scalar",

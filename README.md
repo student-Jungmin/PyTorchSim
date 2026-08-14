@@ -41,7 +41,8 @@ PyTorchSim **supports**:
 | ResNet-18 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | channel last format |
 | ResNet-50 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | channel last format |
 | MobileNet-v2 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/MobileNet/` (torchvision) |
-| YOLOv5 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/Yolov5/` |
+| YOLOv5 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/Yolov5/` — pretrained weights via torch.hub, and the only anchor-based YOLO head in the suite |
+| YOLO v5 / v8 (ultralytics parser) | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/Yolo/test_yolo.py` — one preset per version directory in `ultralytics/cfg/models`, built from YAML with random weights. v5 (C3+SPPF) and v8 (C2f) pass; `--version` also builds v3, v6, v9, v10, 11, 12, 26, each of which has a measured stopping point in the test docstring |
 | BERT | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ |  |
 | GPT-2 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ |  |
 | ViT | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/test_vit.py` |
@@ -56,7 +57,7 @@ PyTorchSim **supports**:
 | SwinV2 | 🤗 | ✅ | `tests/models/test_swinv2.py` (shifted-window attention) |
 | CLIP (vision) | 🤗 | ✅ | `tests/models/test_clip.py` |
 | ConvNeXt V2 | 🤗 | ✅ | `tests/models/test_convnextv2.py` (channels-first LayerNorm, depthwise conv) |
-| Llama-4 | 🤗 | ⏳ | In development |
+| Llama 4 | 🤗 | ✅ | `tests/models/Llama/test_llama4.py` — MoE in every layer (no dense layer to fall back on), the NoPE period, per-head qk_norm and chunked attention, all four in one run. Experts are scaled to 4; the routing and the combine are what the shapes decide, not the count. 31 kernels, 4.77e-06. The complex rotary stays on the device: `polar` becomes a view over a real pair and `extension_complex_to_real` rewrites the rest, so none of it falls back. Gated at 1024 hidden — `--preset scout` builds Scout's real 5120 width but stops in the functional simulator, where tnpu's wrapper doubles every buffer and the 1.25 GiB expert stack fails to allocate |
 | Broader model support | — | ⏳ | In development |
 <!-- ## Requirements
 
