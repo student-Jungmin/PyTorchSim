@@ -74,58 +74,8 @@ def _spad_overflow(exc):
 def _shrink_tile(meta, usage, budget):
     """Divide the tile by enough to fit, in place. False if stuck.
 
-    WHY THE BLOCK SIZE IS THE FREE VARIABLE AND THE BUFFER COUNT IS NOT.
-    `fixed_config_for` sizes R0_BLOCK against a budget divided by
-    `_REDUCTION_LIVE_TILES`, a constant standing in for how many block-sized
-    tiles the kernel will keep live -- and that count is a property of the
-    LOWERING, which does not exist until the block size has been chosen. The
-    constant's own comment says so ("the count is a property of the kernel and
-    not a constant") and then guesses anyway, at 12. ViT's first LayerNorm,
-    fused with a patch convolution, an addmm and a transpose, lowers to 41
-    scratchpad globals:
-
-        R0_BLOCK 512   77504 bytes/lane   over the 65536 budget
-        R0_BLOCK 256   38680             fits
-        R0_BLOCK 128   19356
-
-    So the guess cannot be made right by picking a bigger number -- 41 would
-    cost every ordinary reduction three quarters of its tile. It can only be
-    CORRECTED, and the correction is one recompile: tnpu measures the real
-    thing and says by how much.
-
-    `usage / budget` rounded up to a power of two, so an overshoot of 1.18x
-    halves once and an overshoot of 5x goes straight to an eighth rather than
-    walking there. A reduction block moves first: XBLOCK is usually the lane
-    axis, and shrinking it would leave lanes idle without freeing a byte.
-
-    ONLY A BLOCK THE KERNEL ACCEPTS AS AN ARGUMENT MOVES ANYTHING. A PERSISTENT
-    reduction -- Inductor's choice when r0_numel is small enough to hold the
-    whole reduction in one tile -- writes the block size into the kernel BODY:
-
-        @triton_heuristics.persistent_reduction(size_hints={'x': 1024, 'r0_': 128})
-        def triton_npu_fused_..._5(..., XBLOCK : tl.constexpr):
-            R0_BLOCK: tl.constexpr = 128        # <- not an argument
-
-    so R0_BLOCK is absent from the signature and rewriting it here changes the
-    spec, recompiles, and produces THE SAME KERNEL. Measured on Qwen3's fused
-    q_norm + rope (`_unsafe_view_add_cat_mean_mul_neg_pow_rsqrt_slice_...`, 27
-    scratchpad globals over a [XBLOCK, 128] tile), where the loop used to run
-    down to R0_BLOCK 1 and fail with the overflow unchanged at every step:
-
-        R0_BLOCK 128 -> 8 -> 1   1625120 bytes/lane, all three, over 131072
-        XBLOCK   128 -> 64        fits (and 16 and 8 also compile)
-
-    In that kernel the reduction axis is the vectorised one -- tnpu names the
-    globals `bufN_spad_1lane` and Inductor scores the tiling `{'x': 0,
-    'r0_': 2655744}` -- so X is the tile's outer axis and shrinking it is
-    exactly what frees bytes per lane. Hence: reduction blocks if the kernel
-    takes any, XBLOCK only when it takes none, and never both.
-
-        measured   Moonlight's MoE router sort, xnumel 1, r0_numel 64 at 16
-                   routed experts: R0_BLOCK 32 and then 16, 104224 bytes/lane
-                   both times, byte-identical. XBLOCK 128 -> 64 -> 32 moves it
-                   (104224 -> 71328 -> fits), and the run goes on. Same shape,
-                   same lever.
+    ONLY A BLOCK THE KERNEL TAKES AS AN ARGUMENT MOVES ANYTHING: a persistent
+    reduction bakes R0_BLOCK into its body. XBLOCK only when it takes none.
     """
     factor = 1
     while usage > budget * factor:
@@ -163,25 +113,8 @@ def triton_npu_compile(src_code, meta, kernel_name):
         elf = tnpu_bridge.stage_artifact(write_path, f"{kernel_name}.elf")
         if elf is None:
             with open(os.path.join(write_path, "kernel.py"), "w") as f:
-                f.write(src_code)      # the unmodified Inductor source
-            timing.store_meta(write_path, meta)   # lets the timing step run standalone
-            # THE CORRECTION IS ONLY A CORRECTION IF THE NUMBER MOVES. Halving
-            # the reduction block is a guess about what the kernel keeps live,
-            # and for a kernel whose scratchpad is sized by something else the
-            # remeasured usage comes back IDENTICAL -- so the loop walks
-            # R0_BLOCK down to 1, paying one full recompile per step, and fails
-            # for the reason it already knew at the first retry.
-            #
-            #     measured   Moonlight at 16 experts, `sort_40` (the MoE
-            #                router): 104224 bytes/lane at R0_BLOCK 32 and
-            #                104224 again at 16, each measurement about eight
-            #                minutes because the sort's IR is 277 KB. Five more
-            #                steps were queued behind it.
-            #
-            # So a retry that does not reduce the usage ends it: the block size
-            # is not this kernel's free variable, and the caller gets the spad
-            # overflow with the kernel's name on it instead of forty minutes
-            # later.
+                f.write(src_code)
+            timing.store_meta(write_path, meta)
             last_usage = None
             while True:
                 kernel_spec.write_spec_file(src_code, meta, spec_path,
@@ -194,30 +127,52 @@ def triton_npu_compile(src_code, meta, kernel_name):
                     over = _spad_overflow(exc)
                     if over is None:
                         raise
+                    # A RETRY THAT FREES NOTHING IS NOT A RETRY. The tile
+                    # keeps halving, the measurement does not move, and the last
+                    # halving takes the outer axis to 1 -- a unit axis, which
+                    # leaves select_lane_axis no axis for the lanes, so it
+                    # answers differently per buffer and the fold crosses lanes.
+                    # That kernel COMPILES and returns wrong numbers.
+                    #
+                    #   measured, Qwen2-MoE's sort kernel at spad 131072, each
+                    #   XBLOCK compiled alone and its .spad read back:
+                    #
+                    #     128 273,936 | 32 149,264 | 16 132,592   all axis 0
+                    #       8 127,616 |  4 127,616 |  2 127,616   all axis 0
+                    #       1  37,792                axis 0 x300, 1 x125, ONE_LANE x4
+                    #
+                    #   8/4/2 are one number because reserve_per_lane rounds up
+                    #   to MIN_VEC; 1 is smaller only because the banking
+                    #   collapsed. The model gave Max abs diff 1.369991421699524
+                    #   at XBLOCK 1, twice, and passes at 8 and 64.
+                    #
+                    # A compile error names the kernel and the budget; a wrong
+                    # number names nothing.
                     if last_usage is not None and over[0] >= last_usage:
-                        logger.info(
-                            "[triton-npu] %s: %d bytes/lane did not move when "
-                            "the reduction block was halved, so the block is "
-                            "not what sizes it -- not retrying", kernel_name,
-                            over[0])
-                        raise
-                    if not _shrink_tile(meta, *over):
+                        logger.warning(
+                            "[triton-npu] %s: %d bytes/lane, unchanged from the "
+                            "previous tile -- shrinking further frees nothing "
+                            "and only risks a unit axis, so stopping here",
+                            kernel_name, over[0])
                         raise
                     last_usage = over[0]
+                    if not _shrink_tile(meta, *over):
+                        raise
+                    # EVERY BLOCK, and the filter used to be `endswith("_BLOCK")`
+                    # -- which is false of "XBLOCK", the only block that moves in
+                    # a persistent reduction (see _shrink_tile). So the one line
+                    # that says what the retry changed reported the block that
+                    # did NOT change and hid the one that did:
+                    #
+                    #   retrying with {'R0_BLOCK': 128}    six times in a row
+                    #
+                    # reads as a loop that shrinks nothing, which is the opposite
+                    # of what was happening. Measured on Qwen2-MoE's sort kernel.
                     logger.info(
                         "[triton-npu] %s: %d bytes/lane over a budget of %d, "
                         "retrying with %s", kernel_name, over[0], over[1],
-                        # `XBLOCK` HAS NO UNDERSCORE, so `endswith("_BLOCK")`
-                        # printed every block EXCEPT the one _shrink_tile had
-                        # just moved -- and the unchanged R0_BLOCK next to it
-                        # read as "the retry did nothing". Measured on the
-                        # router sort: the line said {'R0_BLOCK': 64} while the
-                        # spec said XBLOCK 128 -> 64.
                         {k: v for k, v in meta["fixed_config"].items()
                          if k.endswith("BLOCK")})
-            # The spec now records the block sizes that actually compiled, and
-            # timing.store_meta above wrote the ones that did not. Restate it so
-            # a standalone timing run launches the grid the ELF was built for.
             timing.store_meta(write_path, meta)
         logger.info("[triton-npu] %s -> %s", kernel_name, write_path)
         return TritonNPULauncher(kernel_name, write_path, meta)

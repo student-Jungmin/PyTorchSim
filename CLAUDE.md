@@ -12,6 +12,56 @@ PyTorchSim is a cycle-accurate NPU simulation framework. It plugs into the PyTor
 
 The pipeline runs in that order on every `torch.compile` invocation; you'll see the three banners (`[Gem5]`, `[Spike]`, `[TOGSim]`) in the log when something is right.
 
+## Every operation runs on the NPU — a CPU fallback is a defect
+
+An op with no `npu` kernel does not fail. It **falls back to the CPU**, quietly, and
+the model still produces a number. That is the worst shape a defect can have here,
+because the run looks like a pass:
+
+- **It is not the thing we are measuring.** Work that ran on the host is absent
+  from the TOG, so Gem5/TOGSim price it at zero and Spike never validates it.
+  A model whose expert matmuls ran on the CPU has not been run on this NPU, and
+  reporting it as supported is reporting someone else's arithmetic.
+- **It hides which half is wrong.** When the numbers come out wrong, a graph
+  split between device kernels and host calls gives no answer to "where did it
+  diverge" — the host half is always right, so every bisect points at us whether
+  or not we are at fault.
+- **It is silent.** Nothing in the log says "this ran on the CPU". You have to go
+  and look.
+
+**HOW TO LOOK.** The generated wrapper names every call it does not compile. Take
+the path from `Wrapper Codegen Path` in the log — there is one per graph, so read
+them all, not the last one — and count the assignment lines that are not kernels:
+
+```bash
+grep -E '^\s+buf[0-9]+ = (torch\.ops|extern_kernels)' "$WRAPPER"   # must be empty
+```
+
+**MEASURED, and it is not hypothetical.** Qwen2-MoE, `--preset 2-moe`, same tree
+and same device, two transformers:
+
+```
+4.51.3   12 graphs   48 npu kernels   0 cpu fallbacks     Test Passed
+5.15.0    1 graph    23 npu kernels   4 cpu fallbacks     Max abs diff 1.370
+                                      aten.topk, aten.histc,
+                                      transformers.grouped_mm_fallback x2
+```
+
+5.x rewrote the MoE block to remove the graph breaks (12 graphs -> 1), and paid
+for it in fallbacks. The wrong number came with them.
+
+**WHAT TO DO INSTEAD.** A decomposition in `PyTorchSimFrontend/extension_decomposition.py`,
+written in aten ops the backend already lowers, so the work stays in the graph.
+That file exists for exactly this and says so. Note that casting an operand until
+the CPU kernel accepts it is only half the job: the histc decomposition there
+still leaves `aten.histc` as an extern call, and its own docstring names the
+device-side form it should have been (`(x == bin).sum()` against `arange(bins)` —
+one elementwise and one reduce).
+
+**IF YOU CANNOT REMOVE ONE,** say so in those words and name it. A fallback left
+in place is a known hole in what "this model runs" means, and it belongs in the
+report next to the number it produced — never folded into a pass.
+
 ## Repo layout (the parts that actually matter)
 
 | Path | Purpose |

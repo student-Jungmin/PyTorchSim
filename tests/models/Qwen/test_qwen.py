@@ -246,6 +246,22 @@ def _layer0(model):
 
 
 
+def _routing_of(block):
+    """(top_k, norm_topk_prob), wherever this transformers keeps them.
+
+    Up to 4.x the sparse block holds both itself. From 5.x the routing is a
+    module of its own -- `Qwen2MoeTopKRouter`, `Qwen3MoeTopKRouter` -- and the
+    block delegates: `block.gate.top_k`. The QUESTION is the same either way
+    and it is the one the preset makes a claim about, so it is asked in one
+    place rather than reached for through whichever attribute this version
+    happens to have.
+    """
+    for owner in (block, getattr(block, "gate", None)):
+        if owner is not None and hasattr(owner, "top_k"):
+            return owner.top_k, getattr(owner, "norm_topk_prob", None)
+    return None, None
+
+
 def _expert_count(block):
     """How many experts this MoE block has, in either spelling.
 
@@ -312,14 +328,16 @@ def _assert_character(preset, cfg, model):
         block = layer.mlp
         assert hasattr(block, "shared_expert") and hasattr(block, "shared_expert_gate"), \
             "the 2-moe preset exists for the gated shared expert; this block has none"
-        assert _expert_count(block) == p["experts"] and block.top_k == p["top_k"]
-        assert block.norm_topk_prob is False, "Qwen1.5-MoE does not renormalise the top-k weights"
+        top_k, norm = _routing_of(block)
+        assert _expert_count(block) == p["experts"] and top_k == p["top_k"]
+        assert norm is False, "Qwen1.5-MoE does not renormalise the top-k weights"
     if p["family"] == "qwen3_moe":
         block = layer.mlp
         assert not hasattr(block, "shared_expert"), \
             "Qwen3-MoE has no shared expert; if this block has one it is a Qwen2-MoE block"
-        assert _expert_count(block) == p["experts"] and block.top_k == p["top_k"]
-        assert block.norm_topk_prob is True, "Qwen3-MoE renormalises the top-k weights"
+        top_k, norm = _routing_of(block)
+        assert _expert_count(block) == p["experts"] and top_k == p["top_k"]
+        assert norm is True, "Qwen3-MoE renormalises the top-k weights"
 
     if p.get("tie", False):
         body = model.model if hasattr(model, "model") else model
