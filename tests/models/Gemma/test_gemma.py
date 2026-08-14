@@ -268,6 +268,16 @@ _PRESETS = {
     # this file at all, and the shared assertions cash both.  The conv1d is the
     # reason it needs `conv1d_to_conv2d` registered; the fused block is what
     # overran pk's argv buffer.
+    # 3n's period is 5 (four sliding, one full).  Six layers runs one whole
+    # period and one layer past it, which is what leaves a KV-shared layer with
+    # a same-typed donor in front of it: the sharing index is resolved by
+    # searching layer_types[:num_layers - num_kv_shared] backwards for this
+    # layer's own type, so num_kv_shared_layers=1 is the largest value a
+    # six-layer preset can carry without that search raising.
+    "3n": dict(family="gemma3n", layers=6, hidden=2048, heads=8, kv_heads=2,
+               head_dim=256, intermediate=8192, vocab=8192, seq=32, tie=True,
+               window=8, pattern=5, hidden_per_layer=256, vocab_per_layer=8192,
+               altup=4, laurel=64, kv_shared=1, sparsity=(0.95, 0.95)),
     "rg-2b": dict(family="recurrentgemma", layers=3, hidden=2560, heads=10,
                   kv_heads=10, head_dim=256, intermediate=7680, vocab=8192,
                   seq=32, tie=True, window=8, lru_width=2560,
@@ -292,6 +302,9 @@ _FAMILIES = {
     "gemma3_mm": ("transformers.models.gemma3.configuration_gemma3", "Gemma3Config",
                   "transformers.models.gemma3.modeling_gemma3",
                   "Gemma3ForConditionalGeneration", "Gemma3ForConditionalGeneration"),
+    "gemma3n": ("transformers.models.gemma3n.configuration_gemma3n", "Gemma3nTextConfig",
+                "transformers.models.gemma3n.modeling_gemma3n",
+                "Gemma3nTextModel", "Gemma3nForCausalLM"),
     "recurrentgemma": ("transformers.models.recurrent_gemma.configuration_recurrent_gemma",
                        "RecurrentGemmaConfig",
                        "transformers.models.recurrent_gemma.modeling_recurrent_gemma",
@@ -467,6 +480,26 @@ def _build_config(preset, seq_len):
         kwargs.pop("attention_bias", None)
     elif text_family == "gemma":
         kwargs["rope_theta"] = 10000.0
+    elif text_family == "gemma3n":
+        # 3n's own machinery, all of it on: the per-layer input embedding and
+        # its projection, altup's parallel residual streams, laurel's low-rank
+        # branch, activation sparsity on the leading layers, and KV sharing on
+        # the trailing one.  A preset with these off is a Gemma 3 block wearing
+        # a different config class.
+        kwargs["sliding_window"] = p["window"]
+        kwargs["hidden_size_per_layer_input"] = p["hidden_per_layer"]
+        kwargs["vocab_size_per_layer_input"] = p["vocab_per_layer"]
+        kwargs["altup_num_inputs"] = p["altup"]
+        kwargs["laurel_rank"] = p["laurel"]
+        kwargs["num_kv_shared_layers"] = p["kv_shared"]
+        # Per layer, and shorter than the model on purpose: the shipped E2B is
+        # sparse for its leading layers and dense after, so a flat pattern would
+        # not exercise the branch that skips the threshold entirely.
+        kwargs["activation_sparsity_pattern"] = list(p["sparsity"]) + \
+            [0.0] * (p["layers"] - len(p["sparsity"]))
+        # 3n keeps the final cap Gemma 3 dropped and has no attention cap at
+        # all, so the shipped 30.0 stays rather than being pinned to None the
+        # way the gemma3 branch does.
     else:
         # The window is shrunk to fit inside seq on purpose; see the module
         # docstring.  _assert_character refuses a preset where it does not.
@@ -633,7 +666,7 @@ def _assert_character(preset, cfg, model, seq_len):
             "Gemma 1 does not soft-cap; capping here means this is a Gemma 2 block"
 
     # -- the window must actually bite, or the alternation proves nothing -----
-    if family in ("gemma2", "gemma3"):
+    if family in ("gemma2", "gemma3", "gemma3n"):
         window = cfg.sliding_window
         assert window is not None and window < seq_len, \
             (f"sliding_window ({window}) must be strictly inside seq ({seq_len}); "
@@ -648,8 +681,9 @@ def _assert_character(preset, cfg, model, seq_len):
         sliding = [_layer_is_sliding(body, i, cfg)
                    for i in range(cfg.num_hidden_layers)]
         assert len(sliding) == cfg.num_hidden_layers
-        assert cfg.query_pre_attn_scalar == p["qpas"], \
-            f"query_pre_attn_scalar must be {p['qpas']}, got {cfg.query_pre_attn_scalar}"
+        if family != "gemma3n":
+            assert cfg.query_pre_attn_scalar == p["qpas"], \
+                f"query_pre_attn_scalar must be {p['qpas']}, got {cfg.query_pre_attn_scalar}"
 
     # -- Gemma 2: alternation, soft-capping, four norms per layer -------------
     if family == "gemma2":
@@ -682,6 +716,40 @@ def _assert_character(preset, cfg, model, seq_len):
             assert all(sliding), \
                 ("a preset shorter than the period runs local layers only; "
                  "if a global one appeared here the period changed")
+
+    # -- Gemma 3n: four things Gemma 3 does not have, and all of them ON ------
+    if family == "gemma3n":
+        assert cfg.final_logit_softcapping == 30.0, \
+            ("3n kept the final cap Gemma 3 dropped; without it this preset is a "
+             f"Gemma 3 block in a 3n config class, got {cfg.final_logit_softcapping}")
+        for name in ("altup", "laurel", "per_layer_input_gate",
+                     "per_layer_projection", "post_per_layer_input_norm"):
+            assert hasattr(layer, name), \
+                f"3n carries {name} per layer; without it the preset proves nothing new"
+        assert cfg.altup_num_inputs == p["altup"] and cfg.altup_num_inputs > 1, \
+            (f"altup needs more than one residual stream to be altup, got "
+             f"{cfg.altup_num_inputs}")
+        assert cfg.hidden_size_per_layer_input == p["hidden_per_layer"], \
+            "the per-layer input embedding is what feeds per_layer_projection"
+
+        # ACTIVATION SPARSITY, and it must be partial. A flat pattern would run
+        # one branch of the MLP for every layer; the shipped E2B is sparse for
+        # its leading layers and dense after, which is both branches in one run.
+        sparse = [_layer_mlp(l).activation_sparsity for l in body.layers]
+        assert any(s > 0.0 for s in sparse) and any(s == 0.0 for s in sparse), \
+            (f"3n's preset must run sparse AND dense layers to cover both MLP "
+             f"branches; got {sparse}")
+
+        # KV SHARING, and it must actually fire on a layer whose donor exists.
+        shared = [bool(getattr(_layer_mixer(l), "is_kv_shared_layer", False))
+                  for l in body.layers]
+        assert shared.count(True) == p["kv_shared"], \
+            f"expected {p['kv_shared']} KV-shared layer(s), got {shared}"
+        assert shared[-1] and not shared[0], \
+            f"sharing is on the TRAILING layers; got {shared}"
+
+        assert sliding.count(False) == cfg.num_hidden_layers // p["pattern"], \
+            f"one layer in {p['pattern']} must be full attention; got {sliding}"
 
     if preset == "2b":
         assert cfg.hidden_size == 2048 and cfg.intermediate_size == 16384, \
