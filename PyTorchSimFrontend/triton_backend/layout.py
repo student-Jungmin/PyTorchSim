@@ -5,7 +5,6 @@ is handed, the runtime side sizes the .raw file that fills it -- so it is stated
 once here rather than derived twice.
 """
 
-
 def storage_span(size, stride, offset=0):
     """Last addressable element of a strided layout, in elements.
 

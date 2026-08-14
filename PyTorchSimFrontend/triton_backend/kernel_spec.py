@@ -1,37 +1,9 @@
-"""Inductor kernel  ->  tnpu KernelSpec.
+"""Inductor kernel -> tnpu KernelSpec.
 
-Two jobs, both of which exist because Inductor's Triton output is written for a
-GPU launcher and tnpu's is written for a static, ahead-of-time pipeline:
-
-1. `collect_meta` -- pull everything tnpu needs out of the Inductor kernel while
-   we still have `V.graph`: argument names/roles/dtypes/sizes, the constexprs,
-   and the numels the grid is computed from. This runs at codegen time; by the
-   time the compile callable fires, `V.graph` is gone.
-
-2. `write_spec_file` -- turn the Triton source + that metadata into a kernel file
-   tnpu can load (`tnpu.spec.load_spec`).
-
-WHY THE SOURCE HAS TO BE REWRITTEN
-----------------------------------
-Inductor emits, above the kernel:
-
-    from torch._inductor.runtime import triton_heuristics
-    @triton_heuristics.pointwise(size_hints={'x': 1024}, ..., inductor_meta=...)
-    @triton.jit
-    def triton_npu_0(in_ptr0, out_ptr0, xnumel, XBLOCK : tl.constexpr):
-
-Neither line can survive into tnpu:
-
-  * the tnpu triton venv has NO torch (deliberately -- tnpu/spec.py), so the
-    `torch._inductor.runtime` import fails on sight;
-  * `triton_heuristics.pointwise` is the AUTOTUNER. It picks XBLOCK at runtime
-    and derives `grid = cdiv(xnumel, XBLOCK)` from it. tnpu needs both to be
-    constants: the block size becomes a `tl.constexpr` in the ttir signature and
-    the grid is executed as a sequential loop by the generated C wrapper.
-
-So the decorator is stripped and XBLOCK is pinned as a constexpr instead. That is
-not a workaround -- fixing the config at codegen time is what makes the kernel
-statically describable, which is the whole premise of this route.
+`collect_meta` pulls what tnpu needs out of the Inductor kernel while `V.graph`
+is still live; `write_spec_file` turns the Triton source plus that metadata into
+a file `tnpu.spec.load_spec` can read. Launch shape is launch.py's, source
+rewriting is source_rewrite.py's.
 """
 
 import os
@@ -41,12 +13,11 @@ from torch._inductor.virtualized import V
 
 from PyTorchSimFrontend import extension_config
 
-from . import layout
+from . import layout, launch, source_rewrite
+from .errors import SpecIncomplete
 
 logger = extension_config.setup_logger()
 
-#: Triton signature token -> (torch dtype name, bytes). Only the dtypes
-#: tnpu/wrapper.py can round-trip through .raw files.
 _DTYPE = {
     "*fp64": "float64", "*fp32": "float32", "*fp16": "float16",
     "*bf16": "bfloat16",
@@ -56,48 +27,14 @@ _DTYPE = {
     "fp32": "float32", "i32": "int32", "i64": "int64",
 }
 
-
-#: Triton scalar token -> C type, for the wrapper's kernel declaration.
 _C_TYPE = {"i32": "int32_t", "i64": "int64_t", "fp32": "float"}
 
 
-class SpecIncomplete(RuntimeError):
-    """Metadata tnpu requires that this kernel did not provide.
-
-    Raised with the missing field named, rather than writing a spec that fails
-    deeper in the pipeline where the cause is unrecoverable.
-    """
-
-
-# ---------------------------------------------------------------------------
-# 1. codegen-time metadata capture
-# ---------------------------------------------------------------------------
 def _buffer_numel(name):
     """How many elements of STORAGE an Inductor buffer spans, or None.
 
-    NOT the product of its shape, which is what this used to be. The kernel
-    addresses with the buffer's STRIDES -- Inductor bakes them into the source
-    as constants -- so the buffer it is handed has to be as long as those
-    strides reach, and a layout whose strides leave gaps reaches further than
-    its element count:
-
-        buf18 = empty_strided((1, 12, 197, 197), (465792, 38816, 197, 1))
-                   197 * 197 = 38809 elements per head, at a PITCH of 38816
-
-    Seven elements of hole per head, twelve heads: 465792 of storage against
-    465708 of shape. Sized by the shape, the last head runs 77 elements past
-    the end of the buffer the harness allocated, and those 77 are simply lost on
-    the way back -- which is what ViT's first functional-verify failure was.
-    Every element of `buf18` read as if the heads were packed, 416959 of 465708
-    over tolerance, while the kernel had in fact computed the softmax correctly
-    (0.0318 max error over the padded reading, and all of that in the truncated
-    tail).
-
-    `1 + sum((size - 1) * stride)` is the last addressable element, which is the
-    definition that holds for a permuted layout as well as a padded one -- a
-    channels-last buffer has no gaps and comes out at the product, as before.
-    `layout.storage_span` states it, because functional.py sizes the .raw file
-    that fills this buffer with the same definition and the two must agree.
+    NOT the product of its shape: the kernel addresses with the strides, and a
+    layout with gaps reaches further (ViT's buf18, 465792 against 465708).
     """
     try:
         buf = V.graph.get_buffer(name)
@@ -111,44 +48,21 @@ def _buffer_numel(name):
         try:
             stride = [int(hint(s)) for s in lay.stride]
         except (AttributeError, TypeError):
-            # A layout with no strides to read: fall back to the shape, which
-            # is what this function always did and is right whenever the buffer
-            # is contiguous.
             n = 1
             for s in size:
                 n *= s
             return n
         return layout.storage_span(size, stride,
                                    int(hint(getattr(lay, "offset", 0))))
-    except Exception:  # noqa: BLE001 - best effort; caller reports it as missing
+    except Exception:
         return None
 
 
 def _roles(kernel):
-    """arg name -> 'in' | 'out' | 'inout', from the kernel's buffer tables.
+    """arg name -> ('in'|'out'|'inout', buffer), from the kernel's tables.
 
-    `inplace_buffers` IS NOT THE WHOLE OF `inout`. It holds the case where
-    Inductor reused an input's storage for the output and renamed the pair to
-    `in_out_ptrN`. A kernel can also mutate a buffer an EARLIER kernel produced,
-    and then the argument is an ordinary `out_ptrN` sitting in `output_buffers`
-    while `kernel.mutations` names the buffer. Inductor reads all three tables
-    when it builds `mutated_arg_names` (codegen/triton.py) and so does this.
-
-    Missing the third one is not a naming detail. An `out` is handed a fresh
-    buffer, so a kernel that writes only the positions an index names leaves the
-    rest at whatever the fresh buffer held:
-
-        fill 7.0 then scatter_    cpu [7.0, 1.54, 7.0, 7.0, ...]
-                                  npu [0.0, 1.54, 0.0, 0.0, ...]
-
-    tests/ops/misc/test_inplace_partial_write.py pins it, with a NON-ZERO fill
-    because zero makes the same defect pass. Found in Llama 4, whose MoE router
-    fills with -inf and scatters the top-k in.
-
-    THE STORE-BASED CHECK STILL RUNS AND IS STILL RIGHT. `demote_unwritten_inout`
-    takes an `inout` back to `in` when the source never stores to it, which is
-    the direction SD1.5 measured -- the table overstating. This is the other
-    direction, the table being right and unread; the two compose.
+    `inplace_buffers` IS NOT THE WHOLE OF `inout`: a kernel can mutate a buffer
+    an EARLIER kernel produced, and `kernel.mutations` is what names that.
     """
     out = {}
     for buf, arg in getattr(kernel.args, "input_buffers", {}).items():
@@ -158,8 +72,6 @@ def _roles(kernel):
     for buf, arg in getattr(kernel.args, "inplace_buffers", {}).items():
         name = getattr(arg, "inner_name", arg)
         out[name] = ("inout", buf)
-    # An output the kernel MUTATES rather than produces: it arrives holding a
-    # value and only part of it is written.
     outputs = getattr(kernel.args, "output_buffers", {})
     for buf in getattr(kernel, "mutations", ()):
         arg = outputs.get(buf)
@@ -169,31 +81,14 @@ def _roles(kernel):
     return out
 
 
-#: A store, in every spelling the generated kernels use. `tl.store` covers the
-#: ordinary one; the atomics write too, and a kernel that only atomically
-#: accumulates into a buffer has still written it.
 _STORE_RE = re.compile(r"\btl\.(store|atomic_\w+)\s*\(\s*([A-Za-z_]\w*)")
 
 
 def stored_args(src_code):
     """The argument names `src_code` actually WRITES.
 
-    Read off the source rather than taken from Inductor's tables, because the
-    two do not always agree and only one of them is what runs. Measured on
-    Stable Diffusion v1.5's UNet: twelve kernels take an `in_out_ptr0`, and TWO
-    of them -- `..._native_group_norm_silu_unsqueeze_12` and `..._41` -- never
-    store to it. They load it, fold it into a value, and store that value
-    somewhere else; `mutated_arg_names` still lists `in_out_ptr0`, because the
-    buffer Inductor renamed onto that storage is the one it planned to write
-    there.
-
-    Believing the table costs two things. The runtime copies the buffer back as
-    an output, which is harmless only because the file still holds what was
-    written INTO it. And the per-kernel verify compares that storage against
-    the golden for a node NOTHING materialised -- `add_5` for buf20 -- which is
-    a divergence report about a value that was never supposed to be there. The
-    eight `add_N` reports SD1.5 raises are exactly the eight calls of these two
-    kernels, one for one.
+    Read off the source, not Inductor's tables: two of SD1.5's twelve
+    in_out_ptr0 kernels never store to it, and the verify then reports a ghost.
     """
     return {m.group(2) for m in _STORE_RE.finditer(src_code)}
 
@@ -201,9 +96,8 @@ def stored_args(src_code):
 def demote_unwritten_inout(meta, src_code):
     """Turn an `inout` the kernel never stores to back into a plain `in`.
 
-    IN PLACE, on the meta dict, and returns it. Only `inout` is touched: an
-    `out` with no store would be a kernel that produces nothing, which is a
-    different fact and not one to paper over here.
+    In place, and returns it. Only `inout` is touched: an `out` with no store
+    is a kernel that produces nothing, which is a different fact.
     """
     stores = stored_args(src_code)
     for a in meta.get("args", ()):
@@ -212,13 +106,6 @@ def demote_unwritten_inout(meta, src_code):
     return meta
 
 
-#: kernel name -> the role of each TENSOR argument, in call order. Filled at
-#: define_kernel and read by the wrapper's per-kernel verify, which sees only
-#: a call's argument NAMES and cannot otherwise tell a buffer this kernel wrote
-#: from one it merely read. Names will not do: the same kernel is called with
-#: different buffers (SD1.5 calls one of the two above three times and the
-#: other five), so the meta's `buffer` fields name the FIRST call only.
-#: Position is what every call shares.
 ROLES_BY_KERNEL = {}
 
 
@@ -229,9 +116,8 @@ def record_roles(kernel_name, meta):
 def writes_arg(kernel_name, position):
     """Does `kernel_name` write the tensor argument at `position`?
 
-    True when nothing is recorded -- an unknown kernel keeps the old
-    behaviour of treating every argument as checkable, so this narrows only
-    where there is a measurement to narrow it with.
+    True when nothing is recorded, so this narrows only where there is a
+    measurement to narrow it with.
     """
     roles = ROLES_BY_KERNEL.get(kernel_name)
     if roles is None or position >= len(roles):
@@ -242,7 +128,8 @@ def writes_arg(kernel_name, position):
 def collect_meta(kernel, kernel_name):
     """Everything the compile step needs, as plain repr-able data.
 
-    Must run while `V.graph` is live (i.e. inside define_kernel).
+    Must run while `V.graph` is live, i.e. inside define_kernel: by the time
+    the compile callable fires it is gone.
     """
     triton_meta = dict(getattr(kernel, "triton_meta", None) or {})
     signature = dict(triton_meta.get("signature") or {})
@@ -256,7 +143,7 @@ def collect_meta(kernel, kernel_name):
         name = getattr(a, "name", str(a))
         role, buf = roles.get(name, (None, None))
         if role is None:
-            continue                      # a numel / constexpr, not a tensor
+            continue
         args.append({
             "name": name,
             "role": role,
@@ -265,927 +152,30 @@ def collect_meta(kernel, kernel_name):
             "numel": _buffer_numel(buf) if buf else None,
         })
 
-    # The numels Inductor appends to the call. They live in `kernel.numels`,
-    # keyed by iteration-space PREFIX ('x', 'y', 'r0', ...), not as xnumel/rnumel
-    # attributes (SIMDKernel.__init__ builds them from the tiling). These are
-    # what the grid is computed from.
     numels = {}
     for prefix, val in (getattr(kernel, "numels", None) or {}).items():
         try:
             numels[f"{prefix}numel"] = int(V.graph.sizevars.size_hint(val))
-        except Exception:  # noqa: BLE001 - dynamic shape; reported by _grid
+        except Exception:
             numels[f"{prefix}numel"] = None
 
     return {
         "kernel_name": kernel_name,
-        "template_grid": _template_grid(kernel),
         "signature": {str(k): str(v) for k, v in signature.items()},
         "constants": {str(k): v for k, v in constants.items()},
         "args": args,
         "numels": numels,
         "inside_reduction": bool(getattr(kernel, "inside_reduction", False)),
-        "fixed_config": fixed_config_for(kernel, numels, args),
+        "fixed_config": launch.fixed_config_for(kernel, numels, args),
+        "template_grid": launch.template_grid(kernel),
     }
-
-
-def _template_grid(kernel):
-    """A TEMPLATE kernel's launch grid as [gridX, gridY, gridZ], else None.
-
-    A template kernel (mm, conv) does not walk the output the way a pointwise
-    kernel does. It tiles with its own BLOCK_M/BLOCK_N and reads
-    `tl.program_id(0..2)` directly, so the grid is the template's to state --
-    Inductor passes it as three extra launcher arguments rather than deriving it
-    (`FixedGrid.setup_grid_as_args`). The `numels` such a kernel reports describe
-    the output tensor, not its iteration space, so ceil(numel / XBLOCK) is not a
-    grid at all: for ResNet's first conv it gave 6272 where the template asks for
-    196, and the surplus programs index tiles past the end of every operand.
-
-    THIS WAS TWO FUNCTIONS OF THE SAME NAME AND THE WRONG ONE WON. The commit
-    that added the refusal below put it ABOVE the original and did not delete it,
-    so Python bound the name to the original and the refusal never ran. What the
-    original did instead was return `{"error": ...}` on a failing grid_fn, which
-    is not None, so `launch_extents` zipped a DICT against ("x", "y", "z") and
-    the launch died as `KeyError: 'z'` with the real cause nowhere in it.
-
-    Merged the way the measurements were taken: the body is the one that has
-    actually been running (allowlist 16/16, ResNet conv 0 at 196 programs), and
-    the refusal replaces the error dict that could only mislead. A list, not a
-    tuple, because `meta` round-trips through JSON (timing.store_meta) and would
-    come back a list anyway -- one shape for both paths.
-    """
-    grid_fn = getattr(kernel, "grid_fn", None)
-    sizes = getattr(kernel, "call_sizes", None)
-    if grid_fn is None or sizes is None:
-        return None                       # not a template; the numels are real
-    name = getattr(kernel, "kernel_name", kernel)
-    try:
-        vals = [int(V.graph.sizevars.size_hint(s)) for s in sizes]
-        grid = grid_fn(*vals, dict(getattr(kernel, "meta", None) or {}))
-        extents = [int(g) for g in grid]
-    except Exception as e:  # noqa: BLE001 - reported here, where the cause is
-        raise SpecIncomplete(
-            f"{name}: template grid_fn raised {type(e).__name__}: {e}") from e
-    if len(extents) != 3 or any(g < 1 for g in extents):
-        raise SpecIncomplete(
-            f"{name}: template grid_fn returned {grid!r}; this route needs three "
-            f"static positive extents. Refusing rather than falling back to the "
-            f"numels, which describe the output tensor and not this kernel's "
-            f"iteration space.")
-    return extents
-
-
-#: Parallel iteration prefixes, OUTERMOST first. Inductor's `x` is the
-#: contiguous axis, so it is innermost; `r*` prefixes are reductions, looped
-#: inside the kernel rather than spread over the grid (prefix_is_reduction).
-_PARALLEL_PREFIXES = ("z", "y", "x")
-
-
-def _block_name(prefix):
-    return f"{prefix.upper()}BLOCK"
-
-
-def parallel_axes(numels):
-    """Grid axes this kernel uses, outermost first."""
-    return [p for p in _PARALLEL_PREFIXES if f"{p}numel" in numels]
-
-
-def launch_axes(meta):
-    """The axes the LAUNCH spreads programs over, outermost first.
-
-    Same question as `parallel_axes`, asked of the whole kernel rather than of
-    its numels, because a template kernel's numels do not answer it: it declares
-    its grid outright. Every consumer that pairs an axis with an extent -- the
-    spec's grid, the trace's shape file, the WorkItem's program-id arguments --
-    must ask this one, or two of them disagree about which slot is which.
-    """
-    grid = meta.get("template_grid")
-    if grid is None:
-        return parallel_axes(meta["numels"])
-    # ALL THREE, including a slot whose extent is 1. A pointwise kernel reads
-    # exactly the program ids its numels name, but a template reads
-    # `tl.program_id(0..2)` from its own text no matter what the grid says --
-    # ResNet's first conv multiplies pidY by BLOCK_N even though gridY is 1. An
-    # axis left undeclared is a kernel argument nothing accounts for, and the
-    # trace producer stops at it ("kernel arg still used after build_skeleton").
-    # A declared axis of extent 1 just runs its loop once.
-    return list(_PARALLEL_PREFIXES)
-
-
-def launch_extents(meta):
-    """The extents of `launch_axes`, in the same order.
-
-    Kept beside the axes rather than recomputed per consumer: the pairing is the
-    part that has been got wrong, not either half on its own.
-    """
-    grid = meta.get("template_grid")
-    if grid is None:
-        return grid_of(meta)
-    by_axis = dict(zip(("x", "y", "z"), grid))
-    return tuple(by_axis[p] for p in launch_axes(meta))
-
-
-def reduction_axes(numels):
-    """Reduction prefixes, read off the keys rather than assumed.
-
-    THE PREFIX CARRIES A TRAILING UNDERSCORE: Inductor names the parameter
-    `r0_numel` and the block `R0_BLOCK`, so the prefix is "r0_" and not "r0".
-    Looking up "r0numel" silently misses and leaves the block unset, which
-    surfaces much later as "block size R0_BLOCK is unset" on a kernel whose
-    extent was known all along. Derived here so the spelling is read once.
-    """
-    return sorted(k[:-len("numel")] for k in numels
-                  if k.endswith("numel") and k.startswith("r"))
-
-
-#: How many R0_BLOCK-sized buffers a reduction body keeps live at once.
-#:
-#: R0_BLOCK IS PER LANE. The tile is [XBLOCK, R0_BLOCK], XBLOCK is the lane axis,
-#: so every intermediate costs R0_BLOCK elements IN EVERY LANE and the block size
-#: multiplies by however many are live. DeepSeek's RMSNorm lowers to ten spad
-#: globals, eight of them full R0_BLOCK tiles -- and one of those is banked on a
-#: unit axis, which reserves its full size in every lane anyway, so it counts too.
-#:
-#: 12, not 8. Eight was the measured count and it landed 64 bytes over budget,
-#: because the count is a property of the kernel and not a constant. The cost of
-#: guessing high is one more trip round a loop that already exists; the cost of
-#: guessing low is a link-time scratchpad error that never mentions block sizes.
-#:
-#: IT IS AN OPENING BID NOW, NOT AN ANSWER, and the sentence above says why it
-#: could never have been one: the count is a property of the LOWERING, which
-#: does not exist until this number has already been used. ViT's first LayerNorm
-#: -- fused with a patch convolution, an addmm and a transpose -- keeps 41
-#: scratchpad globals live, and no constant that serves that kernel is tolerable
-#: for an ordinary reduction (it would cost three quarters of the tile). So
-#: codecache._shrink_tile corrects it instead: tnpu measures the
-#: real usage, says by how much it is over, and the kernel is recompiled with a
-#: block divided by that ratio. Guessing low now costs one recompile rather than
-#: a failure, which is what makes 12 an acceptable guess rather than a bet.
-_REDUCTION_LIVE_TILES = 12
-
-
-#: torch dtype name -> bits. Only the dtypes _DTYPE can name.
-_DTYPE_BITS = {"float64": 64, "float32": 32, "float16": 16, "bfloat16": 16,
-               "int64": 64, "int32": 32, "int16": 16, "int8": 8,
-               "uint64": 64, "uint32": 32, "uint16": 16, "uint8": 8,
-               "bool": 8}
-
-
-def _element_bits(args):
-    """Widest tensor element in the kernel, in bits.
-
-    Widest, not narrowest: the block has to be one register's worth for EVERY
-    operand, and sizing off a narrow one would ask the wide one for more lanes
-    than a register holds. A kernel with no typed tensor argument falls back to
-    32, which is what every current baseline is.
-    """
-    bits = [_DTYPE_BITS[a["dtype"]] for a in (args or [])
-            if a.get("dtype") in _DTYPE_BITS]
-    return max(bits) if bits else 32
-
-
-def reduction_block_for(extent, elem_bytes=4, lane_bytes=None):
-    """The R0_BLOCK this backend pins for a reduction of `extent`.
-
-    Cover the extent and no more, then shrink to the budget. Rounding 1536 up
-    to 2048 buys nothing -- the tail is all mask -- and costs a third of the
-    tile, so the loop running twice over 1024 is strictly better than once over
-    2048 plus 512 wasted lanes of nothing.
-
-    LIFTED OUT SO TWO CALLERS CAN AGREE. `fixed_config_for` pins the block;
-    `inductor_templates` asks whether Inductor's PERSISTENT block -- which is
-    `next_pow2(extent)`, fixed in the generated source and out of our reach --
-    is one this would have chosen. Deriving that number twice is how the two
-    drift, and the drift is silent: a persistent kernel simply ignores the
-    config we hand it.
-
-    `elem_bytes` defaults to fp32 because the choices hook is asked before the
-    kernel's arguments exist. Guessing 4 for a narrower element makes this
-    answer SMALLER than it needs to be, which declines persistence a little
-    more often than strictly necessary -- and the looped form always works,
-    while the persistent form can leave the scratchpad retry with no lever at
-    all. The safe direction is the cheap one.
-    """
-    if lane_bytes is None:
-        # The choices hook is asked before a kernel exists, so it has no machine
-        # to read. tnpu_bridge.machine() puts the same number in TNPU_SPAD_SIZE
-        # for the pipeline, which is why this default is the same number and not
-        # a second opinion -- see the caller in fixed_config_for, which passes
-        # the machine's directly.
-        lane_bytes = int(os.environ.get("TNPU_SPAD_SIZE", str(64 * 1024)), 0)
-    budget = lane_bytes // 2 // _REDUCTION_LIVE_TILES
-    block = 1 << (int(extent) - 1).bit_length()
-    while block * elem_bytes > budget and block > 1:
-        block //= 2
-    return block
-
-
-def fixed_config_for(kernel, numels, args):
-    """Block sizes pinned at codegen time.
-
-    `numels` is the <prefix>numel-keyed dict collect_meta builds, NOT
-    kernel.numels, which is keyed by bare prefix. Deriving it here a second time
-    is what went wrong before: this passed kernel.numels straight to
-    parallel_axes, which looks for "ynumel" and found "y", so axes came back
-    EMPTY for every kernel. Single-axis ones survived on the XBLOCK setdefault
-    below and multi-axis ones lost YBLOCK entirely, surfacing much later as
-    "YBLOCK=None" out of grid_of. The two must read the same dict.
-
-    tnpu compiles ONE binary per kernel and the C wrapper walks the grid as a
-    sequential loop, so there is no autotuner to choose the blocks later and no
-    runtime `grid=` callable. Fixing them here is what makes the launch shape
-    static.
-
-    THESE ARE SIZES, NOT A LAYOUT. Nothing here chooses which axis lands on the
-    lanes, because that is not decided until tnpu's select_lane_axis, several
-    passes into the other repo: it gathers what every op demands (a matmul wants
-    its last axis on the lanes, a reduction wants the axis it folds off them,
-    elementwise operands have to agree), resolves conflicts by flipping the
-    matmul, and only defaults to dim 0 when nothing asked. Measured over the
-    tnpu dumps: 26 of 36 stamped kernels are axis 0, gemm_fp16_kernel is axis 1
-    throughout, and gemm/bmm carry BOTH on different operands of one op.
-
-    THIS USED TO SAY DIM 0 WAS THE LANE AXIS AND THAT A LANE MUST HOLD EXACTLY
-    ONE ELEMENT. Both halves were wrong, and the second is why the first looked
-    right: pinning the outermost block to the lane count made dim 0 the
-    degenerate answer often enough that the claim was never tested. It is tested
-    now -- kernels/coverage/tile/tile_deeper_than_one_per_lane.py runs a
-    256-wide tile on 128 lanes exactly, and tile_gemm_lane_axis_deeper.py does
-    it on the axis a matmul demanded, at 9.54e-06 against a 1.53e-05 control.
-    Nine memref<128x256xf32, 1> spad buffers in that kernel's 04-adapted.mlir,
-    so the deeper tile is really built and really addressed.
-
-    So the lane count below is a DEFAULT WIDTH -- a tile at least as wide as the
-    machine -- and not a requirement the backend would break without. Choosing
-    real tile sizes is still the block-size policy gap in README; what has gone
-    away is the reason to believe there was only one legal answer.
-    """
-    from . import tnpu_bridge
-    machine = tnpu_bridge.machine()
-    lanes = machine["lanes"]
-    per_vector = max(1, machine["vlen_bits"] // _element_bits(args))
-
-    def _covers(want, n):
-        """`want`, clamped to the smallest legal block that covers `n`.
-
-        A BLOCK BIGGER THAN ITS NUMEL IS NOT FREE, and it used to be handed out
-        unconditionally. `t.sum(dim=0)` on a [128, 64] tensor gives xnumel 64
-        against XBLOCK 128, so the tile is twice the iteration space and the
-        surplus is carried by a mask -- whose rank-1 index rows are then
-        stranded ONE_LANE while the data is banked across the lanes, and stage 4
-        stops:
-
-            NotVectorisable: one operand of this elementwise op is in a single
-            bank (ONE_LANE) while another is banked across the lanes on
-            iteration dim 0 of extent 128
-
-        `sum(dim=1)` on the same tensor has xnumel 128 against the same XBLOCK,
-        needs no mask at all, and comes back at 1.907e-06. So the axis was never
-        the difference; the block overshooting its numel was.
-
-        Rounded UP to a power of two because `tl.arange` needs one, so a numel
-        of 100 still gets 128 and still needs its mask -- that one is real.
-
-        AND THE BACKEND'S SIDE IS NARROWER THAN ITS MESSAGE. A hand-written tnpu
-        kernel that reduces over the banked axis with a block deliberately wider
-        than the extent -- [128, 64] data under a [128, 128] block, so the mask
-        genuinely fires -- COMPILES AND IS EXACT. Written with the block equal
-        to the extent it also passes, because a trivially true mask folds away
-        before stage 4 sees it. So the refusal above is not "a mask over a
-        banked axis" in general, and no coverage kernel was added for it: one
-        that passes either way pins nothing. What is measured is this: the
-        oversized block was the whole observable, and clamping it is the fix.
-        """
-        # A NUMEL OF 1 IS NOT CLAMPED, AND THAT IS NOT A CORNER. A parallel
-        # block of 1 leaves no axis for the lanes, so the tile banks on the
-        # REDUCTION axis instead -- which is the one arrangement stage 4
-        # refuses, and it refuses it with the scalar the reduction produced:
-        #
-        #   NotVectorisable: operand [1, 1] spans iteration dims [] of a tile
-        #   [512, 1] banked on dim 0, and it was staged one element per lane --
-        #   every lane needs the whole row, which takes a replicating transfer
-        #   this operand did not get
-        #
-        # Measured on Mistral's RMSNorm (xnumel 1, r0_numel 512), which passed
-        # before this clamp existed and stopped after it: XBLOCK went 128 -> 1
-        # and the tile went [512, 128] banked on x to [512, 1] banked on r0.
-        # The reduction over a degenerate parallel axis is exactly the case the
-        # lane count was there for.
-        if not n or n <= 1:
-            return want
-        cover = 1
-        while cover < n:
-            cover *= 2
-        return min(want, cover)
-
-    axes = parallel_axes(numels)
-    cfg = {}
-    for i, p in enumerate(axes):
-        if i == 0:
-            # The widest block goes on the outermost axis. NOT because that axis
-            # is the lane axis -- see the docstring; tnpu decides that later and
-            # picks 1 for every gemm it was measured on -- but because the tile
-            # has to be wide SOMEWHERE for the machine to be busy, and with the
-            # lane axis unknown at this point one axis is as good a guess as
-            # another. Outermost is the arbitrary half of this; the lane count
-            # is the part that is about the machine.
-            #
-            # WHICH LETTER dim 0 IS DEPENDS ON RANK, so it is indexed rather
-            # than named. Inductor gives the outermost axis the [:, None] slot,
-            # so a 2D kernel puts y there and a 1D one has only x.
-            cfg[_block_name(p)] = _covers(lanes, numels.get(f"{p}numel"))
-        elif i == len(axes) - 1:
-            # Innermost, so contiguous (tile_stride ends in 1): give each lane
-            # one full vector register. 8 fp32 at vlen 256 is exactly that.
-            # Pinned to 1 before, which is why a multi-axis work-item moved a
-            # strided column -- correct but nothing worth measuring.
-            cfg[_block_name(p)] = _covers(per_vector,
-                                          numels.get(f"{p}numel"))
-        else:
-            cfg[_block_name(p)] = 1
-    cfg.setdefault("XBLOCK", _covers(lanes, numels.get("xnumel")))
-    # a kernel with no tiling info still has x
-    if getattr(kernel, "inside_reduction", False):
-        # A reduction block is NOT free to be the lane count. The scratchpad is
-        # lane-banked and there is no lane-crossing primitive, so the reduced
-        # axis has to live INSIDE one lane (triton-npu kernels/reduce.py) --
-        # spreading it over the lanes is the one layout the hardware cannot
-        # execute. That leaves exactly one choice: cover the whole extent, so
-        # every work-item reduces a complete row and nothing has to be
-        # accumulated across grid steps (each step is independent here -- the
-        # wrapper walks the grid as a plain loop with no carried state).
-        #
-        # Rounded up to a power of two because triton requires it; the tail is
-        # masked. Left unset, as before, when the extent is unknown or will not
-        # fit a lane's scratchpad -- those fail loudly rather than silently
-        # picking a layout that cannot run.
-        # INDUCTOR ALREADY LOOPS. The generated body is
-        # `for r0_offset in range(0, r0_numel, R0_BLOCK)` with the partial sums
-        # carried in registers, so the block does NOT have to cover the extent --
-        # it only has to be a tile the hardware can hold. Sizing it to the whole
-        # reduction, which an earlier version of this did, makes a 1536-long
-        # reduction ask for 8KB per lane per buffer, and a kernel with five live
-        # buffers then blows the double-buffer budget at link time with an error
-        # that names the scratchpad rather than this decision.
-        #
-        # So take a fixed tile and let the loop do the rest. The reduced axis
-        # still lives INSIDE a lane, which is the constraint that matters
-        # (triton-npu kernels/reduce.py) -- a chunk of it is as in-lane as all
-        # of it. The budget is halved because the target double-buffers, and
-        # divided again by the number of tiles a reduction body keeps live.
-        # NOT extension_config's spad. The YAML says 128 KB per lane and tnpu
-        # enforces 64 KB (tnpu/config.py SPAD_SIZE, and spike is launched with
-        # --scratchpad-size=65536), so sizing against the YAML overshoots by 2x
-        # and the kernel dies at LINK time. tnpu is the one that refuses, so its
-        # number is the one that counts; TNPU_SPAD_SIZE overrides both.
-        lane_bytes = machine["spad_size"]
-        elem_bytes = max(1, _element_bits(args) // 8)
-        for p in reduction_axes(numels) or ["r0_"]:
-            n = numels.get(f"{p}numel")
-            if not n:
-                cfg[_block_name(p)] = None
-                continue
-            # Cover the extent and no more, then shrink to the budget. Rounding
-            # 1536 up to 2048 buys nothing -- the tail is all mask -- and costs a
-            # third of the tile, so the loop running twice over 1024 is strictly
-            # better than once over 2048 plus 512 wasted lanes of nothing.
-            cfg[_block_name(p)] = reduction_block_for(n, elem_bytes,
-                                                      lane_bytes)
-    return cfg
-
-
-# ---------------------------------------------------------------------------
-# 2. Triton source -> tnpu kernel file
-# ---------------------------------------------------------------------------
-_HEURISTIC_RE = re.compile(r"^@triton_heuristics\.")
-_DROP_IMPORT_RE = re.compile(
-    r"^\s*(import torch|from torch\b|from __future__|import __main__)")
-#: GPU-only runtime setup Inductor emits at module scope. Meaningless here (the
-#: kernel is compiled ahead of time to a RISC-V ELF) and its import is dropped
-#: above, so the call would be a NameError.
-_DROP_CALL_RE = re.compile(r"^\s*triton_helpers\.set_driver_to_gpu\(\)")
-#: Anything else from triton_helpers is a real dependency -- maximum/minimum/
-#: promote_to_tensor and friends, which reductions and clamps use constantly.
-_HELPER_USE_RE = re.compile(r"\btriton_helpers\.(\w+)")
-
-# Vendored verbatim from torch._inductor.runtime.triton_helpers. These are pure
-# triton -- @triton.jit over tl.* and nothing else -- so the torch-free tnpu venv
-# can run them; that is the whole reason a copy is possible at all, and it is
-# also the test for whether a helper belongs here. Anything reaching into torch
-# does not, and stays a SpecIncomplete below.
-#
-# The NaN handling is the point and must not be "simplified" to tl.maximum:
-# `mask |= a != a` makes a NaN operand win, which is what torch.maximum promises
-# and what tl.maximum does not do.
-_VENDORED_HELPERS = {"promote_to_tensor", "is_floating",
-                     "minimum", "maximum", "min2", "max2", "any",
-                     "welford_reduce", "welford_combine", "welford",
-                     "sort_with_index", "select_one",
-                     "div_floor_integer", "remainder_integer"}
-
-_HELPERS_SRC = '''
-# Self-sufficient on purpose: this block is prepended, so it runs BEFORE the
-# kernel body's own imports and cannot borrow them. Re-importing is free.
-import types as _types
-import triton
-import triton.language as tl
-
-@triton.jit
-def _tnpu_promote_to_tensor(x):
-    return x + tl.zeros((1,), tl.int1)
-
-@triton.jit
-def _tnpu_is_floating(x):
-    return _tnpu_promote_to_tensor(x).dtype.is_floating()
-
-@triton.jit
-def _tnpu_minimum(a, b):
-    mask = a < b
-    if _tnpu_is_floating(a):
-        mask |= a != a
-    return tl.where(mask, a, b)
-
-@triton.jit
-def _tnpu_maximum(a, b):
-    mask = a > b
-    if _tnpu_is_floating(a):
-        mask |= a != a
-    return tl.where(mask, a, b)
-
-@triton.jit
-def _tnpu_min2(a, dim):
-    return tl.reduce(a, dim, _tnpu_minimum)
-
-@triton.jit
-def _tnpu_max2(a, dim):
-    return tl.reduce(a, dim, _tnpu_maximum)
-
-@triton.jit
-def _tnpu_any_combine(a, b):
-    return a | b
-
-@triton.jit
-def _tnpu_any(a, dim):
-    return tl.reduce(a, dim, _tnpu_any_combine)
-
-@triton.jit
-def _tnpu_welford_reduce(value, mean, m2, weight, first_iteration):
-    if first_iteration:
-        new_weight = tl.full(weight.shape, 1, weight.dtype)
-        new_mean = value
-        new_m2 = tl.zeros_like(m2)
-    else:
-        delta = value - mean
-        new_weight = weight + 1
-        new_mean = mean + delta / new_weight
-        new_m2 = m2 + delta * (value - new_mean)
-    return new_mean, new_m2, new_weight
-
-@triton.jit
-def _tnpu_welford_combine(mean_1, m2_1, weight_1, mean_2, m2_2, weight_2):
-    delta = mean_2 - mean_1
-    new_weight = weight_1 + weight_2
-    w2_over_w = tl.where(new_weight == 0.0, 0.0, weight_2 / new_weight)
-    return (
-        mean_1 + delta * w2_over_w,
-        m2_1 + m2_2 + delta * delta * weight_1 * w2_over_w,
-        new_weight,
-    )
-
-@triton.jit
-def _tnpu_welford(mean, m2, weight, dim):
-    return tl.reduce((mean, m2, weight), dim, _tnpu_welford_combine)
-
-# --- bitonic sort, for top-k -------------------------------------------------
-# `_log2` is TRITON'S OWN (triton.language.standard), not torch's -- torch
-# imports it from there too, through triton_compat. So the chain below reaches
-# nothing outside triton once is_floating is the vendored one.
-from triton.language.standard import _log2 as _tnpu_log2
-
-@triton.jit
-def _tnpu_compare_and_swap_with_index(
-    x, idxs, rnumel, flip,
-    i: tl.constexpr, n_dims: tl.constexpr,
-    stable: tl.constexpr, descending: tl.constexpr,
-):
-    n_outer: tl.constexpr = x.numel >> n_dims
-    shape: tl.constexpr = [n_outer * 2**i, 2, 2 ** (n_dims - i - 1)]
-
-    idtype = tl.core.get_int_dtype(bitwidth=x.dtype.primitive_bitwidth, signed=True)
-
-    y = tl.reshape(x, shape)
-    iy = y.to(idtype, bitcast=True)
-    right_mask = tl.arange(0, 2)[None, :, None].to(idtype)
-    left_mask = (1 - right_mask).to(idtype)
-    ileft = tl.broadcast_to(tl.sum(iy * left_mask, 1).to(idtype)[:, None, :], shape)
-    iright = tl.broadcast_to(tl.sum(iy * right_mask, 1).to(idtype)[:, None, :], shape)
-    ileft = tl.reshape(ileft, x.shape)
-    iright = tl.reshape(iright, x.shape)
-    left = ileft.to(x.dtype, bitcast=True)
-    right = iright.to(x.dtype, bitcast=True)
-
-    y_idx = tl.reshape(idxs, shape)
-    left_idx = tl.broadcast_to(
-        tl.sum(y_idx * left_mask.to(y_idx.dtype), 1)[:, None, :], shape
-    )
-    right_idx = tl.broadcast_to(
-        tl.sum(y_idx * right_mask.to(y_idx.dtype), 1)[:, None, :], shape
-    )
-    left_idx = tl.reshape(left_idx, x.shape)
-    right_idx = tl.reshape(right_idx, x.shape)
-
-    if rnumel is None:
-        left_valid_mask = tl.full(x.shape, True, tl.int1)
-        right_valid_mask = tl.full(x.shape, True, tl.int1)
-    else:
-        left_valid_mask = left_idx < rnumel
-        right_valid_mask = right_idx < rnumel
-
-    ix = x.to(idtype, bitcast=True)
-
-    # sort treats nan as the higher value, and comparisons with nan are always
-    # False -- so the isnan terms are load-bearing, exactly as in _tnpu_maximum.
-    left_isnan = left != left
-    right_isnan = right != right
-
-    if descending:
-        cond = left < right
-        if _tnpu_is_floating(left):
-            if not stable:
-                cond = cond | right_isnan
-            else:
-                cond = cond | (right_isnan & (~left_isnan))
-    else:
-        cond = left > right
-        if _tnpu_is_floating(left):
-            if not stable:
-                cond = cond | left_isnan
-            else:
-                cond = cond | (left_isnan & (~right_isnan))
-
-    if stable:
-        eq = left == right
-        if _tnpu_is_floating(left):
-            eq = eq | (left_isnan & right_isnan)
-        cond = cond | (eq & (left_idx > right_idx))
-
-    cond = (right_valid_mask > left_valid_mask) | (
-        (right_valid_mask == left_valid_mask) & cond
-    )
-    cond = (cond ^ flip).to(tl.int1)
-    ret = ix ^ tl.where(cond, ileft ^ iright, tl.zeros_like(ix))
-    new_idxs = idxs ^ tl.where(cond, left_idx ^ right_idx, tl.zeros_like(idxs))
-
-    return ret.to(x.dtype, bitcast=True), new_idxs
-
-@triton.jit
-def _tnpu_bitonic_merge_with_index(
-    x, idxs, rnumel,
-    stage: tl.constexpr, alternating: tl.constexpr, n_dims: tl.constexpr,
-    stable: tl.constexpr, descending: tl.constexpr,
-):
-    n_outer: tl.constexpr = x.numel >> n_dims
-    tl.static_assert(stage <= n_dims)
-    if alternating:
-        shape: tl.constexpr = [n_outer * 2 ** (n_dims - 1 - stage), 2, 2**stage]
-        flip = tl.reshape(
-            tl.broadcast_to(tl.arange(0, 2)[None, :, None], shape), x.shape
-        )
-    else:
-        flip = False
-    for i in tl.static_range(stage):
-        x, idxs = _tnpu_compare_and_swap_with_index(
-            x, idxs, rnumel, flip, i + (n_dims - stage), n_dims, stable, descending
-        )
-    return x, idxs
-
-@triton.jit
-def _tnpu_sort_with_index(
-    x, idxs, rnumel,
-    dim: tl.constexpr = None,
-    stable: tl.constexpr = tl.constexpr(False),
-    descending: tl.constexpr = tl.constexpr(False),
-):
-    x, idxs = tl.broadcast(x, idxs)
-    _dim: tl.constexpr = len(x.shape) - 1 if dim is None else dim
-    tl.static_assert(
-        _dim == len(x.shape) - 1, "only minor dimension is currently supported"
-    )
-    n_dims: tl.constexpr = _tnpu_log2(x.shape[_dim])
-
-    for i in tl.static_range(1, n_dims + 1):
-        x, idxs = _tnpu_bitonic_merge_with_index(
-            x, idxs, rnumel, i,
-            alternating=i < n_dims, n_dims=n_dims,
-            stable=stable, descending=descending,
-        )
-    return x, idxs
-
-# FLOOR division, not C division, and the difference is the whole point --
-# `a // b` in triton truncates toward zero, and torch's `//` rounds toward
-# minus infinity. SwinV2's window partition indexes with it, and a negative
-# operand appears there the moment a cyclic shift is applied.
-@triton.jit
-def _tnpu_div_floor_integer(a, b):
-    quot = a // b
-    remainder = a % b
-    fixed = tl.where(remainder != 0, quot - 1, quot)
-    return tl.where((a < 0) != (b < 0), fixed, quot)
-
-@triton.jit
-def _tnpu_remainder_integer(a, b):
-    remainder = a % b
-    return tl.where((remainder != 0) & ((a < 0) != (b < 0)),
-                    remainder + b, remainder)
-
-# Inductor's answer to "pick the one element the mask selects" -- a masked SUM
-# over the reduction axis, done on the BITS so it works for any dtype, not just
-# an addable one. Emitted by an index_select-shaped gather; Qwen2-VL's M-RoPE
-# is what brought it in (`mrope_section` selects one of three position bands
-# per element).
-@triton.jit
-def _tnpu_select_one(x, mask, dim, keep_dims=False):
-    idtype = tl.core.get_int_dtype(x.dtype.primitive_bitwidth, signed=False)
-    ix = x.to(idtype, bitcast=True)
-    iy = tl.sum(ix * mask, dim, keep_dims=keep_dims)
-    return iy.to(x.dtype, bitcast=True)
-
-triton_helpers = _types.ModuleType("triton_helpers")
-triton_helpers.any = _tnpu_any
-triton_helpers.welford_reduce = _tnpu_welford_reduce
-triton_helpers.welford_combine = _tnpu_welford_combine
-triton_helpers.welford = _tnpu_welford
-triton_helpers.promote_to_tensor = _tnpu_promote_to_tensor
-triton_helpers.is_floating = _tnpu_is_floating
-triton_helpers.minimum = _tnpu_minimum
-triton_helpers.maximum = _tnpu_maximum
-triton_helpers.min2 = _tnpu_min2
-triton_helpers.max2 = _tnpu_max2
-triton_helpers.sort_with_index = _tnpu_sort_with_index
-triton_helpers.select_one = _tnpu_select_one
-triton_helpers.div_floor_integer = _tnpu_div_floor_integer
-triton_helpers.remainder_integer = _tnpu_remainder_integer
-'''
-
-
-#: The mm and bmm templates' names for a row/column index, its bound, and the
-#: block that walks it. Both templates spell them the same and both write the
-#: wrap twice (once per branch of a contiguity test), which is why this is a
-#: pattern rather than a line number.
-_WRAP_TRIPLES = (("rm", "M", "BLOCK_M"), ("rn", "N", "BLOCK_N"))
-
-
-def _literal_int(body, name):
-    """`name`'s value if the kernel assigns it an integer literal, else None.
-
-    Inductor renders M, N, K and the blocks into the BODY of the kernel rather
-    than passing them (`M = 512`, `BLOCK_M : tl.constexpr = 256`), so the
-    divisibility question can be answered from the source alone -- no need to
-    thread the config down to here, and a dynamic shape simply has no literal
-    and gets no rewrite.
-    """
-    m = re.search(rf"^\s*{name}\s*(?::\s*tl\.constexpr\s*)?=\s*(\d+)\s*$",
-                  body, re.M)
-    return int(m.group(1)) if m else None
-
-
-#: Names the loads are keyed on. Both templates call the operand pointers A and
-#: B and both keep `rm` / `rn` live across the k-loop (they are rematerialized
-#: only for the store, after it), so the mask can be built from them directly
-#: rather than from whichever name the wrap was assigned to.
-_ROW_MASK = "_tnpu_row_mask"
-_COL_MASK = "_tnpu_col_mask"
-_MASK_FOR = {"A": _ROW_MASK, "B": _COL_MASK}
-
-
-#: `tl.load(A ...` in every spelling the two templates use. mm builds the
-#: address at the load -- `tl.load(A + (xindex))` -- while bmm accumulates it
-#: into the pointer and writes `tl.load(A)` or `tl.load(A, mask=..., other=0.)`.
-#: Matching only the first silently skipped every bmm, which then kept its wrap
-#: and its gather while the log said nothing.
-def _load_re(ptr):
-    return re.compile(rf"\btl\.load\({ptr}\b")
-
-
-def _add_mask_to_loads(lines, ptr, mask_name):
-    """Give every `tl.load(<ptr>...)` the bound `mask_name`. Count applied.
-
-    A load either already carries the template's K mask -- `mask=a_mask,
-    other=0.0`, emitted when EVEN_K is false -- or carries none at all. The
-    first is widened with `&` and the second gets one; both end up reading 0
-    where the tile runs past the operand.
-    """
-    rx = _load_re(ptr)
-    n = 0
-    for i, line in enumerate(lines):
-        stripped = line.rstrip()
-        if not rx.search(stripped) or not stripped.endswith(")"):
-            continue
-        at = stripped.find("mask=")
-        if at < 0:
-            lines[i] = stripped[:-1] + f", mask={mask_name}, other=0.0)"
-            n += 1
-            continue
-        # NOT A REGEX. The existing mask is an EXPRESSION and it contains both
-        # of the characters a regex would stop at: `mask=rk[None, :] < k` has a
-        # comma inside a subscript and a `)` in neither place a naive `[^,)]+`
-        # expects, and matching that way produced
-        #   mask=(rk[None) & _tnpu_row_mask, :] < k
-        # which is syntactically valid Python and means nothing. The end of the
-        # expression is the ` other=` keyword the templates always follow it
-        # with, or the load's own closing paren.
-        start = at + len("mask=")
-        end = stripped.find(", other=", start)
-        if end < 0:
-            end = len(stripped) - 1
-        expr = stripped[start:end]
-        lines[i] = (stripped[:start] + f"({expr}) & {mask_name}"
-                    + stripped[end:])
-        n += 1
-    return n
-
-
-def clamp_instead_of_wrap(body, kernel_name=""):
-    """Replace the mm/bmm templates' `rm % M` / `rn % N` with a load mask.
-
-    WHAT THE WRAP IS FOR. `rm = pid_m * BLOCK_M + arange(BLOCK_M)` runs past M
-    whenever BLOCK_M does not divide M, so the last program addresses rows that
-    do not exist. The template folds them back to the top of the matrix with
-    `% M` and lets the store's mask discard whatever they computed. On a GPU
-    that is the right trade: no branch, no fault, and reading garbage is free.
-
-    WHAT IT COSTS HERE. A modulo on a pointer index is not a stride, so the
-    descriptor stops being one: triton-shared marks it (`static_shape != 0`) and
-    tnpu lowers it as an INDIRECT transfer -- a per-element index tile with the
-    wrapped dim's stride set to 0. Three bills follow.
-
-      the index tile is real scratchpad, in i64, the shape of the operand --
-      TWICE the bytes of an f32 tile, and both operands are wrapped, so a
-      three-tile kernel stages five. Measured on a 512x512x512 addmm with a
-      residual: 73760 bytes/lane against a 65536 budget, refused at link.
-
-      a gather is element-by-element where a descriptor is a burst.
-
-      and it is where the wrong numbers are. Measured on the SAME kernel with
-      only this changed: 512x512x512 at BM/BN = 256 answers 110.93 with the wrap
-      and 5.34e-05 without, at the same tile and the same 2x2 grid.
-
-    THE ANSWER IS THE ONE THIS BACKEND ALREADY USES ON THE OTHER SIDE. The store
-    in the very same kernel does not fold, it CLAMPS:
-
-        mask = (idx_m < M) & (idx_n < N)
-        tl.store(out_ptr0 + xindex, acc, mask)
-
-    which lowers to `tts.store`'s `static_mask_dims` and then to a transfer with
-    `masked_axes` / `masked_fill = 0`. PyTorchSim's MLIR route answers the same
-    question the same way on BOTH sides -- `def_dma_op` clamps each tile dim to
-    the real DRAM extent and zero-fills past it, and its gemm template contains
-    no modulo at all. The Triton route was the asymmetric one: clamping stores
-    and folding loads.
-
-    So the wrap goes and the loads get the matching bound. Out-of-range rows
-    read 0 instead of a folded row, contribute 0 to the dot product, and land in
-    output rows the store's mask already discards -- the same values are kept,
-    by construction.
-
-    A DIVIDING BLOCK NEEDS NEITHER. `gemm_combination_mapping` picks tiles from
-    the DIVISORS of the shape, so rm runs 0..M-1 and both the wrap and the mask
-    are dead; the wrap is dropped and no mask is added, which is what keeps the
-    common case a bare descriptor.
-
-    Torch's template already reasons this way about K -- `EVEN_K` skips the K
-    mask -- and simply does not for M and N. This supplies the missing half.
-    """
-    lines = body.splitlines()
-    text = "\n".join(lines)
-    needs = {}
-    for idx, dim, block in _WRAP_TRIPLES:
-        d, b = _literal_int(text, dim), _literal_int(text, block)
-        if d is None or not b:
-            continue                    # dynamic shape: leave the wrap alone
-        needs[idx] = bool(d % b)        # a tail exists -> the mask is load-bearing
-
-    if not needs:
-        return body
-
-    # A DIVIDING BLOCK NEEDS NO LOAD AT ALL. Only the tail case has to find and
-    # bound the loads, so the anchor and the load patterns are looked for ONLY
-    # when some axis asks for a mask -- otherwise a template this does not
-    # recognise still gets its dead wrap removed.
-    if any(needs.values()):
-        # The masks go right after offs_k / rk, which both templates emit after
-        # rm/rn and before the k-loop, so every load is in their scope. mm calls
-        # it offs_k and bmm calls it rk.
-        anchor = next((i for i, l in enumerate(lines)
-                       if l.strip().startswith(("offs_k = tl.arange(",
-                                                "rk = tl.arange("))), None)
-        if anchor is None or not any(_load_re(p).search(text) for p in _MASK_FOR):
-            logger.warning(
-                "[triton-npu] %s: a block does not divide its dimension and "
-                "this does not recognise the loads to bound; leaving the wrap",
-                kernel_name or "kernel")
-            return body
-
-        pad = " " * (len(lines[anchor]) - len(lines[anchor].lstrip()))
-        inserted, applied = [], {}
-        for idx, dim, _block in _WRAP_TRIPLES:
-            if not needs.get(idx):
-                continue
-            name = _ROW_MASK if idx == "rm" else _COL_MASK
-            slice_ = "[:, None]" if idx == "rm" else "[None, :]"
-            inserted.append(f"{pad}{name} = {idx}{slice_} < {dim}")
-        lines[anchor + 1:anchor + 1] = inserted
-        for ptr, name in _MASK_FOR.items():
-            if name in "".join(inserted):
-                applied[ptr] = _add_mask_to_loads(lines, ptr, name)
-        # A mask nobody could attach would leave the load unbounded once the
-        # wrap is gone, so the wrap stays and this whole rewrite is given back.
-        if any(v == 0 for v in applied.values()):
-            logger.warning(
-                "[triton-npu] %s: could not attach a bound to every load; "
-                "leaving the wrap in place", kernel_name or "kernel")
-            return body
-
-    body = "\n".join(lines)
-    for idx, dim, block in _WRAP_TRIPLES:
-        if idx not in needs:
-            continue
-        body, n = re.subn(rf"\b{idx}\s*%\s*{dim}\b", idx, body)
-        if n:
-            logger.info(
-                "[triton-npu] %s: replaced %d `%s %% %s` with %s, so the "
-                "operand stays a descriptor instead of becoming a gather",
-                kernel_name or "kernel", n, idx, dim,
-                "a load bound" if needs[idx] else "nothing (the block divides)")
-    return body
-
-
-def strip_for_tnpu(src):
-    """Remove everything the torch-free tnpu venv cannot import.
-
-    Drops torch/inductor imports and the `@triton_heuristics.*(...)` decorator
-    (keeping `@triton.jit`), then re-adds the two imports the kernel body needs.
-
-    Raises SpecIncomplete if the kernel still calls into `triton_helpers`: that
-    module lives in torch, so it has to be vendored into the tnpu venv before
-    such a kernel can compile. Failing here names the missing helper; letting it
-    through fails as a bare NameError inside tnpu's stage-1 worker instead.
-    """
-    lines = src.splitlines()
-    out, i = [], 0
-    while i < len(lines):
-        line = lines[i]
-        if _HEURISTIC_RE.match(line.strip()) or _HEURISTIC_RE.match(line):
-            # skip the whole decorator call, up to (not including) @triton.jit
-            while i < len(lines) and lines[i].strip() != "@triton.jit":
-                i += 1
-            continue
-        if _DROP_IMPORT_RE.match(line) or _DROP_CALL_RE.match(line):
-            i += 1
-            continue
-        out.append(line)
-        i += 1
-    body = "\n".join(out)
-
-    used = sorted(set(_HELPER_USE_RE.findall(body)))
-    unvendored = [h for h in used if h not in _VENDORED_HELPERS]
-    if unvendored:
-        raise SpecIncomplete(
-            f"kernel uses triton_helpers.{{{','.join(unvendored)}}}, which lives "
-            f"in torch and the tnpu venv has no torch. Add it to _HELPERS_SRC if "
-            f"it is pure triton, or lower it another way if it is not.")
-
-    # The generated source already imports triton itself; only add what a
-    # stripped module might be missing.
-    prefix = ""
-    if "import triton.language as tl" not in body:
-        prefix = "import triton\nimport triton.language as tl\n\n"
-    # tl_math is triton's own, re-exported through triton_helpers; the dropped
-    # torch import took it with it.
-    if re.search(r"\btl_math\.", body):
-        prefix += "from triton.language import math as tl_math\n"
-
-    # Same story as tl_math: Inductor reaches libdevice through torch, and the
-    # dropped import took it with it. The name has to be bound to triton's OWN
-    # copy -- libdevice members are @core.extern stubs, and a backend binds them
-    # via get_module_map, which triton_shared now does. Leave the name unbound
-    # and a call returns None, failing as "cannot convert None of type NoneType"
-    # inside stage 1 without ever naming libdevice.
-    if re.search(r"\blibdevice\.", body):
-        prefix += "from triton.language.extra.cuda import libdevice\n"
-    # Emitted into the spec rather than imported: the tnpu venv has no torch to
-    # import from, and a module dropped beside the spec would depend on how
-    # tnpu's stage-1 worker happens to set sys.path.
-    if used:
-        prefix += _HELPERS_SRC
-    return prefix + body
 
 
 def scalar_args(meta):
     """User scalar parameters, in kernel order, as [(name, c_type, value)].
 
-    triton-shared keeps these in the lowered signature ahead of its own six
-    grid/pid arguments, so the wrapper must pass them or every later argument
-    lands one slot early -- pidX then reads pidY and only program 0 runs.
+    triton-shared keeps these ahead of its own six grid/pid arguments, so the
+    wrapper must pass them or every later argument lands one slot early.
     """
     numels = meta["numels"]
     out = []
@@ -1203,56 +193,6 @@ def scalar_args(meta):
                 f"collect_meta resolves these from kernel.numels")
         out.append((name, ctype, int(numels[name])))
     return out
-
-
-def grid_of(meta):
-    """Launch grid, from the numels and the pinned block sizes, outermost first.
-
-    Also read by the timing path, which needs the same extents to enumerate the
-    work-items -- so it lives here rather than being recomputed per consumer.
-
-    A template kernel states its own grid and this derivation does not apply to
-    it; see `_template_grid`.
-    """
-    if meta.get("template_grid") is not None:
-        return launch_extents(meta)
-
-    numels = meta["numels"]
-    cfg = meta.get("fixed_config") or {}
-    axes = parallel_axes(numels)
-    if not axes:
-        raise SpecIncomplete(
-            f"{meta['kernel_name']} has no parallel iteration axis to grid over")
-
-    grid = []
-    for prefix in axes:
-        n, block = numels.get(f"{prefix}numel"), cfg.get(_block_name(prefix))
-        if n is None or not block:
-            raise SpecIncomplete(
-                f"cannot compute the grid for {meta['kernel_name']} axis "
-                f"'{prefix}': {prefix}numel={n!r}, {_block_name(prefix)}={block!r}. "
-                f"Inductor defers the grid to triton_heuristics at runtime; this "
-                f"route needs it statically (see fixed_config_for).")
-        grid.append(-(-int(n) // int(block)))    # ceil-div, in integers
-    return tuple(grid)
-
-
-def grid_xyz(meta):
-    """The same grid in tnpu's order: (gridX, gridY, gridZ).
-
-    tnpu's spec.grid is positional and X-FIRST -- wrapper._grid3 reads
-    `g[0], g[1], g[2]` as gx, gy, gz and emits the loop nest in that order --
-    while grid_of is OUTERMOST-first (z, y, x) to match Inductor's axes. For a
-    1D kernel the two orders are the same tuple, which is why every kernel on
-    this route agreed until a second axis appeared.
-
-    Handed the outermost-first tuple, tnpu reads gridY as gridX: the inner axis
-    then runs for as many steps as the outer one needed, and a transpose comes
-    back with only its first XBLOCK columns written and the rest left at zero.
-    Silently wrong output, not a crash, so it is built here by axis NAME.
-    """
-    extents = dict(zip(launch_axes(meta), launch_extents(meta)))
-    return tuple(extents.get(p, 1) for p in ("x", "y", "z"))
 
 
 SPEC_TEMPLATE = '''\
@@ -1319,7 +259,11 @@ SPEC = KernelSpec(
 
 
 def write_spec_file(src_code, meta, path, tnpu_dir):
-    """Write a tnpu kernel file for this Inductor kernel. Returns `path`."""
+    """Write a tnpu kernel file for this Inductor kernel. Returns `path`.
+
+    A block Inductor fixed in the kernel BODY rather than taking as a parameter
+    is skipped: passing it would not match the signature.
+    """
     missing = [a["name"] for a in meta["args"] if not a["dtype"] or not a["numel"]]
     if missing:
         raise SpecIncomplete(
@@ -1330,10 +274,6 @@ def write_spec_file(src_code, meta, path, tnpu_dir):
     constexprs = dict(meta["constants"])
     for k, v in (meta.get("fixed_config") or {}).items():
         if k not in signature:
-            # Inductor already fixed this one in the kernel BODY rather than
-            # taking it as a parameter -- a persistent reduction does that with
-            # R0_BLOCK. Passing it would not match the signature, and there is
-            # nothing left for us to choose.
             continue
         if v is None:
             raise SpecIncomplete(
@@ -1352,8 +292,8 @@ def write_spec_file(src_code, meta, path, tnpu_dir):
 
     triton_module = f"{meta['kernel_name']}_triton.py"
     with open(os.path.join(os.path.dirname(path), triton_module), "w") as f:
-        f.write(clamp_instead_of_wrap(strip_for_tnpu(src_code),
-                                      meta["kernel_name"]))
+        f.write(source_rewrite.clamp_instead_of_wrap(
+            source_rewrite.strip_for_tnpu(src_code), meta["kernel_name"]))
 
     scalars = scalar_args(meta)
     text = SPEC_TEMPLATE.format(
@@ -1364,7 +304,7 @@ def write_spec_file(src_code, meta, path, tnpu_dir):
         constexprs=constexprs,
         args_body=args_body,
         make_inputs_body=make_inputs_body,
-        grid=grid_xyz(meta),
+        grid=launch.grid_xyz(meta),
         scalar_decls=[(n, c) for n, c, _ in scalars],
         scalar_values={n: v for n, _, v in scalars},
     )
