@@ -130,6 +130,22 @@ def verify_check(value, buffer_name, node_name, op):
         val = val.reshape(ref.shape)
 
     _STATE["n_checked"] += 1
+
+    # TRACE MODE. The golden is the WHOLE GRAPH on CPU, so a buffer's error is
+    # everything accumulated up to it, not that kernel's own. Stopping at the
+    # first buffer over tolerance therefore finds a MISCOMPILE (v3's pool was
+    # 4.85 on data of order 1) but says nothing useful when the error merely
+    # drifts. This logs every buffer's error instead of stopping, so the
+    # question "does it grow smoothly or jump" can be answered by reading the
+    # curve rather than guessed at.
+    if os.environ.get("TORCHSIM_FUNCTIONAL_VERIFY_TRACE"):
+        d = (val - ref).abs().max().item()
+        scale = ref.abs().max().item()
+        rel = d / scale if scale else 0.0
+        logger.error("[FuncTrace] %-10s %-52s max|d|=%.4e max|ref|=%.4e rel=%.4e",
+                     buffer_name, str(op)[:52], d, scale, rel)
+        return
+
     if torch.allclose(val, ref, rtol=RTOL, atol=ATOL, equal_nan=True):
         logger.debug("[FuncVerify] PASS  %-14s %-28s %s",
                      buffer_name, op, tuple(ref.shape))
