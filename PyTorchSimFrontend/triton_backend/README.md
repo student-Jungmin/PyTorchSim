@@ -1,28 +1,27 @@
-# Triton codegen route (WIP)
+# The `npu` codegen route
 
-Replaces the hand-written MLIR emission in `PyTorchSimFrontend/mlir/` with
 **Inductor's own Triton codegen**, lowered to this NPU by the **NPU lowering
-pass** (owned by 이정민; the code lives in the `triton-npu` repo, so paths and
-module names read `tnpu`). Opt-in and off by default; the MLIR route is
-untouched and stays the production path.
+pass** (owned by 이정민; the code lives in the `triton-npu` repo, so paths and
+module names read `tnpu`). It is the only route: the hand-written MLIR emission
+that used to sit in `PyTorchSimFrontend/mlir/` is gone.
 
 The modules here are the PORT: they drive that lowering pass and wire its output
 into the existing TOGSim / gem5 / Spike stack. The pass itself is not ours.
 
 ```bash
-TORCHSIM_TRITON_CODEGEN=1 python tests/system/test_triton_codegen.py
+python tests/system/test_triton_codegen.py
 ```
 
-This file is the working reference for the modules here. For how the route
-compares with the MLIR one and what the numbers are, see
+This file is the working reference for the modules here. For the route's shape
+and its numbers, see
 [`../triton-codegen-route.md`](../triton-codegen-route.md).
 
 ## Why
 
-The MLIR route does not just emit loops — it hand-implements the whole hardware
-mapping (tiling, vectorization, DMA, scratchpad, lane distribution) as ~5,500
-lines of Python string emission, which entangles *what to compute* with *how to
-map it*. See `docs/linalg-codegen-migration.md` for the long form.
+The route it replaced did not just emit loops — it hand-implemented the whole
+hardware mapping (tiling, vectorization, DMA, scratchpad, lane distribution) as
+~5,500 lines of Python string emission, which entangles *what to compute* with
+*how to map it*.
 
 This route keeps Inductor for the first and triton-npu for the second:
 
@@ -153,9 +152,8 @@ are still used -- that ordering is what decides where this can live.
 
 ## Running the whole suite on this route
 
-`TORCHSIM_TRITON_CODEGEN` is read once, at device registration, so every test
-under `tests/` is already a test of this route — no test file knows which one it
-is on. `scripts/ci/triton_route_sweep.py` runs them that way:
+Every test under `tests/` is a test of this route — no test file knows anything
+about codegen. `scripts/ci/triton_route_sweep.py` runs them:
 
 ```bash
 python scripts/ci/triton_route_sweep.py                     # allowlist, gating

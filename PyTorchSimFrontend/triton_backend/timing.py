@@ -34,7 +34,7 @@ def measure_tile_cycles(workdir, meta):
     build_tog's sample mode makes every loop a single trip, tnpu lowers it and
     gem5 runs it. None on any failure; the caller uses the placeholder table.
     """
-    from PyTorchSimFrontend.mlir.passes.build_tog import run_tog
+    from PyTorchSimFrontend.tog.build_tog import run_tog
 
     from . import tnpu_bridge
     from .tnpu_bridge import stage_artifact
@@ -83,7 +83,7 @@ def work_item_for(meta):
     A TEMPLATE'S AXIS COUNT IS NOT IN ITS NUMELS: counting from them gives 1 and
     leaves a pid argument unaccounted. Only the COUNT is compiled in.
     """
-    from PyTorchSimFrontend.mlir.passes.lower_to_emitc import WorkItem
+    from PyTorchSimFrontend.tog.lower_to_emitc import WorkItem
 
     n_tensor, n_scalar = _runtime_arg_layout(meta)
     pid_base = n_tensor + n_scalar + 3
@@ -141,10 +141,10 @@ def emit_trace(workdir, meta):
 
     Returns the number of compute tiles the cycle table covers.
     """
-    from PyTorchSimFrontend.mlir.passes import build_skeleton as bs
-    from PyTorchSimFrontend.mlir.passes import cycle_table as ct
-    from PyTorchSimFrontend.mlir.passes import lower_to_emitc as l2e
-    from PyTorchSimFrontend.mlir.passes.build_tog import ir
+    from PyTorchSimFrontend.tog import build_skeleton as bs
+    from PyTorchSimFrontend.tog import cycle_table as ct
+    from PyTorchSimFrontend.tog import lower_to_emitc as l2e
+    from PyTorchSimFrontend.tog.build_tog import ir
 
     from .tnpu_bridge import stage_artifact
     postvcix = stage_artifact(workdir, "custom.mlir")

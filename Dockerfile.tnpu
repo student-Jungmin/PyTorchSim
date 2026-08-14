@@ -1,8 +1,10 @@
 # syntax=docker/dockerfile:1.4
 #
-# triton-npu toolchain layer, for the Triton codegen route only.
-# Separate from torchsim_base because it is ~1.8 GiB no other job needs.
-# The app image for this route is ./Dockerfile with BASE_IMAGE pointed here.
+# triton-npu toolchain layer: the codegen route's stages 1-5 (ttir -> ttshared
+# -> tnpu passes -> RISC-V ELF). Required, not optional -- `npu` has no other
+# route. Kept a separate image from torchsim_base because it is ~1.8 GiB and
+# moves on its own pin (thirdparty/triton-npu.json + this file).
+# The app image is ./Dockerfile with BASE_IMAGE pointed here.
 #
 # The repo is private, so the clone and the release downloads both need a token.
 # It is a BuildKit secret, not a build-arg: build-args land in the image history.

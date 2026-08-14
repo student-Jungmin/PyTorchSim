@@ -143,7 +143,7 @@ PyTorchSim automatically generates a Tile-Operation Graph (TOG), and runs it thr
 ### Result
 Running log in CLI
 ```bash
-[2026-04-22 11:29:20.139] [INFO] [pytorchsimfrontend.mlir.generated_wrapper] Wrapper Codegen Path = /workspace/PyTorchSim/outputs/.torchinductor/ru/cruz5mvhqeci3avet3ebv6outo6rbo7uiv477tj7u2zjlvfp6k5k.py
+[2026-04-22 11:29:20.139] [INFO] [pytorchsimfrontend.triton_backend.generated_wrapper] Wrapper Codegen Path = /workspace/PyTorchSim/outputs/.torchinductor/ru/cruz5mvhqeci3avet3ebv6outo6rbo7uiv477tj7u2zjlvfp6k5k.py
 [2026-04-22 11:29:20.638] [INFO] [simulator.simulator] [Gem5] Gem5 simulation started
 [2026-04-22 11:29:26.138] [INFO] [simulator.simulator] [Spike] Running Spike simulator
 [2026-04-22 11:29:27.609] [INFO] [simulator.simulator] [TOGSim] TOGSim simulation started
@@ -475,7 +475,7 @@ One-line meaning for each group (details in the YAML block above).
 ## Tutorial
 Check out our [ISPASS 2026 tutorial](https://www.youtube.com/playlist?list=PLYIb5dkr4isJ1ERKTKFoWdCKMUOaay2Nn) to learn:
 - PyTorchSim architecture, motivation, and design goals
-- The end-to-end PyTorch compilation pipeline (PyTorch code → FX → MLIR → LLVM → ISA)
+- The end-to-end PyTorch compilation pipeline (PyTorch code → FX → Triton → MLIR → LLVM → ISA)
 - TPU-style NPU architecture and memory hierarchy
 - Running and analyzing operators and DNN models in PyTorchSim
 - Scheduling, mapping, optimization, and performance analysis tools

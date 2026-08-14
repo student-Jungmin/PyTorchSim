@@ -28,8 +28,3 @@ partition:
   core_0: 0
   core_1: 1
 
-codegen_mapping_strategy: autotune
-codegen_external_mapping_file: ''
-codegen_autotune_max_retry: 10
-codegen_autotune_template_topk: 4
-codegen_compiler_optimization: all

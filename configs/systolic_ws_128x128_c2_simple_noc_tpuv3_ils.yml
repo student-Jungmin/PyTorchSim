@@ -1,6 +1,5 @@
 # ILS (Instruction-Level Simulation) 전용 config
 # - pytorchsim_functional_mode: 0 (timing only, no validation)
-# - codegen_mapping_strategy: heuristic (no autotune)
 num_cores: 2
 core_freq_mhz: 940
 core_stats_print_period_cycles: 10000
@@ -24,11 +23,6 @@ icnt_injection_ports_per_core: 16
 pytorchsim_functional_mode: 0
 pytorchsim_timing_mode: 1
 
-codegen_mapping_strategy: heuristic
-codegen_external_mapping_file: ''
-codegen_autotune_max_retry: 10
-codegen_autotune_template_topk: 4
-codegen_compiler_optimization: all
 
 # Per-core VMEM (vector/scratchpad) size: TPUv2/v3/v4 = 16 MB.
 core_spad_size_kb: 16384

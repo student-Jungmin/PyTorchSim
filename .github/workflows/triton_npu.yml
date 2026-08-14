@@ -17,9 +17,11 @@ on:
     branches: [ "master", "develop" ]
     paths:
       - 'PyTorchSimFrontend/triton_backend/**'
+      - 'PyTorchSimFrontend/tog/**'
       - 'thirdparty/triton-npu.json'
       - 'Dockerfile.tnpu'
       - 'scripts/ci/tnpu_base_pin.sh'
+      - 'scripts/ci/triton_route_passing.txt'
       - '.github/workflows/triton_npu.yml'
   workflow_dispatch:
 
@@ -184,9 +186,6 @@ jobs:
     name: Inductor Triton route
     needs: build-app
     runs-on: [self-hosted, slurm, x86_64]
-    # WIP: the launch is deliberately unimplemented, so this reports how far the
-    # route gets rather than gating. Drop this once the launch lands.
-    continue-on-error: true
     steps:
       - uses: docker/login-action@v3
         with:
@@ -196,12 +195,12 @@ jobs:
 
       - name: test_triton_codegen.py
         run: |
-          docker run --rm -e TORCHSIM_TRITON_CODEGEN=1 \
+          docker run --rm \
             ${{ needs.build-app.outputs.app_image }} \
             python3 PyTorchSim/tests/system/test_triton_codegen.py
 
-  triton-route-suite:
-    name: Test suite on the Triton route
+  coverage-sweep:
+    name: Coverage sweep beyond the allowlist
     needs: build-app
     runs-on: [self-hosted, slurm, big, x86_64]
     steps:
@@ -211,14 +210,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Gates on the tests that pass today; coverage cannot silently shrink.
-      - name: Allowlisted tests
-        run: |
-          docker run --rm \
-            ${{ needs.build-app.outputs.app_image }} \
-            python3 PyTorchSim/scripts/ci/triton_route_sweep.py
-
-      # Reports the rest. Each failure leaves its kernel and stage IR behind.
+      # Reports every test, allowlist included. Each failure leaves its kernel
+      # and stage IR behind. pytorchsim_test.yml is what gates the allowlist.
       - name: Full sweep (report)
         continue-on-error: true
         run: |
@@ -236,22 +229,3 @@ jobs:
           name: triton-route-coverage
           path: sweep/
           if-no-files-found: warn
-
-  mlir-route-regression:
-    name: MLIR route still passes
-    needs: build-app
-    runs-on: [self-hosted, slurm, x86_64]
-    steps:
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # The tnpu layer adds a second LLVM and a second triton to the image. This
-      # is the check that it did not disturb the production path.
-      - name: test_add.py
-        run: |
-          docker run --rm \
-            ${{ needs.build-app.outputs.app_image }} \
-            python3 PyTorchSim/tests/ops/elementwise/test_add.py

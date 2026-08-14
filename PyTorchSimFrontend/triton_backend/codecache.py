@@ -1,4 +1,4 @@
-"""Compile cache for the Triton route -- the counterpart of extension_codecache.
+"""Compile cache for the codegen route: one kernel in, one launcher out.
 
     define_kernel   ->  triton_npu_compile(src, meta, kernel_name)  ->  launcher
     call site       ->  launcher(arg0, arg1, ..., xnumel)
@@ -32,7 +32,7 @@ class TritonNPULauncher:
     """What a compiled kernel name is bound to in the generated wrapper.
 
     Each call is one launch of the whole grid, Spike first so the tensors hold
-    real values even if TOGSim fails. Both halves switch, on the MLIR keys.
+    real values even if TOGSim fails. Both halves switch on the config keys.
     """
     def __init__(self, kernel_name, workdir, meta):
         self.kernel_name = kernel_name
@@ -101,8 +101,8 @@ def _shrink_tile(meta, usage, budget):
 def triton_npu_compile(src_code, meta, kernel_name):
     """Compile one Inductor-generated Triton kernel through tnpu.
 
-    Called from the generated wrapper at module import time. Synchronous: the
-    MLIR route's thread pool buys nothing until the pipeline itself is proven.
+    Called from the generated wrapper at module import time. Synchronous, on
+    purpose: a thread pool buys nothing until the pipeline itself is proven.
     """
     write_path = _write_path(src_code)
     os.makedirs(write_path, exist_ok=True)

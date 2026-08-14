@@ -7,11 +7,45 @@ on:
 
 env:
   BASE_IMAGE_REPO: ghcr.io/psal-postech/torchsim_base
+  TNPU_IMAGE_REPO: ghcr.io/psal-postech/torchsim_tnpu_base
   # PR: head commit; otherwise workflow_dispatch uses the branch SHA
   SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
 jobs:
+  preflight:
+    name: Check tnpu access
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+
+      # The only codegen route lowers through triton-npu, so the toolchain is
+      # not optional and neither is the token. Fail here, not in the image build.
+      - name: Token and release present
+        env:
+          TNPU_TOKEN: ${{ secrets.TNPU_TOKEN }}
+        run: |
+          if [ -z "${TNPU_TOKEN}" ]; then
+            echo "::error::secrets.TNPU_TOKEN is not set. PSAL-POSTECH/triton-npu is private and the default Actions token cannot read it."
+            exit 1
+          fi
+          REPO=$(jq -r '.triton_npu.repository' thirdparty/triton-npu.json)
+          TAG=$(jq -r '.triton_npu.release_tag' thirdparty/triton-npu.json)
+          if ! curl -fsS -H "Authorization: Bearer ${TNPU_TOKEN}" \
+               "https://api.github.com/repos/${REPO}" -o /dev/null; then
+            echo "::error::TNPU_TOKEN cannot read ${REPO}."
+            exit 1
+          fi
+          if ! curl -fsS -H "Authorization: Bearer ${TNPU_TOKEN}" \
+               "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" -o /dev/null; then
+            echo "::error::${REPO} has no release tagged '${TAG}'. Mirror the toolchain assets there (see thirdparty/triton-npu.json)."
+            exit 1
+          fi
+
   ensure-base:
+    needs: preflight
     runs-on: ubuntu-latest
     outputs:
       base_image: ${{ steps.pin.outputs.base_image }}
@@ -77,11 +111,70 @@ jobs:
             SPIKE_ASSET_ID=${{ env.SPIKE_ASSET_ID }}
           tags: ${{ env.BASE_IMAGE }}
 
-  build-and-test:
+  ensure-tnpu-base:
+    # The triton-npu toolchain layer the codegen route lowers through. Kept a
+    # separate image because it is ~1.8 GiB and moves on its own pin.
+    name: Build tnpu toolchain image
     needs: ensure-base
-    # App image build runs on a GitHub-hosted runner: the CPU-only image is small
-    # and ensure-base already builds the heavier base image on ubuntu-latest.
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, slurm, big, x86_64]
+    outputs:
+      tnpu_image: ${{ steps.pin.outputs.tnpu_image }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pins
+        id: pin
+        run: |
+          BASE_PIN="$(bash scripts/ci/thirdparty_base_pin.sh)"
+          TNPU_PIN="$(bash scripts/ci/tnpu_base_pin.sh)"
+          # The tnpu layer sits on a specific base, so its tag carries both pins.
+          echo "TNPU_IMAGE=${TNPU_IMAGE_REPO}:tnpu-${TNPU_PIN}-base-${BASE_PIN}" >> "$GITHUB_ENV"
+          echo "tnpu_image=${TNPU_IMAGE_REPO}:tnpu-${TNPU_PIN}-base-${BASE_PIN}" >> "$GITHUB_OUTPUT"
+          echo "TNPU_REF=$(jq -r '.triton_npu.ref' thirdparty/triton-npu.json)" >> "$GITHUB_ENV"
+
+      - name: Check tnpu image exists
+        id: exists
+        run: |
+          if docker manifest inspect "${TNPU_IMAGE}" > /dev/null 2>&1; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push tnpu toolchain image
+        if: steps.exists.outputs.ok != 'true'
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile.tnpu
+          push: true
+          build-args: |
+            BASE_IMAGE=${{ needs.ensure-base.outputs.base_image }}
+            TNPU_REF=${{ env.TNPU_REF }}
+          secrets: |
+            tnpu_token=${{ secrets.TNPU_TOKEN }}
+          tags: ${{ env.TNPU_IMAGE }}
+
+  build-and-test:
+    needs: ensure-tnpu-base
+    # Self-hosted: the app image now carries the tnpu toolchain layer.
+    runs-on: [self-hosted, slurm, big, x86_64]
 
     permissions:
       contents: read
@@ -110,7 +203,7 @@ jobs:
           push: true
           no-cache: true
           build-args: |
-            BASE_IMAGE=${{ needs.ensure-base.outputs.base_image }}
+            BASE_IMAGE=${{ needs.ensure-tnpu-base.outputs.tnpu_image }}
           tags: ghcr.io/psal-postech/torchsim-test:${{ env.SOURCE_SHA }}
 
       # Do not use GITHUB_SHA here: on pull_request it is the merge commit, while the image tag uses SOURCE_SHA (PR head).

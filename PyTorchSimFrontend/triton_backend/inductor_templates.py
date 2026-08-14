@@ -55,20 +55,18 @@ def _round_up_pow2(n):
 def _gemm_tiles(m, n, k, dtype_size):
     """This machine's mm tiles for [m, k] @ [k, n], best first.
 
-    PyTorchSim's `gemm_combination_mapping` enumerates and ranks every tile that
-    fits half the scratchpad. Torch's generic set is appended after, never before.
+    `gemm_tile_candidates` enumerates and ranks every tile that fits half the
+    scratchpad. Torch's generic set is appended after, never before.
     """
     from torch._inductor.template_heuristics.triton import GemmConfig
 
-    from PyTorchSimFrontend.mlir.mlir_common import BaseMLIRHardwareInfo
+    from .hardware import HardwareInfo
 
-    tiles = BaseMLIRHardwareInfo().gemm_combination_mapping(
+    tiles = HardwareInfo().gemm_tile_candidates(
         _round_up_pow2(int(m)), _round_up_pow2(int(n)), _round_up_pow2(int(k)),
         precision_bytes=int(dtype_size),
-        min_tile=True,
         n_prologue_node=2, n_prologue_extra_read=2,
-        budget_divisor=2,
-        dump_candidates=False)
+        budget_divisor=2)
 
     out = []
     for tile_m, tile_n, tile_k in tiles:

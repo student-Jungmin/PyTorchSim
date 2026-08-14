@@ -6,7 +6,7 @@ Every pass had its own copy of the same op-walk generator (named variously
 
 Import-safety: `walk_ops` is pure block/op attribute access and needs no MLIR
 bindings, so this module does NOT import `mlir.ir` at top level -- some passes
-(e.g. lower_vlane_idx, decompose_transfer) are deliberately importable without
+are deliberately importable without
 the bindings present and only touch `mlir.ir` inside their run functions. The
 attribute builders therefore import `mlir.ir` lazily; they require an active
 MLIR context (the caller's `with ctx:`), exactly as the per-pass copies did.

@@ -328,10 +328,10 @@ launch마다 `runtime/*.raw`를 새로 쓰기 때문에 손으로 돌린 실행�
 
 ### 러너
 
-`scripts/ci/triton_route_sweep.py`. `TORCHSIM_TRITON_CODEGEN`은 device 등록
-시점에 한 번 읽히므로(`PyTorchSimDevice/torch_openreg/__init__.py:30`),
-**테스트 파일은 하나도 고칠 필요가 없었습니다.** 69개 전부가 이미 이 경로의
-테스트였고, 없던 것은 러너뿐이었습니다.
+`scripts/ci/triton_route_sweep.py`. codegen 경로는 device 등록 시점에 한 번
+정해지므로(`PyTorchSimDevice/torch_openreg/__init__.py`), **테스트 파일은
+하나도 고칠 필요가 없었습니다.** 69개 전부가 이미 이 경로의 테스트였고, 없던
+것은 러너뿐이었습니다.
 
 세 가지 산출물:
 
