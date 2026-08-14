@@ -204,6 +204,7 @@ def triton_npu_compile(src_code, meta, kernel_name):
             with open(os.path.join(write_path, "kernel.py"), "w") as f:
                 f.write(src_code)      # the unmodified Inductor source
             timing.store_meta(write_path, meta)   # lets the timing step run standalone
+            last_usage = None
             while True:
                 kernel_spec.write_spec_file(src_code, meta, spec_path,
                                             tnpu_bridge.tnpu_dir())
@@ -213,13 +214,60 @@ def triton_npu_compile(src_code, meta, kernel_name):
                     break
                 except tnpu_bridge.TnpuError as exc:
                     over = _spad_overflow(exc)
-                    if over is None or not _shrink_tile(meta, *over):
+                    if over is None:
                         raise
+                    # A RETRY THAT FREES NOTHING IS NOT A RETRY, and walking on
+                    # anyway is worse than stopping: the tile keeps halving, the
+                    # measurement does not move, and the last halving is the one
+                    # that takes the tile's outer axis to 1. A unit axis is not
+                    # an axis, so select_lane_axis has to put the lanes
+                    # somewhere else and does not answer the same way for every
+                    # buffer -- the fold then crosses lanes, which this machine
+                    # has no instruction for, and the kernel COMPILES and
+                    # returns wrong numbers.
+                    #
+                    #   measured  Qwen2-MoE's sort kernel, spad 131072. usage
+                    #             127616 at XBLOCK 8, 4, 2 and 1 -- identical,
+                    #             three halvings that freed one byte between
+                    #             them. Lane-axis stamps in 04-adapted.mlir:
+                    #
+                    #               XBLOCK 64/8/4/2   426 x axis 0
+                    #               XBLOCK 1          300 x 0, 125 x 1, 4 x ONE_LANE
+                    #
+                    #             and the model came out at Max abs diff 1.370
+                    #             (twice, to the last digit) instead of 1e-6.
+                    #             XBLOCK 8 -- the last size that moved the
+                    #             number, and one that FITS the 131072 Spike
+                    #             maps -- passes.
+                    #
+                    # So stop at the last size that changed something and let
+                    # the overflow be reported. A compile error names the kernel
+                    # and the budget; a wrong number names nothing.
+                    if last_usage is not None and over[0] >= last_usage:
+                        logger.warning(
+                            "[triton-npu] %s: %d bytes/lane, unchanged from the "
+                            "previous tile -- shrinking further frees nothing "
+                            "and only risks a unit axis, so stopping here",
+                            kernel_name, over[0])
+                        raise
+                    last_usage = over[0]
+                    if not _shrink_tile(meta, *over):
+                        raise
+                    # EVERY BLOCK, and the filter used to be `endswith("_BLOCK")`
+                    # -- which is false of "XBLOCK", the only block that moves in
+                    # a persistent reduction (see _shrink_tile). So the one line
+                    # that says what the retry changed reported the block that
+                    # did NOT change and hid the one that did:
+                    #
+                    #   retrying with {'R0_BLOCK': 128}    six times in a row
+                    #
+                    # reads as a loop that shrinks nothing, which is the opposite
+                    # of what was happening. Measured on Qwen2-MoE's sort kernel.
                     logger.info(
                         "[triton-npu] %s: %d bytes/lane over a budget of %d, "
                         "retrying with %s", kernel_name, over[0], over[1],
                         {k: v for k, v in meta["fixed_config"].items()
-                         if k.endswith("_BLOCK")})
+                         if k.endswith("BLOCK")})
             # The spec now records the block sizes that actually compiled, and
             # timing.store_meta above wrote the ones that did not. Restate it so
             # a standalone timing run launches the grid the ELF was built for.
