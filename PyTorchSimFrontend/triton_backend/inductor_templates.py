@@ -317,6 +317,191 @@ def _clamp_conv_block_n():
             inductor_lowering.lowerings[key] = wrap(inner)
 
 
+def _lower_transposed_conv_as_a_direct_one():
+    """Give a transposed convolution to the Triton template, as a direct one.
+
+    WHY IT DOES NOT GET THERE ON ITS OWN. Inductor's own conv lowering says so
+    in a comment beside the condition:
+
+        # templates only support these:
+        and is_ones(dilation)
+        and not transposed
+        and is_zeros(output_padding)
+
+    so a transposed conv skips the Triton template and leaves as
+    `extern_kernels.convolution(..., transposed=True, ...)`. That escape hatch
+    assumes the device has a native convolution library behind
+    `aten::convolution_overrideable` -- cuDNN, on the backend it was written
+    for. On a PrivateUse1 device there is none, and the op is NOT merely
+    missing: PyTorch registers a CompositeExplicitAutograd kernel for it whose
+    whole body raises "convolution_overrideable not implemented", and an alias
+    key covers PrivateUse1, so this device's global CPU fallback never gets a
+    turn. Measured: erfinv, nanmedian and matrix_exp all fall back to CPU and
+    return, while conv_transpose2d raises.
+
+    So the answer is not to register the op -- that would run the convolution
+    on the host and simulate nothing -- but to stop emitting it. A transposed
+    convolution IS a direct one:
+
+        insert stride-1 zeros between the input's spatial elements,
+        pad by dilation*(k-1) - padding, and output_padding more at the far
+        edge, flip the kernel spatially, swap its in/out channels per group,
+        and convolve with stride 1.
+
+    VERIFIED AGAINST aten BEFORE IT WAS WIRED IN, over the product of
+    stride 1/2/3, padding 0/1/2, output_padding 0/1, dilation 1/2, groups
+    1/2/4 and kernel 1/3/4 -- every combination the op allows, 0 mismatches.
+
+    WHAT IT COSTS, and it is not free: the zeros are real elements that the
+    tiles carry, so the direct conv does stride^2 times the multiply-adds the
+    transposed one would. That is a true statement about a machine with no
+    transposed-conv unit, which is what this simulator is modelling -- and it
+    is the difference between a number and no number at all.
+
+    WRAPPED AT THE LOWERING, NOT REGISTERED AS A DECOMPOSITION, and the reason
+    is that the decomposition table is not ours to take. `mlir_decomposition`
+    already registers `aten.convolution.default` -- and `mlir_scheduling`
+    imports it unconditionally, so it is live in this process too. A second
+    registration under the same key does not compose with it, it REPLACES it,
+    silently and in whichever import order happens to win. The lowering table
+    has no such occupant, `_clamp_conv_block_n` right above already wraps this
+    very entry, and a wrapper composes by construction: ours rewrites the args
+    and hands them to whatever was there before.
+    """
+    import functools
+    import inspect
+
+    from torch._inductor import ir
+    from torch._inductor import lowering as inductor_lowering
+    from torch._inductor.kernel import conv as conv_kernel
+    from torch._inductor.lowering import lowerings as L
+    from torch._inductor.virtualized import V
+
+    aten = torch.ops.aten
+    prims = torch.ops.prims
+    sig = inspect.signature(conv_kernel.convolution)
+
+    def _per_dim(seq, n):
+        # conv1d/2d/3d may arrive with a single value standing for every
+        # spatial dim; the lowering below does the same widening.
+        seq = list(seq)
+        return seq * n if len(seq) == 1 else seq
+
+    def _spread(t, lead, extents, factor):
+        """Put factor-1 zeros between neighbouring elements of each dim.
+
+        Done by giving every dim a size-1 partner, padding THAT to `factor`,
+        and folding the pair back together; the trailing zeros of the last
+        element are then trimmed off, since only the GAPS are wanted.
+        """
+        if all(f == 1 for f in factor):
+            return t
+        n = len(extents)
+        paired = list(lead)
+        for extent in extents:
+            paired += [extent, 1]
+        y = L[aten.view](t, paired)
+        pad = []
+        for i in reversed(range(n)):
+            pad += [0, factor[i] - 1, 0, 0]
+        y = L[aten.constant_pad_nd](y, pad, 0.0)
+        y = L[aten.view](y, list(lead) +
+                         [extents[i] * factor[i] for i in range(n)])
+        for i in range(n):
+            if factor[i] != 1:
+                y = L[aten.slice](y, len(lead) + i, 0,
+                                  extents[i] * factor[i] - (factor[i] - 1))
+        return y
+
+    def _rewrite(x, weight, stride, padding, dilation, output_padding, groups):
+        """Return the (x, weight, *params) of the equivalent direct conv."""
+        ints = V.graph.sizevars.guard_int_seq
+        batch, in_chan, *spatial = ints(x.get_size())
+        _, out_per_group, *kernel = ints(weight.get_size())
+        n_sp = len(kernel)
+        out_chan = out_per_group * groups
+        stride = _per_dim(stride, n_sp)
+        padding = _per_dim(padding, n_sp)
+        dilation = _per_dim(dilation, n_sp)
+        output_padding = _per_dim(output_padding, n_sp)
+
+        # 1. stride-1 zeros between the input's spatial elements.
+        y = _spread(x, [batch, in_chan], spatial, stride)
+
+        # 2. The padding a direct conv needs to cover the same output, plus
+        #    output_padding at the far edge only. A negative amount is a crop,
+        #    which is what padding > dilation*(k-1) means here, and the
+        #    constant_pad_nd lowering masks it exactly that way.
+        pad = []
+        for i in reversed(range(n_sp)):
+            lo = dilation[i] * (kernel[i] - 1) - padding[i]
+            pad += [lo, lo + output_padding[i]]
+        if any(p != 0 for p in pad):
+            y = L[aten.constant_pad_nd](y, pad, 0.0)
+
+        # 3. A transposed conv's weight is [in, out/groups, *k] and a direct
+        #    one's is [out, in/groups, *k]: swap the two inside each group and
+        #    flip the kernel, which is what makes the correspondence exact.
+        #    `flip` is not a lowering -- it is decomposed to prims.rev, which
+        #    is -- and by here the graph is past decomposition, so call rev.
+        w = L[aten.view](weight, [groups, in_chan // groups,
+                                  out_chan // groups] + kernel)
+        w = L[aten.permute](w, [0, 2, 1] + [3 + i for i in range(n_sp)])
+        w = L[aten.view](w, [out_chan, in_chan // groups] + kernel)
+        if any(k != 1 for k in kernel):
+            w = L[prims.rev.default](w, [2 + i for i in range(n_sp)])
+
+        # 4. Dilation, spelled into the kernel. The template refuses a
+        #    dilation as flatly as it refuses a transposition, so leaving it
+        #    on would just swap one extern_kernels call for another; a kernel
+        #    with dilation-1 zeros between its taps is the same convolution.
+        #    The taps land on 0, d, 2d, ... either way, so it does not matter
+        #    that this comes after the flip. Weights are small and constant,
+        #    which is why the zeros are cheaper here than in the input.
+        w = _spread(w, [out_chan, in_chan // groups], kernel, dilation)
+
+        return y, w, [1] * n_sp, [0] * n_sp, [1] * n_sp, [0] * n_sp
+
+    def wrap(inner):
+        @functools.wraps(inner)
+        def convolution(*args, **kwargs):
+            try:
+                bound = sig.bind(*args, **kwargs)
+                bound.apply_defaults()
+                a = bound.arguments
+            except TypeError:
+                return inner(*args, **kwargs)
+
+            x, weight = a["x"], a["weight"]
+            if not a["transposed"] or ir.get_device_type(x) != "npu":
+                return inner(*args, **kwargs)
+
+            # The batchless form the lowering handles by expanding; do the same
+            # here, because its recursion goes to the module-level name and so
+            # would walk straight past this wrapper.
+            batchless = len(x.get_size()) == len(weight.get_size()) - 1
+            if batchless:
+                x = L[aten.expand](x, [1, *x.get_size()])
+
+            y, w, stride, padding, dilation, output_padding = _rewrite(
+                x, weight, a["stride"], a["padding"], a["dilation"],
+                a["output_padding"], a["groups"])
+            out = inner(y, w, a["bias"], stride, padding, dilation, False,
+                        output_padding, a["groups"])
+            return L[aten.squeeze](out, dim=0) if batchless else out
+
+        return convolution
+
+    # Every key the lowering is filed under -- see the note in
+    # _clamp_conv_block_n; a lowered graph reaches for the overload, not the
+    # packet.
+    packet = torch.ops.aten.convolution
+    for key in [packet] + [getattr(packet, o) for o in packet.overloads()]:
+        inner = inductor_lowering.lowerings.get(key)
+        if inner is not None:
+            inductor_lowering.lowerings[key] = wrap(inner)
+
+
 def _size_conv_blocks_from_the_machine():
     """Offer conv tiles this machine has lanes for.
 
@@ -650,6 +835,7 @@ def install():
     _register_npu_as_gpu()
     _claim_triton_present()
     _register_template_heuristics()
+    _lower_transposed_conv_as_a_direct_one()
     _size_conv_blocks_from_the_machine()
     _size_grouped_conv_grid_per_group()
     _clamp_conv_block_n()
