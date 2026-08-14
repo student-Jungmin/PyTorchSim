@@ -25,6 +25,9 @@ import PyTorchSimFrontend.extension_decomposition  # noqa: F401
 from PyTorchSimFrontend import extension_counting_sort as _counting_sort
 
 _counting_sort.install()
+# Same reason, one level up: Inductor refuses to generate code for complex
+# operators whichever backend is registered, so the rewrite is not the route's.
+import PyTorchSimFrontend.extension_complex_to_real  # noqa: F401
 from PyTorchSimFrontend.mlir.mlir_codegen_backend import ExtensionWrapperCodegen
 
 # Two mutually exclusive codegen routes for `npu`, chosen here because Inductor

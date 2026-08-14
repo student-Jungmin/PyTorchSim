@@ -198,6 +198,32 @@ Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11
 - "No CUDA runtime is found" warnings on `import torch` are expected — this is a CPU + simulated-NPU environment, not real CUDA.
 - **Codegen changes are sticky across runs because of caches.** When iterating on `PyTorchSimFrontend/mlir/*` or any code that affects emitted MLIR/wrapper code, clear `$TORCHSIM_DUMP_PATH` (default `$TORCHSIM_DIR/outputs/`) before re-running — it holds both Inductor's compile cache (`.torchinductor/`, set via `TORCHINDUCTOR_CACHE_DIR` inside `extension_config.get_dump_path()`) and the per-source-hash MLIR/wrapper dirs (`<hash>/`) keyed by `extension_codecache.get_write_path(src_code)`. Otherwise a buggy graph compiled before your fix is replayed verbatim. `togsim_results/` (TOGSim run logs) is cosmetic and not part of the codegen replay path. For parallel worktrees see `docs/worktrees.md`.
 
+## Comments: a three-line docstring per function, and nothing else
+
+The only comment this repo accepts is a docstring of **at most three lines** saying
+what the function does. Everything else goes.
+
+**Not allowed:** inline `#` commentary, block comments above a statement, measured
+evidence written beside the code it justifies, "WHY THIS IS HERE" paragraphs,
+before/after numbers, references to the test that found a bug, TODOs.
+
+**Where that material goes instead:** the commit message. It is versioned, it is
+attached to the change that established it, and `git log -S` finds it. A number
+that matters is a number in a commit; a number in a comment is a number nobody
+can date.
+
+**Applies to what you write and what you touch.** Rewriting a function means its
+comments go with the rewrite — do not carry them forward. When you shorten a
+docstring past three lines, keep the sentence that says what the function
+returns, not the one that says why.
+
+**Module docstrings** follow the same bar: a few lines naming what the file is
+for. A diagram of the pipeline is allowed once, in the package `__init__`.
+
+**This is deliberately in tension with `triton-npu`'s rule 3**, which protects
+docstrings and comments as the place that backend's reasoning lives. That rule
+governs `triton-npu`; this one governs here. Do not carry either across.
+
 ## Git workflow (per CONTRIBUTING.md)
 
 - Fork, branch (`feature/<name>`), PR against `develop`, not `main`.

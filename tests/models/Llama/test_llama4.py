@@ -33,38 +33,77 @@ contains a NoPE layer; `scout` names its own no_rope_layers to get one in two.
     source /workspace/tnpu-env.sh
     python tests/models/Llama/test_llama4.py --preset small
 
-STATUS: bring-up. Not in scripts/ci/triton_route_passing.txt until it passes.
+MEASURED 2026-08-14 on transformers 5.15.0, tnpu 983eee4, --preset small:
+147,874,816 parameters, 31 kernels, 4.7684e-06, 8m00s. All four guards green --
+4/4 MoE layers, no_rope_layers [1,1,1,0], experts=4 top-1, qk_norm, chunk=32.
 
-MEASURED 2026-08-13 on transformers 5.15.0, tnpu 983eee4, --preset small:
-147,874,816 parameters, all four guards green -- 4/4 MoE layers,
-no_rope_layers [1,1,1,0], experts=4 top-1, qk_norm, chunk=32 -- and then, at 61s:
+Fifteen ops run eager: 11 `fill_` and 4 `topk`. The complex arithmetic used to
+be the bulk of that list -- 7 `view_as_complex`, 7 `mul.out`, 6 `view_as_real`,
+twenty calls leaving the simulator -- and `extension_complex_to_real` (84ad277)
+now keeps all of it in the graph. That pass was written and measured against
+DeepSeek-V2's rope, and it covers this one unchanged: Llama 4's complex path
+uses no op outside the set it already knew. The kernel count went 30 -> 31 as
+the complex work became a kernel rather than a fallback.
 
-    AssertionError: expected size 32==32, stride 64==1 at dim=1;
-                    expected size 64==64, stride 1==32 at dim=2
-    Error in op: torch.ops.aten.polar.default
+SCOPE, AND IT IS A REAL LIMIT rather than a shrug. The gate runs `small`, 1024
+hidden. `--preset scout` builds Scout's real width (5120 hidden, 40/8 heads,
+1,394,672,640 parameters), passes all four guards, compiles 30 kernels, and
+then DIES IN SPIKE at kernel 19:
 
-TWO WALLS, IN ORDER. `polar` is the complex-valued rotary: Llama 4 builds its
-frequencies as complex numbers (`polar`, `view_as_complex`, `view_as_real`),
-which no other model in this suite does, and the strides it arrives with are
-transposed against what the op expects. Behind that sits the MoE combine's
-`tl.atomic_add`, which is where this stopped on transformers 4.51.3:
+    Kernel store segfault @ 0x0000000000000000        a0 0000000000000000
+                                                      s4 0000000050000000
 
-    kernel 28 ..._scatter_add_view_28
-    error: unexpected op in ptr sequence
+That is not this model's arithmetic. s4 is 0x50000000 = 1,342,177,280, exactly
+the byte size of the MoE expert stack (4 x 5120 x 8192 x 2 f32), and a0 is the
+null it was told to store through. tnpu's wrapper.py sizes every buffer
 
-That one is triton_shared's PtrAnalysis meeting `tt.atomic_rmw`, an op it has
-no arm for -- no coverage kernel in triton-npu calls `tl.atomic_*` at all, and
-the two kernels that look like they do (dl/moe_combine, dl/embedding_grad_
-scatter_add) both AVOID atomics on purpose, one with a read-modify-write and
-one by resolving the collision as a predicate.
+    padded = ((nbytes + 63) // 64) * 64 * 2
 
-The atomic is substitutable rather than needed. HF's own comment says why: "we
-have to do this because we used all experts on all tokens". The index is
-`arange(T)` tiled over the expert axis -- NOT the top-k indices, which are
-overwritten a few lines above -- so the scatter_add is a sum over the expert
-axis with a statically known 4-way collision and no data dependence. Inductor
-already folded it that far: the emitted address is `x0 + 1024*(x1 % 32)`,
-computed from the iteration index rather than loaded.
+-- doubled, to keep a DMA tail write off the heap -- so the 1.25 GiB argument is
+requested as 2.5 GiB, `calloc` returns NULL, and nothing checks it. The DMA tail
+is bounded by a tile, not by the tensor, so the factor is the thing to look at
+first; the missing NULL check is why this reads as a segfault instead of "1.25
+GiB allocation failed". Until that moves, Llama 4's claim here is a shape claim,
+not a width claim -- unlike test_llama3x.py, which gates the real 8B block.
+
+THREE WALLS, IN THE ORDER THEY FELL, because none of them was visible until the
+one before it moved.
+
+  atomic_add      On transformers 4.51.3 this stopped at kernel 28,
+                  ..._scatter_add_view_28, with "unexpected op in ptr sequence"
+                  -- triton_shared's PtrAnalysis meeting `tt.atomic_rmw`, an op
+                  it has no arm for. No coverage kernel in triton-npu calls
+                  `tl.atomic_*` at all, and the two that look like they do
+                  (dl/moe_combine, dl/embedding_grad_scatter_add) both AVOID
+                  atomics on purpose, one with a read-modify-write and one by
+                  resolving the collision as a predicate. 5.15.0's MoE combine
+                  no longer emits it.
+
+  polar           The complex-valued rotary. Llama 4 builds its frequencies as
+                  complex numbers, which no other model in this suite does, and
+                  the strides arrived transposed against what the op expects:
+                  "expected size 32==32, stride 64==1 at dim=1". Fixed in
+                  PyTorchSim 3fdcab7, which lowers `polar` to a view over a real
+                  pair so it never leaves the graph. Adopting torch's own
+                  decomposition verbatim does NOT work -- its body mutates
+                  views and trips assert_functional_graph.
+
+  the lost base   With polar out of the way the model compiled and answered
+                  WRONG, max abs diff 1.31 against a 4.77e-06 tolerance. Not the
+                  complex rewrite: with that pass off the diff is 1.3095997
+                  against 1.3095998, the same answer with complex computed on
+                  the CPU. It was the MoE router. It fills with -inf and
+                  scatters the top-k logits in, and `_roles` classified that
+                  scattered-into buffer `out` rather than `inout`, so the kernel
+                  got a fresh buffer and every unselected expert arrived at 0
+                  instead of -inf. sigmoid turned those into 0.5 and top-1
+                  routing became a blend of all four. Fixed in PyTorchSim
+                  8d8e2ed; tests/ops/misc/test_inplace_partial_write.py pins it.
+
+The third one is the reason this file says what the model does rather than only
+what it builds. A router that blends four experts instead of choosing one still
+produces a plausible tensor of the right shape, and only a numeric comparison
+against the reference calls it.
 """
 
 import argparse
