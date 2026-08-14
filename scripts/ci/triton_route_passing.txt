@@ -120,7 +120,11 @@ tests/ops/fusion/test_addmm_residual.py
 tests/ops/fusion/test_matmul_scalar.py
 tests/ops/fusion/test_matmul_vector.py
 tests/ops/fusion/test_prologue_fusion.py
+tests/ops/misc/test_complex_to_real.py
+tests/ops/misc/test_eager_to_compile_recursion.py
 tests/ops/misc/test_expert_mask.py
+tests/ops/misc/test_histc.py
+tests/ops/misc/test_polar.py
 tests/ops/misc/test_widen_dtype.py
 tests/ops/reduce/test_batchnorm.py
 tests/ops/view/test_view3D_2D.py
