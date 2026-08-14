@@ -33,17 +33,38 @@ contains a NoPE layer; `scout` names its own no_rope_layers to get one in two.
     source /workspace/tnpu-env.sh
     python tests/models/Llama/test_llama4.py --preset small
 
-MEASURED 2026-08-14 on transformers 5.15.0, tnpu 983eee4, PyTorchSim 8d8e2ed,
---preset small: 147,874,816 parameters, 30 kernels, 4.7684e-06, 7m53s. All four
-guards green -- 4/4 MoE layers, no_rope_layers [1,1,1,0], experts=4 top-1,
-qk_norm, chunk=32.
+MEASURED 2026-08-14 on transformers 5.15.0, tnpu 983eee4, --preset small:
+147,874,816 parameters, 31 kernels, 4.7684e-06, 8m00s. All four guards green --
+4/4 MoE layers, no_rope_layers [1,1,1,0], experts=4 top-1, qk_norm, chunk=32.
 
-Thirty-five ops still run eager and the run is correct anyway: 11 `fill_`, 7
-`view_as_complex`, 7 `mul.out`, 6 `view_as_real`, 4 `topk`. Complex arithmetic
-is the bulk of that and it is not a gap this test can close -- Inductor says so
-itself ("does not support code generation for complex operators"). What matters
-here is that the complex values reach the graph as a real pair rather than
-leaving it, which is what makes the surrounding 30 kernels compile.
+Fifteen ops run eager: 11 `fill_` and 4 `topk`. The complex arithmetic used to
+be the bulk of that list -- 7 `view_as_complex`, 7 `mul.out`, 6 `view_as_real`,
+twenty calls leaving the simulator -- and `extension_complex_to_real` (84ad277)
+now keeps all of it in the graph. That pass was written and measured against
+DeepSeek-V2's rope, and it covers this one unchanged: Llama 4's complex path
+uses no op outside the set it already knew. The kernel count went 30 -> 31 as
+the complex work became a kernel rather than a fallback.
+
+SCOPE, AND IT IS A REAL LIMIT rather than a shrug. The gate runs `small`, 1024
+hidden. `--preset scout` builds Scout's real width (5120 hidden, 40/8 heads,
+1,394,672,640 parameters), passes all four guards, compiles 30 kernels, and
+then DIES IN SPIKE at kernel 19:
+
+    Kernel store segfault @ 0x0000000000000000        a0 0000000000000000
+                                                      s4 0000000050000000
+
+That is not this model's arithmetic. s4 is 0x50000000 = 1,342,177,280, exactly
+the byte size of the MoE expert stack (4 x 5120 x 8192 x 2 f32), and a0 is the
+null it was told to store through. tnpu's wrapper.py sizes every buffer
+
+    padded = ((nbytes + 63) // 64) * 64 * 2
+
+-- doubled, to keep a DMA tail write off the heap -- so the 1.25 GiB argument is
+requested as 2.5 GiB, `calloc` returns NULL, and nothing checks it. The DMA tail
+is bounded by a tile, not by the tensor, so the factor is the thing to look at
+first; the missing NULL check is why this reads as a segfault instead of "1.25
+GiB allocation failed". Until that moves, Llama 4's claim here is a shape claim,
+not a width claim -- unlike test_llama3x.py, which gates the real 8B block.
 
 THREE WALLS, IN THE ORDER THEY FELL, because none of them was visible until the
 one before it moved.
@@ -110,6 +131,24 @@ _PRESETS = {
     "scout": dict(layers=2, hidden=5120, heads=40, kv_heads=8, intermediate=8192,
                   experts=4, vocab=2048, seq=32, chunk=32,
                   no_rope=[1, 0]),
+
+    # MAVERICK IS SCOUT'S MIRROR IMAGE HERE: its real EXPERT COUNT at a reduced
+    # width, where `scout` is the real width at a reduced expert count. Between
+    # them the two axes are covered once each.
+    #
+    # Maverick differs from Scout in exactly one config field that reaches the
+    # graph -- num_local_experts, 128 against 16. Measured on three builds:
+    # raising the count moves only the leading dim of the expert weight
+    # (4, 256, 1024) -> (16, 256, 1024) and nothing about the routing or the
+    # combine, and `intermediate_size_mlp` moves NOTHING at all (identical
+    # parameter count, identical expert tensor) because it sizes a dense MLP and
+    # interleave_moe_layer_step = 1 leaves no dense layer to size.
+    #
+    # So the width is what has to give. At Maverick's real 5120 the expert stack
+    # is 128 x 5120 x 8192 x 2 f32 = 40 GiB, which is not a simulator question.
+    "maverick": dict(layers=2, hidden=512, heads=8, kv_heads=2, intermediate=1024,
+                     experts=128, vocab=1024, seq=32, chunk=32,
+                     no_rope=[1, 0]),
 }
 
 
@@ -195,9 +234,109 @@ def run_llama4(device, preset="small", batch=1, seq_len=None, dtype="float32",
     print("Llama 4 Simulation Done")
 
 
+# `intermediate` IS NOT FREE: Llama4VisionMLP2's fc1 is
+# Linear(intermediate_size, projector_input_dim) and its input is the
+# pixel-shuffled tower output, whose channel count is hidden / ratio**2. At the
+# shipped ratio of 0.5 that is hidden * 4, so intermediate MUST be hidden * 4 or
+# the projector cannot be applied at all:
+#
+#     RuntimeError: mat1 and mat2 shapes cannot be multiplied
+#                   (256x3072 and 5632x4096)
+#
+# Llama4VisionConfig's own defaults do not satisfy it -- hidden_size 768 against
+# intermediate_size 5632 -- because 5632 is Scout's, and Scout's vision hidden is
+# 1408. Anything built from the class defaults is a tower that cannot run.
+_VISION_PRESETS = {
+    "tiny": dict(hidden=256, heads=8, layers=2, intermediate=1024,
+                 image=112, patch=14, projector=1024),
+
+    # Scout's real vision width and patch grid: 336/14 = 24, so 576 patches and
+    # a 12x12 grid after the shuffle.
+    "real": dict(hidden=1408, heads=16, layers=2, intermediate=5632,
+                 image=336, patch=14, projector=4096),
+}
+
+
+def _assert_vision_character(cfg, model):
+    """Fail if the vision tower did not get the two things this part is about."""
+    from transformers.models.llama4.modeling_llama4 import (
+        Llama4VisionPixelShuffleMLP, Llama4VisionRotaryEmbedding)
+
+    assert isinstance(model.vision_adapter, Llama4VisionPixelShuffleMLP), \
+        "the pixel-shuffle projector is the point of this part"
+    assert cfg.pixel_shuffle_ratio != 1.0, \
+        f"a shuffle ratio of 1 folds nothing; got {cfg.pixel_shuffle_ratio}"
+    assert isinstance(model.rotary_embedding, Llama4VisionRotaryEmbedding), \
+        "the 2-D vision rope is the other half of this part"
+
+    grid = cfg.image_size // cfg.patch_size
+    assert grid * grid == (model.rotary_embedding.freqs_ci.shape[0] - 1), \
+        "the rope table must carry one entry per patch plus the CLS token"
+    assert model.rotary_embedding.freqs_ci.is_complex(), \
+        "the vision rope is complex; a real table means this is not Llama 4's"
+    print(f"guards ok: {grid}x{grid} patches, shuffle={cfg.pixel_shuffle_ratio}, "
+          f"rope table {tuple(model.rotary_embedding.freqs_ci.shape)} complex")
+
+
+@torch.no_grad()
+def run_llama4_vision(device, preset="tiny", batch=1, dtype="float32",
+                      compile_model=True, rtol=1e-2, atol=1e-2):
+    from transformers.models.llama4.configuration_llama4 import Llama4VisionConfig
+    from transformers.models.llama4.modeling_llama4 import Llama4VisionModel
+
+    p = _VISION_PRESETS[preset]
+    torch_dtype = _dtype_from_str(dtype)
+    cfg = Llama4VisionConfig(
+        hidden_size=p["hidden"], num_hidden_layers=p["layers"],
+        num_attention_heads=p["heads"], intermediate_size=p["intermediate"],
+        image_size=p["image"], patch_size=p["patch"],
+        projector_input_dim=p["projector"], projector_output_dim=p["projector"],
+        vision_output_dim=p["projector"],
+    )
+
+    torch.manual_seed(0)
+    # NOT `.to(dtype=...)`. Module.to casts complex tensors too, and this
+    # tower's rope table is a complex64 BUFFER (freqs_ci, one entry per patch
+    # plus the CLS token). Casting it to float32 discards the imaginary half
+    # and the rope silently becomes a real multiply -- caught by the guard
+    # below, which is what that guard is for.
+    model_cpu = Llama4VisionModel(cfg).eval()
+    if torch_dtype != torch.float32:
+        for mod in model_cpu.modules():
+            for name, t in list(mod.named_parameters(recurse=False)):
+                if t.is_floating_point():
+                    setattr(mod, name, torch.nn.Parameter(t.to(torch_dtype)))
+            for name, t in list(mod.named_buffers(recurse=False)):
+                if t is not None and t.is_floating_point():
+                    setattr(mod, name, t.to(torch_dtype))
+
+    print(f"vision preset={preset} layers={cfg.num_hidden_layers} "
+          f"hidden={cfg.hidden_size} heads={cfg.num_attention_heads} "
+          f"image={cfg.image_size} patch={cfg.patch_size}")
+    print("model params:", sum(p.numel() for p in model_cpu.parameters()))
+    _assert_vision_character(cfg, model_cpu)
+
+    g = torch.Generator().manual_seed(0)
+    px = torch.randn(batch, cfg.num_channels, cfg.image_size, cfg.image_size,
+                     generator=g).to(dtype=torch_dtype)
+
+    cpu_out = model_cpu(px).last_hidden_state
+
+    model_npu = copy.deepcopy(model_cpu).to(device).eval()
+    if compile_model:
+        model_npu = torch.compile(model_npu, dynamic=False)
+    npu_out = model_npu(px.to(device)).last_hidden_state
+
+    test_result(f"Llama 4 vision ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
+    print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
+    print("Llama 4 Vision Simulation Done")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Llama 4 on the Triton route")
-    parser.add_argument("--preset", type=str, default="small", choices=sorted(_PRESETS))
+    parser.add_argument("--part", type=str, default="text",
+                        choices=["text", "vision"])
+    parser.add_argument("--preset", type=str, default=None)
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--seq-len", type=int, default=None)
     parser.add_argument("--dtype", type=str, default="float32",
@@ -210,6 +349,12 @@ if __name__ == "__main__":
     sys.path.append(os.environ.get("PYTORCHSIM_ROOT_PATH", "/workspace/PyTorchSim"))
     torch.compiler.is_compiling = lambda: True  # FIXME. Same as test_llama.py.
 
-    run_llama4(torch.device("npu:0"), preset=args.preset, batch=args.batch,
-               seq_len=args.seq_len, dtype=args.dtype, compile_model=args.compile,
-               rtol=args.rtol, atol=args.atol)
+    if args.part == "vision":
+        run_llama4_vision(torch.device("npu:0"),
+                          preset=args.preset or "tiny", batch=args.batch,
+                          dtype=args.dtype, compile_model=args.compile,
+                          rtol=args.rtol, atol=args.atol)
+    else:
+        run_llama4(torch.device("npu:0"), preset=args.preset or "small",
+                   batch=args.batch, seq_len=args.seq_len, dtype=args.dtype,
+                   compile_model=args.compile, rtol=args.rtol, atol=args.atol)

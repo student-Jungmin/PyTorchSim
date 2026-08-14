@@ -47,6 +47,46 @@
 # compiling Llama 3's graph unchanged. Nothing here was broken when it was
 # written; the entry is a floor, not a fix.
 #
+# WHAT test_gemma.py ADDS that no other entry covers. It gates a family across
+# three generations, so its default runs three presets, one per generation:
+# 7b + 2-2b + 3-1b. Measured the way this file runs it -- all three in one
+# process -- at 1137s and 64 unique kernels, inside the 1800s default. Each
+# preset's max diff there is identical to its own isolated run, so the three
+# share codegen rather than colliding in it.
+#
+# Gemma 1 (7b, and 2b behind it): MQA -- num_key_value_heads=1, so ONE kv head
+# is broadcast across eight query heads, where every other GQA repeat in the
+# suite is 1, 2, 3, 4, 6, 7 or 8-into-8. head_dim 256, twice the suite's
+# previous maximum. head_dim decoupled from hidden at 7B (16 * 256 = 4096
+# against 3072), so q_proj is not square and o_proj shrinks. GeGLU, where every
+# other gated MLP here is SwiGLU. And GemmaRMSNorm scales by (1 + w) off a
+# zero-initialised weight, not by w, which the test checks by pushing a unit
+# vector through the norm rather than by reading the config -- a backend that
+# folded the two RMSNorm forms together would pass everything else in this file
+# and fail only there.
+#
+# Gemma 2 (2-2b): local and global attention ALTERNATE, so the preset runs two
+# layers -- one of each -- and they compile to separate attention kernels (24
+# unique against 38 executed). Logit soft-capping adds a tanh on the
+# [b, h, seq, seq] scores and another on [b, seq, vocab]; nothing else here
+# caps. Four RMSNorms per layer against Llama's two. 2-27b-scalar carries 27B's
+# query_pre_attn_scalar of 144 against head_dim 128, the one Gemma where the
+# pre-attention scale is not head_dim ** -0.5.
+#
+# Gemma 3 (3-1b): TWO ROPE BASES in one model -- 10000 on local layers, 1000000
+# on global, as two rotary modules -- where every other model here has one
+# inv_freq. The preset runs six layers, one full 5:1 period, so the single
+# global layer actually runs; 25 unique kernels across 100 executions.
+#
+# THE WINDOW IS SCALED TO THE SEQUENCE, AND THAT IS LOAD-BEARING. Both shipped
+# configs use a 4096-token window, which at seq 32 masks ZERO elements: the
+# local layers would be byte-identical to the global ones and the alternation
+# would go untested while the test still passed. The presets use window 8 and
+# _assert_character refuses any preset whose window is not strictly inside its
+# seq, so that particular vacuous pass cannot happen quietly.
+#
+# Nothing was blocked: all three generations ran end to end on the first
+# attempt, with no backend change. The entry is a floor, not a fix.
 # test_mllama.py IS THE ONE THAT NEEDED A BACKEND FIX. Llama 3.2 Vision's
 # cross-attention decoder layer stopped in triton-npu's absorb_layout with
 # "indexing map cannot take the move": a single-input elementwise generic whose
@@ -69,9 +109,15 @@
 # answered WRONG at max abs diff 1.31, because the MoE router fills with -inf
 # and scatters the top-k in and `_roles` gave that buffer a fresh allocation.
 # 8d8e2ed fixed it and tests/ops/misc/test_inplace_partial_write.py pins it.
-# 147,874,816 parameters, 30 kernels, 4.7684e-06, 7m53s at --preset small.
-# Thirty-five ops still run eager, mostly complex arithmetic that Inductor
-# declines to codegen at all; the entry gates the 30 kernels around them.
+# 147,874,816 parameters, 31 kernels, 4.7684e-06, 8m00s at --preset small.
+# Fifteen ops run eager, 11 fill_ and 4 topk; the complex rotary is NOT among
+# them any more -- extension_complex_to_real (84ad277), written against
+# DeepSeek-V2, covers Llama 4's complex path unchanged and took twenty calls off
+# that list. The gate is 1024 hidden on purpose: --preset scout builds Scout's
+# real 5120 width, compiles all 30 kernels, and dies in spike because tnpu's
+# wrapper doubles every buffer and the 1.25 GiB expert stack then fails to
+# calloc. That is a wrapper limit, not a model one, and it is written up in the
+# test's docstring.
 #
 # WHY tests/models/Qwen/test_qwen.py RUNS TWO PRESETS WHERE EVERY OTHER ENTRY
 # RUNS ONE. It gates a family, not a model: Qwen2/2.5 carry a QKV bias that no
@@ -91,9 +137,83 @@
 # bakes into its own body -- so 128, 8 and 1 all measured the SAME overflow and
 # the kernel was refused. It now shrinks only a block the kernel takes as an
 # argument, XBLOCK when a reduction takes none.
+#
+# WHY tests/models/Yolo/test_yolo.py GATES TWO OF NINE VERSIONS. It covers the
+# ultralytics model parser, one preset per version directory under
+# ultralytics/cfg/models -- v3, v5, v6, v8, v9, v10, 11, 12, 26 -- built from
+# YAML with random weights, no checkpoint and no torch.hub. The existing
+# tests/models/Yolov5/test_yolov5.py keeps the hub path and the pretrained
+# weights; this file is the config-built counterpart across generations, and
+# the parser fits its modern anchor-free head onto every version, so a preset
+# here is a claim about the BACKBONE and NECK.
+#
+# v5 (C3 + SPPF) and v8 (C2f) pass at 1.85e-05 and 1.15e-05 relative and are
+# the gate: 1128s for the no-argument run, measured the way the sweep runs it.
+# ALL NINE PASS. The other seven are out of the gate, not out of coverage, and
+# none of them was ever merely "not tried" -- each had a measured stop, written
+# out in the test's docstring, and each is fixed:
+#   v6            PASSES at 1.98e-05, 72 kernels, 498s. It had stopped in the
+#                 DEVICE: Inductor's conv lowering does not offer the Triton
+#                 template a transposed convolution, so its ConvTranspose2d
+#                 neck went out as extern_kernels.convolution and dispatched to
+#                 convolution_overrideable, which raises. Registering that op
+#                 would have been the wrong fix -- PyTorch's own
+#                 CompositeExplicitAutograd kernel for it IS the raise and an
+#                 alias key covers PrivateUse1, so the CPU fallback never gets
+#                 a turn, and a kernel would run the convolution on the host
+#                 and simulate nothing. Fixed by not emitting it:
+#                 triton_backend/inductor_templates.py rewrites a transposed
+#                 convolution as the direct one it is, wrapped around the
+#                 convolution lowering. OUT OF THE GATE ON RUNTIME -- 498s
+#                 would take the gate to about 1600s against an 1800s budget
+#                 already seen to swell to 1578s under load. It is the only
+#                 version here kept out by a budget rather than by a toolchain.
+#   v3, v9        PASS at 2.93e-06 and 1.15e-04. Both were one bug:
+#                 PtrState::rebuildAsGatherScatter zeroed the constant offset
+#                 that distinguishes a pool window's four loads, so the four
+#                 became one, CSE merged them and canonicalize folded the max
+#                 away -- v3 returned silu of the top-left element, v9's
+#                 avg_pool returned (a+a+a+a)/4. Fixed in PSAL-POSTECH/
+#                 triton_shared b6c3e60 (1304 of 1311 dumped kernels
+#                 byte-identical after it; all 7 that changed are pools).
+#   v10 11 12 26  PASS at 2.64e-05, 1.25e-05, 2.67e-05, 5.65e-05, after TWO
+#                 defects in the same kernel -- the PSA depthwise conv. It
+#                 SEGFAULTED on the old pin (fixed by triton-npu a616ea5, which
+#                 removed a p11 repair measured as never firing and which this
+#                 kernel drives True twice), and then returned wrong numbers
+#                 because all 128 channels read channel 0's BatchNorm
+#                 parameters: applyUnstructuredMask rebuilds the load as a
+#                 gather for its MASK, not its address, and divided the parked
+#                 `group` offset by the broadcast dim's stride of 0. Fixed in
+#                 triton_shared 99dc6bc. That defect has a far cheaper witness
+#                 than a PSA block, found while verifying v6: a plain
+#                 nn.Conv2d at groups > 1 WITH A BIAS. The convolution comes
+#                 out exact and the bias lands on the wrong channels --
+#                 channel c gets bias[c % (OUT_C // GROUPS)], so a depthwise
+#                 layer gets bias[0] everywhere. MobileNet-v2 does not see it
+#                 because its convolutions are bias=False.
+#
+# ADDING THE SEVEN TO THE GATE is a runtime decision, not a correctness one:
+# the six above cost 1652s + 384s + 1024s + 907s + 1252s + 1169s run separately,
+# which is several sweep budgets. Whoever adds them should split the file's
+# no-argument run rather than lengthen one job.
+#
+# THE PIN MOVED WITH THIS, and it is a MERGE rather than a bump. 2988424 (the
+# p09 unit-axis fix test_mllama.py is gated on) is NOT an ancestor of triton-npu
+# develop -- it carries five commits that never landed there -- so pinning
+# develop alone would have taken a616ea5 and dropped the p09 fix, and mllama
+# would have started failing for a reason nothing in this file mentions.
+# thirdparty/triton-npu.json now points at 98744f7, develop merged with that
+# line -- one commit carrying p09 (mllama), p11 (the YOLO segfault) and p13
+# (7aec83d, Qwen2-VL's replicate axes, which landed on develop while this pin
+# was being moved). Re-measured on it: resnet, mllama (both towers, 4.2915e-06
+# / 3.4019e-06) and this gate (1.85e-05 / 1.15e-05) all pass, and the four YOLO
+# versions above return max rels identical to their a616ea5 runs to every
+# digit.
 tests/models/BERT/test_bert.py
 tests/models/DeepSeek/test_deepseek_v3_base.py
 tests/models/Diffusion/test_diffusion.py
+tests/models/Gemma/test_gemma.py
 tests/models/GPT2/test_gpt2.py
 tests/models/Llama/test_llama.py
 tests/models/Llama/test_llama3.py
@@ -103,6 +223,7 @@ tests/models/Llama/test_mllama.py
 tests/models/Mixtral8x7B/test_mistral.py
 tests/models/MobileNet/test_mobilenet.py
 tests/models/Qwen/test_qwen.py
+tests/models/Yolo/test_yolo.py
 tests/models/Yolov5/test_yolov5.py
 tests/models/test_clip.py
 tests/models/test_convnextv2.py
@@ -124,6 +245,7 @@ tests/ops/misc/test_complex_to_real.py
 tests/ops/misc/test_eager_to_compile_recursion.py
 tests/ops/misc/test_expert_mask.py
 tests/ops/misc/test_histc.py
+tests/ops/misc/test_inplace_partial_write.py
 tests/ops/misc/test_polar.py
 tests/ops/misc/test_widen_dtype.py
 tests/ops/reduce/test_batchnorm.py
