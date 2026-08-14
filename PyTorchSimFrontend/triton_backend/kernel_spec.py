@@ -122,7 +122,31 @@ def _buffer_numel(name):
 
 
 def _roles(kernel):
-    """arg name -> 'in' | 'out' | 'inout', from the kernel's buffer tables."""
+    """arg name -> 'in' | 'out' | 'inout', from the kernel's buffer tables.
+
+    `inplace_buffers` IS NOT THE WHOLE OF `inout`. It holds the case where
+    Inductor reused an input's storage for the output and renamed the pair to
+    `in_out_ptrN`. A kernel can also mutate a buffer an EARLIER kernel produced,
+    and then the argument is an ordinary `out_ptrN` sitting in `output_buffers`
+    while `kernel.mutations` names the buffer. Inductor reads all three tables
+    when it builds `mutated_arg_names` (codegen/triton.py) and so does this.
+
+    Missing the third one is not a naming detail. An `out` is handed a fresh
+    buffer, so a kernel that writes only the positions an index names leaves the
+    rest at whatever the fresh buffer held:
+
+        fill 7.0 then scatter_    cpu [7.0, 1.54, 7.0, 7.0, ...]
+                                  npu [0.0, 1.54, 0.0, 0.0, ...]
+
+    tests/ops/misc/test_inplace_partial_write.py pins it, with a NON-ZERO fill
+    because zero makes the same defect pass. Found in Llama 4, whose MoE router
+    fills with -inf and scatters the top-k in.
+
+    THE STORE-BASED CHECK STILL RUNS AND IS STILL RIGHT. `demote_unwritten_inout`
+    takes an `inout` back to `in` when the source never stores to it, which is
+    the direction SD1.5 measured -- the table overstating. This is the other
+    direction, the table being right and unread; the two compose.
+    """
     out = {}
     for buf, arg in getattr(kernel.args, "input_buffers", {}).items():
         out[arg] = ("in", buf)
@@ -131,6 +155,14 @@ def _roles(kernel):
     for buf, arg in getattr(kernel.args, "inplace_buffers", {}).items():
         name = getattr(arg, "inner_name", arg)
         out[name] = ("inout", buf)
+    # An output the kernel MUTATES rather than produces: it arrives holding a
+    # value and only part of it is written.
+    outputs = getattr(kernel.args, "output_buffers", {})
+    for buf in getattr(kernel, "mutations", ()):
+        arg = outputs.get(buf)
+        name = getattr(arg, "inner_name", arg)
+        if isinstance(name, str) and name in out:
+            out[name] = ("inout", buf)
     return out
 
 

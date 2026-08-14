@@ -56,7 +56,7 @@ PyTorchSim **supports**:
 | SwinV2 | 🤗 | ✅ | `tests/models/test_swinv2.py` (shifted-window attention) |
 | CLIP (vision) | 🤗 | ✅ | `tests/models/test_clip.py` |
 | ConvNeXt V2 | 🤗 | ✅ | `tests/models/test_convnextv2.py` (channels-first LayerNorm, depthwise conv) |
-| Llama-4 | 🤗 | ⏳ | In development |
+| Llama 4 | 🤗 | ✅ | `tests/models/Llama/test_llama4.py` — MoE in every layer (no dense layer to fall back on), the NoPE period, per-head qk_norm and chunked attention, all four in one run. Experts are scaled to 4; the routing and the combine are what the shapes decide, not the count. Complex arithmetic still runs eager — Inductor declines to codegen it — but `polar` reaches the graph as a real pair so the 30 kernels around it compile |
 | Broader model support | — | ⏳ | In development |
 <!-- ## Requirements
 
