@@ -226,19 +226,34 @@ def triton_npu_compile(src_code, meta, kernel_name):
                     # has no instruction for, and the kernel COMPILES and
                     # returns wrong numbers.
                     #
-                    #   measured  Qwen2-MoE's sort kernel, spad 131072. usage
-                    #             127616 at XBLOCK 8, 4, 2 and 1 -- identical,
-                    #             three halvings that freed one byte between
-                    #             them. Lane-axis stamps in 04-adapted.mlir:
+                    #   measured  Qwen2-MoE's sort kernel, spad 131072, each
+                    #             size compiled on its own and the ELF's .spad
+                    #             section read back:
                     #
-                    #               XBLOCK 64/8/4/2   426 x axis 0
-                    #               XBLOCK 1          300 x 0, 125 x 1, 4 x ONE_LANE
+                    #               XBLOCK 128   273,936   axis 0 throughout
+                    #                      32    149,264   axis 0
+                    #                      16    132,592   axis 0
+                    #                       8    127,616   axis 0
+                    #                       4    127,616   axis 0
+                    #                       2    127,616   axis 0
+                    #                       1     37,792   0 x300, 1 x125, ONE_LANE x4
                     #
-                    #             and the model came out at Max abs diff 1.370
-                    #             (twice, to the last digit) instead of 1e-6.
-                    #             XBLOCK 8 -- the last size that moved the
-                    #             number, and one that FITS the 131072 Spike
-                    #             maps -- passes.
+                    # AND BOTH HALVES OF THAT TABLE HAVE A REASON. 8, 4 and 2
+                    # are the same number because `spad.reserve_per_lane` rounds
+                    # every reservation up to MIN_VEC -- a lane holding 8, 4 or
+                    # 2 elements has a whole 8-element vector written to it
+                    # either way -- so below 8 there is nothing left for XBLOCK
+                    # to free. And 1 does not fit because the tile got smaller:
+                    # it fits because the BANKING COLLAPSED. 125 buffers moved
+                    # onto the sorted axis, where a lane holds one element
+                    # instead of a row, and the reservation fell with them. The
+                    # model came out at Max abs diff 1.369991421699524 -- twice,
+                    # to the last digit, at two scratchpad sizes -- against a
+                    # 1e-6 target, while XBLOCK 8 and 64 both pass.
+                    #
+                    # So the only size that ever got under the budget got there
+                    # by breaking the kernel. Stopping where the bytes stop
+                    # moving is stopping exactly before that.
                     #
                     # So stop at the last size that changed something and let
                     # the overflow be reported. A compile error names the kernel
