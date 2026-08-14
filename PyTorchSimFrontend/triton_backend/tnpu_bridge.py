@@ -58,13 +58,15 @@ def machine():
 
 
 def tnpu_env():
-    """The environment for a tnpu subprocess: this machine, and no PYTHONPATH.
+    """The environment for a tnpu subprocess: this machine, no PYTHONPATH, and
+    no device backend autoload.
 
     The three TNPU_* names are what tnpu/config.py reads, so this tells it rather
     than overrides it; anything already in the environment wins.
     """
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
+    env["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
     m = machine()
     env.setdefault("TNPU_VECTORLANE_SIZE", str(m["lanes"]))
     env.setdefault("TNPU_VLEN_BITS", str(m["vlen_bits"]))
