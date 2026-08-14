@@ -50,18 +50,10 @@ def measure_tile_cycles(workdir, meta):
             os.path.join(workdir, "tog_sample.py"),
             os.path.join(workdir, SAMPLE_MLIR), sample_mode=True)
 
-    import subprocess
-
     from . import tnpu_bridge
-    # Drops the stale PYTHONPATH (tnpu keeps its own MLIR bindings) and hands
-    # over the machine the TOGSim YAML describes.
-    env = tnpu_bridge.tnpu_env()
-    proc = subprocess.run(
-        [extension_config.CONFIG_TNPU_PYTHON, "-m", "tnpu.cycle", spec, workdir],
-        capture_output=True, text=True, cwd=tnpu_bridge.tnpu_dir(), env=env)
-    if proc.returncode != 0:
-        logger.warning("[Gem5] cycle binary build failed:\n%s",
-                       (proc.stdout + proc.stderr)[-2000:])
+    rc, output = tnpu_bridge.run_module("tnpu.cycle", spec, workdir)
+    if rc != 0:
+        logger.warning("[Gem5] cycle binary build failed:\n%s", output[-2000:])
         return None
 
     from Simulator.simulator import CycleSimulator
@@ -168,16 +160,11 @@ def write_shape(workdir, meta, args=()):
         for key, val in zip(passed, trailing[-len(passed):]):
             numels[key] = val
 
-    axes = kernel_spec.parallel_axes(numels)
-
-    cfg = meta.get("fixed_config") or {}
-    grid = []
-    for p in axes:
-        n, block = numels.get(f"{p}numel"), cfg.get(f"{p.upper()}BLOCK")
-        if n is None or not block:
-            raise ValueError(f"no extent for grid axis '{p}': {n!r} / {block!r}")
-        grid.append(-(-int(n) // int(block)))     # ceil-div
-
+    # The same ceil(numel / block) over the same axes that the spec's grid was
+    # built from, so it is asked of the one function that states it. The numels
+    # differ -- these came off the launch -- and that is the whole point: one
+    # derivation, two sets of extents.
+    grid = list(kernel_spec.grid_of({**meta, "numels": numels}))
     _write_extents(workdir, grid, "grid")
     return grid
 
@@ -283,7 +270,7 @@ def emit_trace(workdir, meta):
     return n_tiles
 
 
-def run_togsim(workdir, meta=None, args=(), attribute_path=None, timeout_sec=None):
+def run_togsim(workdir, meta, args=()):
     """Simulate the emitted trace. Returns TOGSimulator's parsed result dict.
 
     `meta`/`args` supply the grid: the trace producer takes its loop bounds from
@@ -294,15 +281,13 @@ def run_togsim(workdir, meta=None, args=(), attribute_path=None, timeout_sec=Non
     so = os.path.join(workdir, TRACE_SO)
     if not os.path.isfile(so):
         raise FileNotFoundError(f"{so} not found -- call emit_trace first")
-    if meta is not None:
-        write_shape(workdir, meta, args)
+    write_shape(workdir, meta, args)
 
     # A handle only: TOGSim derives trace.so / trace_cycles.tsv from its
     # DIRECTORY, and reads the file itself only on the STONNE path.
     handle = os.path.join(workdir, "tile_graph.onnx")
     result_path = TOGSimulator.run_standalone(
-        handle, attribute_path or os.path.join(workdir, "attribute"),
-        timeout_sec=timeout_sec)
+        handle, os.path.join(workdir, "attribute"))
     return TOGSimulator.get_result_from_file(result_path)
 
 
@@ -311,8 +296,3 @@ def store_meta(workdir, meta):
     standalone."""
     with open(os.path.join(workdir, META_JSON), "w") as f:
         json.dump(meta, f, indent=2)
-
-
-def load_meta(workdir):
-    with open(os.path.join(workdir, META_JSON)) as f:
-        return json.load(f)

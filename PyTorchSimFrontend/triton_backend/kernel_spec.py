@@ -34,13 +34,14 @@ not a workaround -- fixing the config at codegen time is what makes the kernel
 statically describable, which is the whole premise of this route.
 """
 
-import math
 import os
 import re
 
 from torch._inductor.virtualized import V
 
 from PyTorchSimFrontend import extension_config
+
+from . import layout
 
 logger = extension_config.setup_logger()
 
@@ -95,18 +96,20 @@ def _buffer_numel(name):
     `1 + sum((size - 1) * stride)` is the last addressable element, which is the
     definition that holds for a permuted layout as well as a padded one -- a
     channels-last buffer has no gaps and comes out at the product, as before.
+    `layout.storage_span` states it, because functional.py sizes the .raw file
+    that fills this buffer with the same definition and the two must agree.
     """
     try:
         buf = V.graph.get_buffer(name)
         if buf is None:
             return None
-        layout = buf.get_layout()
+        lay = buf.get_layout()
         hint = V.graph.sizevars.size_hint
-        size = [int(hint(s)) for s in layout.size]
+        size = [int(hint(s)) for s in lay.size]
         if any(s <= 0 for s in size):
             return 0
         try:
-            stride = [int(hint(s)) for s in layout.stride]
+            stride = [int(hint(s)) for s in lay.stride]
         except (AttributeError, TypeError):
             # A layout with no strides to read: fall back to the shape, which
             # is what this function always did and is right whenever the buffer
@@ -115,8 +118,8 @@ def _buffer_numel(name):
             for s in size:
                 n *= s
             return n
-        offset = int(hint(getattr(layout, "offset", 0)))
-        return offset + 1 + sum((s - 1) * t for s, t in zip(size, stride))
+        return layout.storage_span(size, stride,
+                                   int(hint(getattr(lay, "offset", 0))))
     except Exception:  # noqa: BLE001 - best effort; caller reports it as missing
         return None
 
@@ -282,12 +285,11 @@ def collect_meta(kernel, kernel_name):
         "numels": numels,
         "inside_reduction": bool(getattr(kernel, "inside_reduction", False)),
         "fixed_config": fixed_config_for(kernel, numels, args),
-        "template_grid": _template_grid(kernel),
     }
 
 
 def _template_grid(kernel):
-    """A TEMPLATE kernel's launch grid as (gridX, gridY, gridZ), else None.
+    """A TEMPLATE kernel's launch grid as [gridX, gridY, gridZ], else None.
 
     A template kernel (mm, conv) does not walk the output the way a pointwise
     kernel does. It tiles with its own BLOCK_M/BLOCK_N and reads
@@ -298,25 +300,37 @@ def _template_grid(kernel):
     grid at all: for ResNet's first conv it gave 6272 where the template asks for
     196, and the surplus programs index tiles past the end of every operand.
 
-    Asked the same way Inductor asks it for its own benchmark harness
-    (`TritonTemplateKernel.kernel_benchmark_extra_args`), so the grid here is the
-    grid the launcher would have passed.
+    THIS WAS TWO FUNCTIONS OF THE SAME NAME AND THE WRONG ONE WON. The commit
+    that added the refusal below put it ABOVE the original and did not delete it,
+    so Python bound the name to the original and the refusal never ran. What the
+    original did instead was return `{"error": ...}` on a failing grid_fn, which
+    is not None, so `launch_extents` zipped a DICT against ("x", "y", "z") and
+    the launch died as `KeyError: 'z'` with the real cause nowhere in it.
+
+    Merged the way the measurements were taken: the body is the one that has
+    actually been running (allowlist 16/16, ResNet conv 0 at 196 programs), and
+    the refusal replaces the error dict that could only mislead. A list, not a
+    tuple, because `meta` round-trips through JSON (timing.store_meta) and would
+    come back a list anyway -- one shape for both paths.
     """
     grid_fn = getattr(kernel, "grid_fn", None)
-    call_sizes = getattr(kernel, "call_sizes", None)
-    if grid_fn is None or call_sizes is None:
+    sizes = getattr(kernel, "call_sizes", None)
+    if grid_fn is None or sizes is None:
         return None                       # not a template; the numels are real
-    grid = grid_fn(*V.graph.sizevars.size_hints(call_sizes), kernel.meta)
+    name = getattr(kernel, "kernel_name", kernel)
     try:
-        extents = tuple(int(g) for g in grid)
-    except TypeError:
-        extents = ()
+        vals = [int(V.graph.sizevars.size_hint(s)) for s in sizes]
+        grid = grid_fn(*vals, dict(getattr(kernel, "meta", None) or {}))
+        extents = [int(g) for g in grid]
+    except Exception as e:  # noqa: BLE001 - reported here, where the cause is
+        raise SpecIncomplete(
+            f"{name}: template grid_fn raised {type(e).__name__}: {e}") from e
     if len(extents) != 3 or any(g < 1 for g in extents):
         raise SpecIncomplete(
-            f"{getattr(kernel, 'kernel_name', kernel)}: template grid_fn returned "
-            f"{grid!r}; this route needs three static positive extents. Refusing "
-            f"rather than falling back to the numels, which describe the output "
-            f"tensor and not this kernel's iteration space.")
+            f"{name}: template grid_fn returned {grid!r}; this route needs three "
+            f"static positive extents. Refusing rather than falling back to the "
+            f"numels, which describe the output tensor and not this kernel's "
+            f"iteration space.")
     return extents
 
 
@@ -335,7 +349,7 @@ def parallel_axes(numels):
     return [p for p in _PARALLEL_PREFIXES if f"{p}numel" in numels]
 
 
-def launch_axes(meta, numels=None):
+def launch_axes(meta):
     """The axes the LAUNCH spreads programs over, outermost first.
 
     Same question as `parallel_axes`, asked of the whole kernel rather than of
@@ -346,7 +360,7 @@ def launch_axes(meta, numels=None):
     """
     grid = meta.get("template_grid")
     if grid is None:
-        return parallel_axes(meta["numels"] if numels is None else numels)
+        return parallel_axes(meta["numels"])
     # ALL THREE, including a slot whose extent is 1. A pointwise kernel reads
     # exactly the program ids its numels name, but a template reads
     # `tl.program_id(0..2)` from its own text no matter what the grid says --
@@ -357,7 +371,7 @@ def launch_axes(meta, numels=None):
     return list(_PARALLEL_PREFIXES)
 
 
-def launch_extents(meta, numels=None):
+def launch_extents(meta):
     """The extents of `launch_axes`, in the same order.
 
     Kept beside the axes rather than recomputed per consumer: the pairing is the
@@ -365,9 +379,9 @@ def launch_extents(meta, numels=None):
     """
     grid = meta.get("template_grid")
     if grid is None:
-        return grid_of(meta if numels is None else {**meta, "numels": numels})
+        return grid_of(meta)
     by_axis = dict(zip(("x", "y", "z"), grid))
-    return tuple(by_axis[p] for p in launch_axes(meta, numels))
+    return tuple(by_axis[p] for p in launch_axes(meta))
 
 
 def reduction_axes(numels):
@@ -1219,37 +1233,8 @@ def grid_of(meta):
                 f"'{prefix}': {prefix}numel={n!r}, {_block_name(prefix)}={block!r}. "
                 f"Inductor defers the grid to triton_heuristics at runtime; this "
                 f"route needs it statically (see fixed_config_for).")
-        grid.append(int(math.ceil(n / block)))
+        grid.append(-(-int(n) // int(block)))    # ceil-div, in integers
     return tuple(grid)
-
-
-def _template_grid(kernel):
-    """A template kernel's grid, from the template rather than from the numels.
-
-    mm and conv do not come from Inductor's pointwise codegen: their source is a
-    jinja template with its own BLOCK_M/N/K baked in as literals, and their grid
-    is over OUTPUT TILES -- select_algorithm.TritonTemplateKernel.call_kernel
-    emits `*grid_fn(*call_sizes, meta)`. Nothing about that is derivable from
-    xnumel and XBLOCK.
-
-    Deriving it that way anyway is what a pointwise formula does to an mm: an
-    18432-element output at XBLOCK 128 becomes grid 144, when the template wants
-    cdiv(M, 32) * cdiv(N, 32). The kernel then runs the wrong number of programs
-    over tiles it never asked for, and nothing about the shapes disagrees loudly
-    enough to notice.
-
-    Returns None for an ordinary kernel, which is every kernel that HAS numels.
-    """
-    grid_fn = getattr(kernel, "grid_fn", None)
-    sizes = getattr(kernel, "call_sizes", None)
-    if grid_fn is None or sizes is None:
-        return None
-    try:
-        vals = [int(V.graph.sizevars.size_hint(s)) for s in sizes]
-        g = grid_fn(*vals, dict(getattr(kernel, "meta", None) or {}))
-    except Exception as e:  # noqa: BLE001 - reported by grid_xyz, with the cause
-        return {"error": f"{type(e).__name__}: {e}"}
-    return [int(x) for x in g]
 
 
 def grid_xyz(meta):

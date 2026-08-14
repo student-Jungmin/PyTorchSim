@@ -111,8 +111,23 @@ def doctor():
     return proc.returncode == 0, proc.stdout + proc.stderr
 
 
-def run_pipeline(spec_path, workdir, to_stage="binary", from_stage="ttir",
-                 verbose=False, timeout=1800):
+def run_module(module, *args, timeout=None):
+    """Run `python -m <module> <args>` inside tnpu's checkout. (rc, output).
+
+    THE INVOCATION IS ONE FACT AND THE FAILURE POLICY IS NOT. Reaching tnpu means
+    tnpu's interpreter, tnpu's cwd and `tnpu_env` -- three things that have to
+    agree and were being assembled at three call sites. What to do when it fails
+    differs per caller (spike raises, cycle sampling falls back to a placeholder
+    table), so that half stays with them.
+    """
+    proc = subprocess.run(
+        [extension_config.CONFIG_TNPU_PYTHON, "-m", module, *args],
+        capture_output=True, text=True, cwd=tnpu_dir(), env=tnpu_env(),
+        timeout=timeout)
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def run_pipeline(spec_path, workdir, to_stage="binary", timeout=1800):
     """Drive tnpu's stages over `spec_path`, writing artifacts into `workdir`.
 
     Stops at `to_stage`. The default is `binary` (through the RISC-V ELF):
@@ -125,17 +140,13 @@ def run_pipeline(spec_path, workdir, to_stage="binary", from_stage="ttir",
     """
     cmd = [extension_config.CONFIG_TNPU_PYTHON,
            os.path.join(tnpu_dir(), "run.py"), spec_path,
-           "--from", from_stage, "--to", to_stage, "--workdir", workdir]
-    if verbose:
-        cmd.append("-v")
+           "--from", "ttir", "--to", to_stage, "--workdir", workdir]
 
     # tnpu deliberately does not read TORCHSIM_LLVM_PATH (it would drag the
     # backend back to LLVM 20 and break the textual seam). tnpu_env drops the
     # stale PYTHONPATH and hands over the machine this repo's YAML describes.
-    env = tnpu_env()
-
     proc = subprocess.run(cmd, capture_output=True, text=True,
-                          cwd=tnpu_dir(), env=env, timeout=timeout)
+                          cwd=tnpu_dir(), env=tnpu_env(), timeout=timeout)
     output = proc.stdout + proc.stderr
     if proc.returncode != 0:
         # run.py prints a stage table; the diagnostic itself only reaches

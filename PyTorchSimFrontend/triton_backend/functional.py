@@ -13,9 +13,10 @@ is rejected rather than silently run against the wrong bounds.
 """
 
 import os
-import subprocess
 
 from PyTorchSimFrontend import extension_config
+
+from . import layout
 
 logger = extension_config.setup_logger()
 
@@ -78,9 +79,7 @@ def _storage_numel(t):
     A permutation can only reorder, though, so it could never place a stride
     that skips. Saying it once with the tensor's own strides covers both.
     """
-    if t.dim() == 0:
-        return 1
-    return 1 + sum((s - 1) * st for s, st in zip(t.shape, t.stride()))
+    return layout.storage_span(t.shape, t.stride())
 
 
 def _check(meta, pairs):
@@ -278,7 +277,7 @@ def _save_replay(workdir, meta, runtime, key):
                         os.path.join(saved, f"{n}.raw"))
 
 
-def run(workdir, meta, args, timeout_sec=None):
+def run(workdir, meta, args):
     """Execute the kernel on the launch's tensors. Returns the names written.
 
     Returns the same names whether Spike ran or a saved run was replayed; the
@@ -312,10 +311,10 @@ def run(workdir, meta, args, timeout_sec=None):
     # another repo. Contention is per (kernel, concurrent launch) and one spike
     # run is seconds; wrong answers are not a tradeoff against seconds.
     with FileLock(os.path.join(workdir, ".launch.lock"), timeout=1800):
-        return _run_locked(workdir, meta, args, spec, timeout_sec, tnpu_bridge)
+        return _run_locked(workdir, meta, args, spec, tnpu_bridge)
 
 
-def _run_locked(workdir, meta, args, spec, timeout_sec, tnpu_bridge):
+def _run_locked(workdir, meta, args, spec, tnpu_bridge):
     """`run` with the per-kernel launch lock already held."""
     runtime = write_inputs(workdir, meta, args)
 
@@ -332,17 +331,10 @@ def _run_locked(workdir, meta, args, spec, timeout_sec, tnpu_bridge):
                         meta["kernel_name"], key)
             return read_outputs(workdir, meta, args)
 
-    # Drops the stale PYTHONPATH (tnpu keeps its own MLIR bindings) and hands
-    # over the machine the TOGSim YAML describes.
-    env = tnpu_bridge.tnpu_env()
-    proc = subprocess.run(
-        [extension_config.CONFIG_TNPU_PYTHON, "-m", "tnpu.spike", spec, workdir],
-        capture_output=True, text=True, cwd=tnpu_bridge.tnpu_dir(), env=env,
-        timeout=timeout_sec)
-    if proc.returncode != 0:
+    rc, output = tnpu_bridge.run_module("tnpu.spike", spec, workdir)
+    if rc != 0:
         raise RuntimeError(
-            f"[Spike] {meta['kernel_name']} failed:\n"
-            + (proc.stdout + proc.stderr)[-2000:])
+            f"[Spike] {meta['kernel_name']} failed:\n" + output[-2000:])
 
     if key:
         _save_replay(workdir, meta, runtime, key)
