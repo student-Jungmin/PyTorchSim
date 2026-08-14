@@ -80,7 +80,7 @@ rel" is the worst max|npu-cpu| / max|cpu| over all of a version's outputs.
     version  yaml            params      kern   time   max rel     verdict
     v3       yolov3-tiny  12,134,184      50    385s   2.93e-06    PASS ***
     v5       yolov5n       2,509,244      88    746s   1.85e-05    PASS
-    v6       yolov6n       4,238,540      68*   420s   --          BLOCKED, device
+    v6       yolov6n       4,238,540      72*   498s   1.98e-05    PASS *
     v8       yolov8n       3,011,628      89    707s   1.15e-05    PASS
     v9       yolov9t       2,006,188     118   1710s   1.15e-04    PASS ***
     v10      yolov10n      2,708,600     124   1054s   2.64e-05    PASS ****
@@ -88,10 +88,11 @@ rel" is the worst max|npu-cpu| / max|cpu| over all of a version's outputs.
     12       yolo12n       2,568,828     145   1286s   2.67e-05    PASS ****
     26       yolo26n       2,505,360     142   1198s   5.65e-05    PASS ****
 
-      * v6 compiles 68 kernels and then stops; it never reaches an output.
-     ** these four went WRONG NUMBERS -> PASS with triton_shared 99dc6bc, and
-        before that SEGFAULTED on the triton-npu pin this file was written
-        against.  Two separate defects in a row on the same kernel; see below.
+      * v6 was BLOCKED IN THE DEVICE -- 68 kernels compiled and then a raise,
+        never an output -- until the transposed convolution stopped being
+        emitted at all.  Measured 2026-08-14, alone on the machine; its 72
+        kernels are those 68 plus the rewrite's own.  See "the transposed
+        convolution" below.
     *** v3 and v9 were BOTH WRONG NUMBERS here (1.27e+00 and 2.47e+00) until
         triton_shared b6c3e60; see "the pooling bug" below.  v9's pass is not
         comfortable -- 1.15e-04 against a 1e-4 relative criterion, where the
@@ -99,11 +100,13 @@ rel" is the worst max|npu-cpu| / max|cpu| over all of a version's outputs.
         input could tip it.  Its P3 output was ALREADY at 9.60e-05 before the
         fix and did not move, so the width of that margin is GELAN's own error
         accumulation, not the pooling bug.
+   **** these four went WRONG NUMBERS -> PASS with triton_shared 99dc6bc, and
+        before that SEGFAULTED on the triton-npu pin this file was written
+        against.  Two separate defects in a row on the same kernel; see below.
 
-SO EIGHT OF NINE PASS, and v6 is the one that does not -- it stops in the
-DEVICE, not in the compiler.  The file still gates only v5 and v8, and that is
-the rule working rather than an oversight: the other six pass against
-triton_shared commits this repo does not pin yet.  See the gate's own note.
+SO ALL NINE PASS.  The file still gates only v5 and v8, and that is the rule
+working rather than an oversight: the other seven pass against triton_shared
+commits this repo does not pin yet.  See the gate's own note.
 
 THE POOLING BUG, which is where two of the four came from.  A 2x2 stride-2
 pool reads four addresses -- base, base+1, base+64, base+65 -- and
@@ -132,19 +135,46 @@ a block `x // 32` is constant and `x % 32` is consecutive: measured over all
 128 programs, every block's addresses are an arithmetic sequence of stride 2.
 PtrAnalysis falls back to gather because it does not test whether the block
 extent divides the modulus.  Fixing the gather path was the correctness fix;
-not taking it at all is a separate, faster one that is not done.  The other seven each have a
-measured stopping point rather than a guess, and no two of them are the same
-stop:
+not taking it at all is a separate, faster one that is not done.  Each of the
+other seven had a measured stopping point rather than a guess, and no two of
+them were the same stop:
 
-  * v6 stops in the DEVICE, not in the compiler.  Its neck upsamples with
-    ConvTranspose2d, Inductor does not lower a transposed convolution and emits
+  * v6 stopped in the DEVICE, not in the compiler.  Its neck upsamples with
+    ConvTranspose2d, Inductor's conv lowering does not offer the Triton
+    template a transposed convolution -- ``not transposed`` is one of the
+    conditions, beside the comment "templates only support these" -- so it left
     ``extern_kernels.convolution(..., transposed=True, ...)``, and that
-    dispatches on npu:0 to ``convolution_overrideable`` -- which
-    PyTorchSimDevice/csrc does not register at all.  This is the SAME device gap
-    RecurrentGemma's depthwise conv1d hits, and v6 is the evidence that it is
-    not a 1-D gap as that note said: the discriminator is whether INDUCTOR
-    lowers the convolution, not its rank.  ResNet, MobileNet-v2 and YOLOv5 all
-    convolve and pass because theirs are lowered.
+    dispatches on npu:0 to ``convolution_overrideable``, which raises.
+
+    AND REGISTERING THE OP WOULD HAVE BEEN THE WRONG FIX.  It is not merely
+    missing: PyTorch itself registers a CompositeExplicitAutograd kernel for it
+    whose whole body is the raise, and an alias key covers PrivateUse1, so this
+    device's global CPU fallback never gets a turn -- which is why erfinv and
+    nanmedian fall back and return while conv_transpose2d does not.  Giving it
+    a kernel would run the convolution on the HOST and simulate nothing.  The
+    fix is to stop emitting it: a transposed convolution IS a direct one over
+    an input with stride-1 zeros inserted, and that rewrite lives in
+    ``triton_backend/inductor_templates.py``, wrapped around the convolution
+    LOWERING.  Verified against aten over the product of stride, padding,
+    output_padding, dilation, groups and kernel size before it was wired in,
+    then through the route on twelve shapes.  It costs stride^2 times the
+    multiply-adds, which is a true statement about a machine with no
+    transposed-conv unit.
+
+    MEASURED ON triton_shared WITHOUT b6c3e60 OR 99dc6bc -- the develop build,
+    not the merge build -- so unlike the other seven, v6 does not depend on
+    either fix.  Its blocker was entirely in this repo.
+
+    AND THE CONTROLS FOUND A SECOND REPRODUCER FOR 99dc6bc, which is worth
+    more than the transposed conv itself.  Plain ``nn.Conv2d`` at groups > 1
+    WITH A BIAS returns the wrong answer on that build: the convolution is
+    exact (the residual is channel-constant to 2.4e-07) and the BIAS lands on
+    the wrong channels -- channel c gets ``bias[c % (OUT_C // GROUPS)]``, so a
+    depthwise layer gives every channel ``bias[0]``.  That is the template's
+    ``idx_c = idx_y_c[None, :] + group * GROUP_OUT_C``, the same scalar-on-the-
+    outermost-dim shape as the PSA BatchNorm load 99dc6bc was written for.  All
+    eight controls pass on the merge build.  So it is a KNOWN bug with a much
+    cheaper witness than YOLO's PSA block: three lines of nn.Conv2d.
 
   * v3 and v9 WERE the pooling bug, and both pass now -- see it above.  What
     found it was per-kernel functional verify naming
@@ -508,15 +538,25 @@ def run_yolo(device, version="v8", batch=1, imgsz=None, compile_model=True, rtol
 # and each version's max rel is identical either way (1.85e-05 and 1.15e-05).
 # THAT NUMBER IS LOAD-SENSITIVE and the margin is not large: the same gate run
 # took 1578s on a machine also building a toolchain and running eight other
-# models.  Same two diffs, to every digit, on the moved pin.
+# models.  Same two diffs, to every digit, on the moved pin -- and again on the
+# transposed-conv rewrite (1206s, sharing the machine with two other models).
 #
-# SIX VERSIONS PASS AND ARE STILL NOT HERE, which is the rule doing its job.
+# SEVEN VERSIONS PASS AND ARE STILL NOT HERE, which is the rule doing its job.
 # v3 and v9 need triton_shared b6c3e60; v10, 11, 12 and 26 need 99dc6bc on top
 # of it. `TRITON_SHARED_SHA` in triton-npu's setup/versions.env still points at
 # 9017bd4e, and moving it needs a matching TRITON_SHARED_PREBUILT_SHA release,
 # so CI would run a binary with neither fix. They join the gate when the pin
 # moves, not when the fix is written -- a version is added here when it passes
 # on the PINNED toolchain.
+#
+# V6 IS OUT FOR A DIFFERENT REASON, and it is runtime, not doubt.  Its blocker
+# was removed in THIS repo, and it was measured on a triton_shared build
+# carrying NEITHER b6c3e60 nor 99dc6bc -- so it is the one version here that
+# owes the pin nothing.  What keeps it out is 498s: the gate would go from
+# 1128s to about 1600s against an 1800s budget already seen to swell to 1578s
+# under load.  Adding it would buy transposed-conv coverage at the price of a
+# gate that times out on a busy runner.  It goes in when the budget does, or
+# when the sweep learns to run the two halves separately.
 #
 # The rest are one --version each; each has a measured stopping point in the
 # module docstring.
