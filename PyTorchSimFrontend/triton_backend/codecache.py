@@ -55,11 +55,7 @@ class TritonNPULauncher:
                 self.kernel_name)
             return None
 
-        if not os.path.isfile(os.path.join(self.workdir, timing.TRACE_SO)):
-            with breakdown.span(breakdown.TOGSIM_TRACE, self.kernel_name):
-                timing.emit_trace(self.workdir, self.meta)
-        with breakdown.span(breakdown.TOGSIM_RUN, self.kernel_name):
-            result = timing.run_togsim(self.workdir, self.meta, args)
+        result = timing.run(self.workdir, self.meta, args)
         logger.info("[TOGSim] %s simulated -> %s", self.kernel_name, result)
         return result
 

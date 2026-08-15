@@ -1,5 +1,6 @@
 """The timing half of the Triton route: tnpu IR -> trace.so -> TOGSim.
 
+    run(workdir, meta, args)    emit if needed, then simulate, under the lock
     emit_trace(workdir, meta)   *-custom.mlir -> trace.so + trace_cycles.tsv
     run_togsim(workdir, ...)    hand them to TOGSim, return its parsed result
 """
@@ -24,6 +25,9 @@ SAMPLE_MLIR = "04-sample.mlir"
 CYCLE_BIN = "cycle_bin"
 
 AXES_TXT = "trace_axes.txt"
+
+LOCK_NAME = ".timing.lock"
+LOCK_TIMEOUT = 1800
 
 _PID_SLOT = {"x": 0, "y": 1, "z": 2}
 
@@ -212,6 +216,23 @@ def run_togsim(workdir, meta, args=()):
     result_path = TOGSimulator.run_standalone(
         handle, os.path.join(workdir, "attribute"))
     return TOGSimulator.get_result_from_file(result_path)
+
+
+def run(workdir, meta, args=()):
+    """Emit the trace if it is missing, then simulate. Returns TOGSim's result.
+
+    One timing launch at a time per kernel: the trace, the shape and the tile
+    graph are fixed names in the workdir, as `runtime/` is for the Spike half.
+    """
+    from filelock import FileLock
+
+    kernel = meta["kernel_name"]
+    with FileLock(os.path.join(workdir, LOCK_NAME), timeout=LOCK_TIMEOUT):
+        if not os.path.isfile(os.path.join(workdir, TRACE_SO)):
+            with breakdown.span(breakdown.TOGSIM_TRACE, kernel):
+                emit_trace(workdir, meta)
+        with breakdown.span(breakdown.TOGSIM_RUN, kernel):
+            return run_togsim(workdir, meta, args)
 
 
 def store_meta(workdir, meta):

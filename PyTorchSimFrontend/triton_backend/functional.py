@@ -213,7 +213,6 @@ def _run_locked(workdir, meta, args, spec, tnpu_bridge):
 
     Replay is OFF by default: a result that came out of a file is not a result
     the simulator produced today. It is for the inner loop, not for reporting.
-    tnpu's launch timing is read here, under the lock that makes it ours.
     """
     runtime = write_inputs(workdir, meta, args)
 
