@@ -41,13 +41,11 @@ triton_shared with the i64 fix:
     preset  version     text hidden  vision  patches  params        max diff
     tiny    Qwen2-VL      256         128      16      1,825,536    1.2517e-06
     tiny    Qwen2.5-VL    256         128      16      1,792,384    1.0729e-06
-    2b      Qwen2-VL     1536        1280      64  114,652,928    4.2021e-06*
-    2b      Qwen2.5-VL   1536        1280      64  114,676,408    4.3809e-06*
+    2b      Qwen2-VL     1536        1280      64  114,652,928    4.2021e-06
+    2b      Qwen2.5-VL   1536        1280      64  114,676,408    4.3809e-06
 
-    * with --eager-splice; see below.
-
-WHAT THE SIZED PRESETS NEEDED, since none of it is in this file.  Two toolchain
-changes and one flag, in the order they were hit:
+WHAT THE SIZED PRESETS NEEDED, since none of it is in this file.  Three
+toolchain changes, in the order they were hit:
 
   triton_shared   `tts.get_structured_state` accepted i32 offset tensors while
                   the prepass that builds it wraps every int tensor, so the
@@ -64,16 +62,27 @@ changes and one flag, in the order they were hit:
                   correspondence was in the operand's map; it reads it there
                   now.  Qwen2-Audio's audio-token count is the same shape.
 
-  --eager-splice  at the sized presets Inductor lowers the splice's cumsum as a
-                  DECOUPLED-LOOKBACK split scan, where one block spins on
+  PyTorchSim      at the sized presets Inductor lowered the splice's cumsum as
+                  a DECOUPLED-LOOKBACK split scan, where one block spins on
                   another's published state.  This route compiles one ELF and
                   walks the grid in its own wrapper, so there is no such
-                  channel.  The flag declines the feature that picks that form
-                  and the op falls back to eager -- right values, no kernel.
+                  channel, and the kernel was refused: "kernel uses
+                  triton_helpers.{exclusive_scan_decoupled_lookback_64}, which
+                  lives in torch and the tnpu venv has no torch".  It is
+                  answered where Inductor asks -- NPUChoices.reduction_split_
+                  factor pins the split at 1, because splitting buys
+                  parallelism across blocks that run at the same time.  The
+                  scan is then the ordinary looped form, associative_scan plus
+                  a carry, which this route already runs.
 
-`tiny` is the default because it needs none of the third: its scan is one
-block, so the splice COMPILES there, and it exercises every structural claim
-above.  `7b` is the same shapes at the 7B text width and is not measured here.
+THERE USED TO BE AN --eager-splice FLAG HERE and it is gone.  It declined
+MASKED_SCATTER_WITH_INDEX so the splice fell back to aten -- right values, no
+kernel, and nothing simulated.  A CPU fallback is a defect (see CLAUDE.md), and
+keeping an escape hatch to one is keeping the defect.
+
+`tiny` is the default because it is the smaller claim, not the easier one: its
+scan is one block either way, and it exercises every structural claim above.
+`7b` is the same shapes at the 7B text width and is not measured here.
 """
 
 import argparse
@@ -326,33 +335,11 @@ if __name__ == "__main__":
     # they feed is the same, so running one and claiming the other would be the
     # kind of vacuous pass _assert_character exists to prevent.
     parser.add_argument("--version", type=str, default=None, choices=["2", "2.5"])
-    # tiny, not 2b: the default is what passes. See the docstring for where 2b
-    # stops -- a tnpu lane-banking case on transformers' own token-count check,
-    # not on anything the vision tower computes.
+    # tiny, not 2b: the default is the cheaper claim, not the only passing one.
+    # 2b runs the real 1280 vision width and takes about six times as long.
     parser.add_argument("--preset", type=str, default="tiny", choices=sorted(_PRESETS))
     parser.add_argument("--dtype", type=str, default="float32",
                         choices=["float32", "float16", "bfloat16"])
-    # WHAT THIS BUYS AND WHAT IT COSTS, both measured. At the sized presets
-    # Inductor lowers the splice's cumsum as a SPLIT scan --
-    # `exclusive_scan_decoupled_lookback_64`, where block i spins on block j's
-    # published state -- and this route compiles one ELF whose grid the C
-    # wrapper walks itself, so there is no cross-block channel to publish on.
-    # Declining BackendFeature.MASKED_SCATTER_WITH_INDEX takes the cumsum form
-    # away: `torch._inductor.decomposition.masked_scatter` returns
-    # NotImplemented and the op falls back, which on this device means
-    # `aten::masked_scatter_` in EAGER mode -- right values, no kernel, nothing
-    # simulated for that op.
-    #
-    #     measured   `--preset 2b --version 2`: without it, SpecIncomplete on
-    #                the lookback helper. With it, 39 kernels and 4.2021e-06.
-    #
-    # NOT THE DEFAULT, and not a backend-wide setting, because at `tiny` the
-    # scan is one block and the splice COMPILES -- making this global would
-    # trade a simulated op for an eager one on the preset that has it.
-    parser.add_argument("--eager-splice", action="store_true",
-                        help="decline MASKED_SCATTER_WITH_INDEX, so the image "
-                             "splice falls back to eager instead of lowering "
-                             "to a scan this route cannot express")
     parser.add_argument("--no-compile", dest="compile", action="store_false", default=True)
     parser.add_argument("--rtol", type=float, default=1e-2)
     parser.add_argument("--atol", type=float, default=1e-2)
@@ -360,18 +347,6 @@ if __name__ == "__main__":
 
     sys.path.append(os.environ.get("PYTORCHSIM_ROOT_PATH", "/workspace/PyTorchSim"))
     torch.compiler.is_compiling = lambda: True  # FIXME. Same as test_llama.py.
-
-    if args.eager_splice:
-        # OUR OWN SUBCLASS'S ATTRIBUTE, not a patch of anything upstream:
-        # `backend_features` is how TritonScheduling declares them and
-        # TritonNPUScheduling is ours to declare for.
-        from torch._inductor.codegen.common import BackendFeature
-        from PyTorchSimFrontend.triton_backend import scheduling
-        have = scheduling.TritonNPUScheduling.backend_features
-        scheduling.TritonNPUScheduling.backend_features = type(have)(
-            [f for f in have if f is not BackendFeature.MASKED_SCATTER_WITH_INDEX])
-        print("eager-splice: MASKED_SCATTER_WITH_INDEX declined; "
-              "aten::masked_scatter_ will run eager")
 
     for version in ([args.version] if args.version else ["2", "2.5"]):
         run_qwen_vl(

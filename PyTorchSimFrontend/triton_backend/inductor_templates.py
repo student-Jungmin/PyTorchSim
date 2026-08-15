@@ -416,6 +416,24 @@ def _npu_choices_class():
             persistent = 1 << (extent - 1).bit_length()
             return persistent <= launch.reduction_block_for(extent)
 
+        @staticmethod
+        def reduction_split_factor(device, reduction_numel_hint, numel_hint,
+                                   inner_reduction):
+            """Never split a reduction, and so never split a scan.
+
+            Splitting buys parallelism across blocks that run at the same time;
+            this route walks the grid sequentially in its own wrapper.
+            """
+            if os.environ.get("TORCHSIM_LOG_SPLIT"):
+                would = InductorChoices.reduction_split_factor(
+                    device, reduction_numel_hint, numel_hint, inner_reduction)
+                if would != 1:
+                    logger.info(
+                        "[triton-npu] declined a %s-way split of %s elements "
+                        "into %s outputs (inner=%s)",
+                        would, reduction_numel_hint, numel_hint, inner_reduction)
+            return 1
+
     NPUChoices.__module__ = __name__
     NPUChoices.__qualname__ = "NPUChoices"
     globals()["NPUChoices"] = NPUChoices
@@ -423,12 +441,8 @@ def _npu_choices_class():
     return NPUChoices
 
 
-def _decline_persistence_we_cannot_resize():
-    """Persist a reduction only at a block this backend would have chosen.
-
-    A persistent reduction bakes R0_BLOCK into its body, so the scratchpad retry
-    halves a number nothing reads. Persist iff that block is the one we'd pin.
-    """
+def _install_npu_choices():
+    """Register the choices this hardware makes differently: persistence, splits."""
     from torch._inductor import config
 
     if config.inductor_choices_class is None:
@@ -507,7 +521,7 @@ def install():
     _size_grouped_conv_grid_per_group()
     _clamp_conv_block_n()
     _short_circuit_degenerate_gemms()
-    _decline_persistence_we_cannot_resize()
+    _install_npu_choices()
     _lower_conv1d_as_conv2d()
     _install_selection()
 
