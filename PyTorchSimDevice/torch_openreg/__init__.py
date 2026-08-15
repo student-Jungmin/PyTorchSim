@@ -24,9 +24,11 @@ from PyTorchSimFrontend import extension_config as _extension_config
 import PyTorchSimFrontend.extension_decomposition  # noqa: F401
 from PyTorchSimFrontend import extension_counting_sort as _counting_sort
 from PyTorchSimFrontend import extension_grouped_mm as _grouped_mm
+from PyTorchSimFrontend import extension_topk as _topk
 
 _counting_sort.install()
 _grouped_mm.install()
+_topk.install()
 # Same reason, one level up: Inductor refuses to generate code for complex
 # operators whichever backend is registered, so the rewrite is not the route's.
 import PyTorchSimFrontend.extension_complex_to_real  # noqa: F401
