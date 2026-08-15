@@ -98,9 +98,9 @@ def _emit_counting_sort(g, x, bins, n, dtype):
     """Stable counting sort of `x` ([n] integer, values in [0, bins)).
 
     Returns (values, permutation) with torch.sort's contract: `perm[i]` is where
-    `values[i]` came from. Written in the ops the backend already lowers -- one
-    compare, two cumulative sums, a gather and two scatters -- so nothing here
-    reaches an extern call.
+    `values[i]` came from. The two `aten.scatter` calls have no lowering on this
+    backend and DO reach an extern call; see the commit for what replacing them
+    costs.
     """
     call = g.call_function
     i64 = torch.int64
