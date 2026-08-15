@@ -119,6 +119,18 @@
 # calloc. That is a wrapper limit, not a model one, and it is written up in the
 # test's docstring.
 #
+# WHY tests/models/Qwen/test_qwen_next.py IS A SECOND QWEN ENTRY. It is the
+# families transformers 5.x added, and they are not shapes on the block
+# test_qwen.py gates: qwen3_5 and qwen3_next are LINEAR attention, whose
+# recurrence unrolls per position -- 121 and 132 kernels at seq 16 against the
+# 19 a Qwen3 layer takes -- and qwen3_5 puts a Conv1d in the block, which needs
+# the conv1d-to-conv2d registration or it falls to an extern this device has no
+# implementation for. Its own gate is `qwen3_5` plus `qwen3_vl_moe`, one of each
+# kind: a linear-attention family and an MoE one, the second of which routes
+# through extension_counting_sort and so keeps that rewrite from being a
+# one-model patch. The audio families in that file run TEXT ONLY; their encoders
+# are not covered by it and its docstring says where they stop.
+#
 # WHY tests/models/Qwen/test_qwen.py RUNS TWO PRESETS WHERE EVERY OTHER ENTRY
 # RUNS ONE. It gates a family, not a model: Qwen2/2.5 carry a QKV bias that no
 # other block in this suite has, Qwen3 drops it and adds an RMSNorm per head
@@ -223,6 +235,7 @@ tests/models/Llama/test_mllama.py
 tests/models/Mixtral8x7B/test_mistral.py
 tests/models/MobileNet/test_mobilenet.py
 tests/models/Qwen/test_qwen.py
+tests/models/Qwen/test_qwen_next.py
 tests/models/Yolo/test_yolo.py
 tests/models/Yolov5/test_yolov5.py
 tests/models/test_clip.py

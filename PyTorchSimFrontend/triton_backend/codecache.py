@@ -115,6 +115,7 @@ def triton_npu_compile(src_code, meta, kernel_name):
             with open(os.path.join(write_path, "kernel.py"), "w") as f:
                 f.write(src_code)
             timing.store_meta(write_path, meta)
+            last_usage = None
             while True:
                 kernel_spec.write_spec_file(src_code, meta, spec_path,
                                             tnpu_bridge.tnpu_dir())
@@ -124,13 +125,54 @@ def triton_npu_compile(src_code, meta, kernel_name):
                     break
                 except tnpu_bridge.TnpuError as exc:
                     over = _spad_overflow(exc)
-                    if over is None or not _shrink_tile(meta, *over):
+                    if over is None:
                         raise
+                    # A RETRY THAT FREES NOTHING IS NOT A RETRY. The tile
+                    # keeps halving, the measurement does not move, and the last
+                    # halving takes the outer axis to 1 -- a unit axis, which
+                    # leaves select_lane_axis no axis for the lanes, so it
+                    # answers differently per buffer and the fold crosses lanes.
+                    # That kernel COMPILES and returns wrong numbers.
+                    #
+                    #   measured, Qwen2-MoE's sort kernel at spad 131072, each
+                    #   XBLOCK compiled alone and its .spad read back:
+                    #
+                    #     128 273,936 | 32 149,264 | 16 132,592   all axis 0
+                    #       8 127,616 |  4 127,616 |  2 127,616   all axis 0
+                    #       1  37,792                axis 0 x300, 1 x125, ONE_LANE x4
+                    #
+                    #   8/4/2 are one number because reserve_per_lane rounds up
+                    #   to MIN_VEC; 1 is smaller only because the banking
+                    #   collapsed. The model gave Max abs diff 1.369991421699524
+                    #   at XBLOCK 1, twice, and passes at 8 and 64.
+                    #
+                    # A compile error names the kernel and the budget; a wrong
+                    # number names nothing.
+                    if last_usage is not None and over[0] >= last_usage:
+                        logger.warning(
+                            "[triton-npu] %s: %d bytes/lane, unchanged from the "
+                            "previous tile -- shrinking further frees nothing "
+                            "and only risks a unit axis, so stopping here",
+                            kernel_name, over[0])
+                        raise
+                    last_usage = over[0]
+                    if not _shrink_tile(meta, *over):
+                        raise
+                    # EVERY BLOCK, and the filter used to be `endswith("_BLOCK")`
+                    # -- which is false of "XBLOCK", the only block that moves in
+                    # a persistent reduction (see _shrink_tile). So the one line
+                    # that says what the retry changed reported the block that
+                    # did NOT change and hid the one that did:
+                    #
+                    #   retrying with {'R0_BLOCK': 128}    six times in a row
+                    #
+                    # reads as a loop that shrinks nothing, which is the opposite
+                    # of what was happening. Measured on Qwen2-MoE's sort kernel.
                     logger.info(
                         "[triton-npu] %s: %d bytes/lane over a budget of %d, "
                         "retrying with %s", kernel_name, over[0], over[1],
                         {k: v for k, v in meta["fixed_config"].items()
-                         if k.endswith("_BLOCK")})
+                         if k.endswith("BLOCK")})
             timing.store_meta(write_path, meta)
         logger.info("[triton-npu] %s -> %s", kernel_name, write_path)
         return TritonNPULauncher(kernel_name, write_path, meta)
