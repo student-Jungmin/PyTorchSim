@@ -10,7 +10,7 @@ import os
 
 from PyTorchSimFrontend import extension_config
 
-from . import breakdown, launch
+from . import breakdown, launch, session
 
 logger = extension_config.setup_logger()
 
@@ -125,10 +125,10 @@ def write_shape(workdir, meta, args=()):
 
 
 def _write_extents(workdir, ext, what):
-    """Write `ext` as shape_args, refusing a count the trace cannot use.
+    """Write `ext` as this launch's shape_args, refusing a count it cannot use.
 
-    A trace.so is REUSED from disk, so a stale one can meet a meta that counts
-    differently -- and the producer ignores `n`, so that is an allocation.
+    The count is checked against the shared trace; the file goes in this
+    process's launch directory, because the grid belongs to the launch.
     """
     path = os.path.join(workdir, AXES_TXT)
     if os.path.isfile(path):
@@ -140,7 +140,7 @@ def _write_extents(workdir, ext, what):
                 f"extent(s) and this launch has {len(ext)} ({ext}); the trace "
                 f"would read past the end of shape_args. Delete the workdir to "
                 f"rebuild it.")
-    with open(os.path.join(workdir, SHAPE_TXT), "w") as f:
+    with open(os.path.join(session.dir_for(workdir), SHAPE_TXT), "w") as f:
         f.write("\n".join(str(int(g)) for g in ext) + "\n")
     logger.info("[TOGSim] %s %s -> %s", what, ext, SHAPE_TXT)
 
@@ -202,37 +202,39 @@ def emit_trace(workdir, meta):
 def run_togsim(workdir, meta, args=()):
     """Simulate the emitted trace. Returns TOGSimulator's parsed result dict.
 
-    `meta`/`args` supply the grid: the trace producer takes its loop bounds
-    from shape_args, so they are written per launch rather than compiled in.
+    Runs out of this process's launch directory: the shared trace is linked in
+    and the grid written beside it, so concurrent launches need no lock.
     """
     from Simulator.simulator import TOGSimulator
 
     so = os.path.join(workdir, TRACE_SO)
     if not os.path.isfile(so):
         raise FileNotFoundError(f"{so} not found -- call emit_trace first")
+    mine = session.link_shared(workdir, (TRACE_SO, CYCLE_TSV))
     write_shape(workdir, meta, args)
 
-    handle = os.path.join(workdir, "tile_graph.onnx")
+    handle = os.path.join(mine, "tile_graph.onnx")
     result_path = TOGSimulator.run_standalone(
-        handle, os.path.join(workdir, "attribute"))
+        handle, os.path.join(mine, "attribute"))
     return TOGSimulator.get_result_from_file(result_path)
 
 
 def run(workdir, meta, args=()):
     """Emit the trace if it is missing, then simulate. Returns TOGSim's result.
 
-    One timing launch at a time per kernel: the trace, the shape and the tile
-    graph are fixed names in the workdir, as `runtime/` is for the Spike half.
+    Only the build is locked, and only against a second build of the same
+    trace; simulating is per launch and runs concurrently.
     """
     from filelock import FileLock
 
     kernel = meta["kernel_name"]
-    with FileLock(os.path.join(workdir, LOCK_NAME), timeout=LOCK_TIMEOUT):
-        if not os.path.isfile(os.path.join(workdir, TRACE_SO)):
-            with breakdown.span(breakdown.TOGSIM_TRACE, kernel):
-                emit_trace(workdir, meta)
-        with breakdown.span(breakdown.TOGSIM_RUN, kernel):
-            return run_togsim(workdir, meta, args)
+    if not os.path.isfile(os.path.join(workdir, TRACE_SO)):
+        with FileLock(os.path.join(workdir, LOCK_NAME), timeout=LOCK_TIMEOUT):
+            if not os.path.isfile(os.path.join(workdir, TRACE_SO)):
+                with breakdown.span(breakdown.TOGSIM_TRACE, kernel):
+                    emit_trace(workdir, meta)
+    with breakdown.span(breakdown.TOGSIM_RUN, kernel):
+        return run_togsim(workdir, meta, args)
 
 
 def store_meta(workdir, meta):
