@@ -10,7 +10,7 @@ import os
 
 from PyTorchSimFrontend import extension_config
 
-from . import layout
+from . import breakdown, layout
 
 logger = extension_config.setup_logger()
 
@@ -213,6 +213,7 @@ def _run_locked(workdir, meta, args, spec, tnpu_bridge):
 
     Replay is OFF by default: a result that came out of a file is not a result
     the simulator produced today. It is for the inner loop, not for reporting.
+    tnpu's launch timing is read here, under the lock that makes it ours.
     """
     runtime = write_inputs(workdir, meta, args)
 
@@ -225,6 +226,8 @@ def _run_locked(workdir, meta, args, spec, tnpu_bridge):
             return read_outputs(workdir, meta, args)
 
     rc, output = tnpu_bridge.run_module("tnpu.spike", spec, workdir)
+    breakdown.ingest_tnpu(workdir, meta["kernel_name"], kind="spike",
+                          name="timing-spike.json")
     if rc != 0:
         raise RuntimeError(
             f"[Spike] {meta['kernel_name']} failed:\n" + output[-2000:])

@@ -43,8 +43,6 @@ class TritonNPULauncher:
         if extension_config.pytorchsim_functional_mode:
             with breakdown.span(breakdown.SPIKE, self.kernel_name):
                 written = functional.run(self.workdir, self.meta, args)
-            breakdown.ingest_tnpu(self.workdir, self.kernel_name, kind="spike",
-                                  name="timing-spike.json")
             logger.info("[Spike] %s wrote %s", self.kernel_name, written)
         else:
             logger.warning(
