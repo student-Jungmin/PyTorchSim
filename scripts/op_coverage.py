@@ -614,21 +614,6 @@ def main():
     p.add_argument("--out-dir", default=None)
     args = p.parse_args()
 
-    # Phase 2 compiles for real, so it needs the route this project actually
-    # runs. Without TORCHSIM_TRITON_CODEGEN the MLIR route is selected instead,
-    # and against the pinned torch 2.10 it dies in the scheduler before it
-    # reaches any model:
-    #     MLIRScheduling.can_fuse_with_exceptions() takes 3 positional
-    #     arguments but 4 were given
-    # Every model then reports FAIL with no fail_op, which reads as "this model
-    # is unsupported" and is nothing of the kind -- gemma3 scored FAIL that way
-    # on the same afternoon its e2e test passed. Refuse rather than emit a
-    # column of results that mean the opposite of what they look like.
-    if not args.enumerate_only and os.environ.get("TORCHSIM_TRITON_CODEGEN") != "1":
-        p.error("phase 2 needs the Triton route: set TORCHSIM_TRITON_CODEGEN=1 "
-                "(source /workspace/tnpu-env.sh), or pass --enumerate-only to "
-                "list ops without compiling")
-
     ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = args.out_dir or os.path.join(
         os.environ.get("TORCHSIM_LOG_PATH", os.path.join(REPO_ROOT, "togsim_results")),

@@ -154,7 +154,7 @@ post-vcix MLIR (affine/scf.for + togsim.transfer/wait + vcix/vector compute)
 |
 +-- Branch B (cost):
       cycle_table.py       reuse the gem5 sample-mode cycle_list already computed
-                           in extension_codecache -> tile_id -> (cycle, overlapping)
+                           in triton_backend/timing.py -> tile_id -> (cycle, overlapping)
 
 TOGSim:
   run_producer()          dlopen(trace.so), resolve togsim_kernel, inject EmitCtx
@@ -272,7 +272,7 @@ the upstream conversions.
 The reproduction path for a single kernel:
 
 ```sh
-python -m PyTorchSimFrontend.mlir.passes.lower_to_emitc <postvcix.mlir> \
+python -m PyTorchSimFrontend.tog.lower_to_emitc <postvcix.mlir> \
     --so trace.so [--emit-cpp trace.cpp]
 bin/Simulator --config <config.yml> --trace_so trace.so \
     [--cycle_table trace_cycles.tsv] [--log_level trace]
@@ -551,8 +551,8 @@ producer ran the loops.
   path over the tag table.
 - `TOGSim/include/Instruction.h` — `ready_counter` / dependency edges and the tag
   fields.
-- `PyTorchSimFrontend/mlir/passes/build_tog.py` — `TogBuilder.print_operation`
+- `PyTorchSimFrontend/tog/build_tog.py` — `TogBuilder.print_operation`
   dispatch and `_affine_for_bounds` (constant-bound resolution -> static shape).
 - `AsmParser/tog_generator.py` — the ONNX serialization.
-- `PyTorchSimFrontend/mlir/mlir_gemm_template.py` — the kernel template emitting
+- `PyTorchSimFrontend/triton_backend/inductor_templates.py` — the mm/bmm tiles emitting
   the `affine.for` nest, `linalg.matmul`, and the `togsim.transfer` DMA ops.

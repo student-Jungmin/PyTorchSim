@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 # Clear PyTorchSim's codegen caches so the next torch.compile run regenerates
-# the wrapper Python and the per-kernel MLIR. Run this whenever you edit
-# anything that affects emitted MLIR (PyTorchSimFrontend/mlir/*, lowering
-# rules, codegen backend, etc.) -- otherwise the previous compile is replayed
-# byte-for-byte from $TORCHSIM_DUMP_PATH and your change appears not to take.
+# the wrapper Python and the per-kernel artifacts. Run this whenever you edit
+# anything that affects codegen (PyTorchSimFrontend/triton_backend/*,
+# PyTorchSimFrontend/tog/*, or triton-npu) -- otherwise the previous compile is
+# replayed byte-for-byte from $TORCHSIM_DUMP_PATH and your change appears not
+# to take.
 #
 # Wipes:
 #   $TORCHSIM_DUMP_PATH/.torchinductor      (Inductor compile cache, points
 #                                            here via TORCHINDUCTOR_CACHE_DIR
 #                                            set in extension_config.py)
-#   $TORCHSIM_DUMP_PATH/<11-char-hash>/     (per-source MLIR/wrapper dirs,
-#                                            keyed by hash_prefix(src) in
-#                                            extension_codecache.py)
-#   $TORCHSIM_DUMP_PATH/triton_<hash>/      (the Triton route's per-kernel
-#                                            artifacts: spec, staged IR, ELF)
+#   $TORCHSIM_DUMP_PATH/<11-char-hash>/     (per-source wrapper dirs, keyed by
+#                                            hash_prefix(src) in
+#                                            extension_config.py)
+#   $TORCHSIM_DUMP_PATH/triton_<hash>/      (per-kernel artifacts: spec,
+#                                            staged IR, ELF, trace.so)
 #
 # WHY THE TRITON ONES MATTER MORE THAN THEY LOOK. That hash is of the INDUCTOR
 # SOURCE, so a fix anywhere BELOW it -- a tnpu pass, triton-shared -- leaves the
@@ -42,7 +43,7 @@ echo "Clearing $DUMP_PATH/.torchinductor, per-source-hash and triton_* dirs"
 rm -rf "$DUMP_PATH/.torchinductor"
 
 # Per-source-hash dirs are an 11-char alphanumeric prefix
-# (extension_codecache.hash_prefix). Match by length+charset so we don't
+# (extension_config.hash_prefix). Match by length+charset so we don't
 # touch anything else a developer may have parked under outputs/.
 find "$DUMP_PATH" -mindepth 1 -maxdepth 1 -type d \
     -regextype posix-egrep -regex '.*/[a-z0-9]{11}$' \

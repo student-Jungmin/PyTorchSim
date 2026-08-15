@@ -1,9 +1,9 @@
 # Enabling MLIR Python bindings
 
 Goal: ship the MLIR Python bindings (`import mlir`, `mlir.ir`, `mlir.dialects`)
-so we can write MLIR passes in Python (imperative IR rewriting via the bindings)
-instead of only C++ passes in the `PSAL-POSTECH/llvm-project` fork. See
-`dma-transfer-lowering.md` for the first intended use (a Python decompose pass).
+so `PyTorchSimFrontend/tog/` can read the MLIR triton-npu emits and build
+TOGSim's trace from it, in Python rather than as C++ passes in the
+`PSAL-POSTECH/llvm-project` fork.
 
 ## How LLVM reaches the runtime (why this touches 3 places)
 

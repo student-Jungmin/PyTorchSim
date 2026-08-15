@@ -7,6 +7,7 @@ on:
 
 env:
   BASE_IMAGE_REPO: ghcr.io/psal-postech/torchsim_base
+  TNPU_IMAGE_REPO: ghcr.io/psal-postech/torchsim_tnpu_base
 
 jobs:
   ensure-base:
@@ -78,8 +79,68 @@ jobs:
             ${{ env.BASE_IMAGE }}
             ${{ env.BASE_IMAGE_REPO }}:latest
 
-  build:
+  ensure-tnpu-base:
+    # The triton-npu toolchain layer. The released image cannot compile a kernel
+    # without it: `npu` has exactly one codegen route and it lowers through tnpu.
+    name: Build tnpu toolchain image
     needs: ensure-base
+    runs-on: [self-hosted, slurm, big, x86_64]
+    outputs:
+      tnpu_image: ${{ steps.pin.outputs.tnpu_image }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          repository: PSAL-POSTECH/PyTorchSim
+          ref: ${{ github.sha }}
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pins
+        id: pin
+        run: |
+          BASE_PIN="$(bash scripts/ci/thirdparty_base_pin.sh)"
+          TNPU_PIN="$(bash scripts/ci/tnpu_base_pin.sh)"
+          echo "TNPU_IMAGE=${TNPU_IMAGE_REPO}:tnpu-${TNPU_PIN}-base-${BASE_PIN}" >> "$GITHUB_ENV"
+          echo "tnpu_image=${TNPU_IMAGE_REPO}:tnpu-${TNPU_PIN}-base-${BASE_PIN}" >> "$GITHUB_OUTPUT"
+          echo "TNPU_REF=$(jq -r '.triton_npu.ref' thirdparty/triton-npu.json)" >> "$GITHUB_ENV"
+
+      - name: Check tnpu image exists
+        id: exists
+        run: |
+          if docker manifest inspect "${TNPU_IMAGE}" > /dev/null 2>&1; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push tnpu toolchain image
+        if: steps.exists.outputs.ok != 'true'
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile.tnpu
+          push: true
+          build-args: |
+            BASE_IMAGE=${{ needs.ensure-base.outputs.base_image }}
+            TNPU_REF=${{ env.TNPU_REF }}
+          secrets: |
+            tnpu_token=${{ secrets.TNPU_TOKEN }}
+          tags: ${{ env.TNPU_IMAGE }}
+
+  build:
+    needs: ensure-tnpu-base
     runs-on: self-hosted
 
     permissions:
@@ -117,5 +178,5 @@ jobs:
           secrets: |
             GIT_ACCESS_TOKEN=${{ secrets.GIT_ACCESS_TOKEN }}
           build-args: |
-            BASE_IMAGE=${{ needs.ensure-base.outputs.base_image }}
+            BASE_IMAGE=${{ needs.ensure-tnpu-base.outputs.tnpu_image }}
           tags: ghcr.io/psal-postech/${{ env.IMAGE_TAG }}

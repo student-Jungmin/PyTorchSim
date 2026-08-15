@@ -1,4 +1,4 @@
-"""Compile cache for the Triton route -- the counterpart of extension_codecache.
+"""Compile cache for the codegen route: one kernel in, one launcher out.
 
     define_kernel   ->  triton_npu_compile(src, meta, kernel_name)  ->  launcher
     call site       ->  launcher(arg0, arg1, ..., xnumel)
@@ -14,7 +14,7 @@ from torch._inductor.codecache import get_hash
 
 from PyTorchSimFrontend import extension_config
 
-from . import functional, kernel_spec, timing, tnpu_bridge
+from . import breakdown, functional, kernel_spec, timing, tnpu_bridge
 
 logger = extension_config.setup_logger()
 
@@ -32,7 +32,7 @@ class TritonNPULauncher:
     """What a compiled kernel name is bound to in the generated wrapper.
 
     Each call is one launch of the whole grid, Spike first so the tensors hold
-    real values even if TOGSim fails. Both halves switch, on the MLIR keys.
+    real values even if TOGSim fails. Both halves switch on the config keys.
     """
     def __init__(self, kernel_name, workdir, meta):
         self.kernel_name = kernel_name
@@ -41,7 +41,10 @@ class TritonNPULauncher:
 
     def __call__(self, *args):
         if extension_config.pytorchsim_functional_mode:
-            written = functional.run(self.workdir, self.meta, args)
+            with breakdown.span(breakdown.SPIKE, self.kernel_name):
+                written = functional.run(self.workdir, self.meta, args)
+            breakdown.ingest_tnpu(self.workdir, self.kernel_name, kind="spike",
+                                  name="timing-spike.json")
             logger.info("[Spike] %s wrote %s", self.kernel_name, written)
         else:
             logger.warning(
@@ -55,8 +58,10 @@ class TritonNPULauncher:
             return None
 
         if not os.path.isfile(os.path.join(self.workdir, timing.TRACE_SO)):
-            timing.emit_trace(self.workdir, self.meta)
-        result = timing.run_togsim(self.workdir, self.meta, args)
+            with breakdown.span(breakdown.TOGSIM_TRACE, self.kernel_name):
+                timing.emit_trace(self.workdir, self.meta)
+        with breakdown.span(breakdown.TOGSIM_RUN, self.kernel_name):
+            result = timing.run_togsim(self.workdir, self.meta, args)
         logger.info("[TOGSim] %s simulated -> %s", self.kernel_name, result)
         return result
 
@@ -101,8 +106,8 @@ def _shrink_tile(meta, usage, budget):
 def triton_npu_compile(src_code, meta, kernel_name):
     """Compile one Inductor-generated Triton kernel through tnpu.
 
-    Called from the generated wrapper at module import time. Synchronous: the
-    MLIR route's thread pool buys nothing until the pipeline itself is proven.
+    Called from the generated wrapper at module import time. Synchronous, on
+    purpose: a thread pool buys nothing until the pipeline itself is proven.
     """
     write_path = _write_path(src_code)
     os.makedirs(write_path, exist_ok=True)
@@ -120,8 +125,10 @@ def triton_npu_compile(src_code, meta, kernel_name):
                 kernel_spec.write_spec_file(src_code, meta, spec_path,
                                             tnpu_bridge.tnpu_dir())
                 try:
-                    tnpu_bridge.run_pipeline(spec_path, write_path,
-                                             to_stage="binary")
+                    with breakdown.span(breakdown.TNPU, kernel_name):
+                        tnpu_bridge.run_pipeline(spec_path, write_path,
+                                                 to_stage="binary")
+                    breakdown.ingest_tnpu(write_path, kernel_name)
                     break
                 except tnpu_bridge.TnpuError as exc:
                     over = _spad_overflow(exc)

@@ -84,7 +84,7 @@ the CLAUDE.md "Build" section.
 `.envrc` gives each worktree its own `$TORCHSIM_DUMP_PATH=$_self/outputs`,
 so parallel worktrees do not share caches. But within a worktree, after
 editing anything that affects emitted MLIR or wrapper code
-(`PyTorchSimFrontend/mlir/*`, lowering rules, codegen backend), the next
+(`PyTorchSimFrontend/triton_backend/*`, `PyTorchSimFrontend/tog/*`), the next
 `torch.compile` will replay the previously cached compile from
 `outputs/<hash>/` and your change silently does not take. Run:
 
@@ -95,7 +95,7 @@ scripts/clear_codegen_cache.sh
 between iterations. It wipes `outputs/.torchinductor` (Inductor's compile
 cache, set via `TORCHINDUCTOR_CACHE_DIR` inside `extension_config.get_dump_path()`) and
 the per-source-hash dirs (`outputs/<11-char-hash>/`, keyed by
-`extension_codecache.hash_prefix`). `togsim_results/` (run logs) is left
+`extension_config.hash_prefix`). `togsim_results/` (run logs) is left
 alone.
 
 Diagnostic for the other common gotcha: if a traceback mentions a path

@@ -1,5 +1,12 @@
 # Triton 코드젠 경로를 PyTorchSim에 이식
 
+> **이 문서는 이식 시점의 기록입니다.** 여기서 "기존 MLIR 경로"로 부르는
+> 것 -- `PyTorchSimFrontend/mlir/`의 손으로 쓴 MLIR emission, `FunctionalSimulator`,
+> `codegen_compiler_optimization` -- 은 이후 전부 삭제되었고, Triton 경로가
+> `npu`의 유일한 코드젠 경로입니다. 아래 대조표는 그 결정의 근거이지 현재
+> 트리의 지도가 아닙니다. 현재 구조는
+> [`triton_backend/README.md`](triton_backend/README.md)를 보세요.
+
 `torch.compile`이 `npu:0`에서 PyTorchSim의 자체 MLIR 코드젠 대신 **Inductor의 Triton 백엔드**를 쓰고, **NPU lowering pass**가 이를 RISC-V로 낮추는 두 번째 코드젠 경로.
 
 ## 작업 경계
