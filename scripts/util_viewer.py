@@ -474,8 +474,9 @@ td .src { color: var(--muted); font-size: 11px; }
 #tip .r b { display: inline-block; width: 9px; height: 9px; border-radius: 2px;
             margin-right: 5px; vertical-align: 0; }
 .ct-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 24px; }
-.ct-grid h3 { font-size: 11px; font-weight: 600; color: var(--muted); margin: 0 0 10px;
-              text-transform: uppercase; letter-spacing: 0.04em; }
+.card h3 { font-size: 11px; font-weight: 600; color: var(--muted); margin: 0 0 10px;
+           text-transform: uppercase; letter-spacing: 0.04em; }
+.card h3.sub-h { margin-top: 26px; }
 .seg { display: inline-flex; border: 1px solid var(--ring); border-radius: 7px;
        overflow: hidden; margin-bottom: 18px; }
 .seg button { appearance: none; border: 0; background: var(--surface-1); color: var(--ink-2);
@@ -490,6 +491,18 @@ td .src { color: var(--muted); font-size: 11px; }
 .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
 .cfg { display: flex; flex-wrap: wrap; gap: 6px 20px; font-size: 12px; color: var(--ink-2); }
 .cfg span b { color: var(--muted); font-weight: 500; }
+.zoombar { display: flex; align-items: center; gap: 10px; margin: 0 0 10px;
+           font-size: 12px; color: var(--ink-2); }
+.zoombar button { appearance: none; border: 1px solid var(--ring); border-radius: 6px;
+                  background: var(--surface-1); color: var(--ink-2); font: inherit;
+                  font-size: 12px; padding: 3px 10px; cursor: pointer; }
+.zoombar button:hover:not(:disabled) { border-color: var(--s1); color: var(--s1); }
+.zoombar button:disabled { opacity: 0.45; cursor: default; }
+.zoombar button:focus-visible { outline: 2px solid var(--s1); outline-offset: 1px; }
+.zoombar .win { font-variant-numeric: tabular-nums; }
+.zoombar .hint { color: var(--muted); margin-left: auto; }
+svg.zoomable { cursor: crosshair; touch-action: none; }
+svg.zoomable.panning { cursor: grabbing; }
 </style>"""
 
 
@@ -514,13 +527,14 @@ _PAGE_BODY = r"""
   <div class="card">
     <h2>Utilization over time</h2>
     <p class="note" id="tl-note"></p>
+    <div class="zoombar" id="zoombar">
+      <button id="z-out" type="button" title="Zoom out (or wheel down)">-</button>
+      <button id="z-in" type="button" title="Zoom in (or wheel up)">+</button>
+      <button id="z-reset" type="button" title="Show every sample (or double-click)">Reset</button>
+      <span class="win" id="z-win"></span>
+      <span class="hint">drag to zoom &middot; shift-drag or arrows to pan &middot; wheel &middot; double-click to reset</span>
+    </div>
     <div class="chart-scroll"><svg id="tl" width="1040" height="270"></svg></div>
-  </div>
-
-  <div class="card">
-    <h2>DRAM bandwidth over time</h2>
-    <p class="note" id="bw-note"></p>
-    <div class="chart-scroll"><svg id="bw" width="1040" height="180"></svg></div>
   </div>
 
   <div class="card">
@@ -558,7 +572,11 @@ _PAGE_BODY = r"""
   </div>
 
   <div class="card">
-    <h2>DRAM channels</h2>
+    <h2>DRAM</h2>
+    <h3>Bandwidth over time</h3>
+    <p class="note" id="bw-note"></p>
+    <div class="chart-scroll"><svg id="bw" width="1040" height="180"></svg></div>
+    <h3 class="sub-h">Per channel</h3>
     <p class="note" id="ch-note"></p>
     <div class="chart-scroll"><svg id="ch" width="1040" height="170"></svg></div>
   </div>
@@ -660,8 +678,10 @@ function drawKPIs() {
     ' &nbsp;·&nbsp; ' + r.log + (r.repeats > 1 ? ` &nbsp;·&nbsp; ${r.repeats} identical runs` : '');
 }
 
-function axes(svg, W, H, P, xmax, ymax, yunit, xlabel, xticks) {
-  const x = v => P.l + (W - P.l - P.r) * (xmax ? v / xmax : 0);
+function axes(svg, W, H, P, xmax, ymax, yunit, xlabel, xticks, xmin) {
+  xmin = xmin || 0;
+  const span = xmax - xmin;
+  const x = v => P.l + (W - P.l - P.r) * (span ? (v - xmin) / span : 0);
   const y = v => H - P.b - (H - P.t - P.b) * (ymax ? v / ymax : 0);
   for (let i = 0; i <= 4; i++) {
     const v = ymax * i / 4;
@@ -672,7 +692,7 @@ function axes(svg, W, H, P, xmax, ymax, yunit, xlabel, xticks) {
   }
   if (xticks !== false) {
     for (let i = 0; i <= 5; i++) {
-      const v = xmax * i / 5;
+      const v = xmin + span * i / 5;
       el(svg, 'text', {x: x(v), y: H - P.b + 16, 'text-anchor': i === 0 ? 'start' :
                        (i === 5 ? 'end' : 'middle')},
          v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' :
@@ -689,6 +709,7 @@ function hover(svg, W, H, P, sc, cyc, rows, unit) {
   const dots = rows.map(r => el(svg, 'circle', {r: 4, fill: r.color, stroke: css('--surface-1'),
                                                 'stroke-width': 2, opacity: 0}));
   svg.addEventListener('mousemove', ev => {
+    if (dragging) return;
     const b = svg.getBoundingClientRect();
     const px = (ev.clientX - b.left) * (W / b.width);
     if (!cyc.length) return;
@@ -715,9 +736,124 @@ function hover(svg, W, H, P, sc, cyc, rows, unit) {
 
 const BUSY = 5;
 
-function coactivity(s) {
+// Zoom is a window over SAMPLE INDICES, not cycles: the samples are evenly
+// spaced by `interval`, so an index window is the same window on both charts
+// and neither has to re-derive it from a cycle range.
+let zoom = null, dragging = false;
+const MIN_SPAN = 4;
+
+function zoomWindow(n) {
+  if (!zoom || n <= MIN_SPAN) return [0, n - 1];
+  const a = Math.max(0, Math.min(n - 1, zoom.a));
+  const b = Math.max(a + MIN_SPAN - 1, Math.min(n - 1, zoom.b));
+  return [a, Math.min(n - 1, b)];
+}
+
+function setZoom(a, b, n) {
+  const span = Math.max(MIN_SPAN, Math.round(b - a + 1));
+  let lo = Math.round(a), hi = lo + span - 1;
+  if (lo < 0) { lo = 0; hi = span - 1; }
+  if (hi > n - 1) { hi = n - 1; lo = Math.max(0, hi - span + 1); }
+  zoom = (lo <= 0 && hi >= n - 1) ? null : {a: lo, b: hi};
+  drawTimeline(); drawBW();
+}
+
+function zoomBy(factor, pivot, n) {
+  const [a, b] = zoomWindow(n);
+  const span = b - a + 1;
+  const next = Math.max(MIN_SPAN, Math.min(n, Math.round(span * factor)));
+  if (next >= n) { zoom = null; drawTimeline(); drawBW(); return; }
+  const p = pivot == null ? (a + b) / 2 : pivot;
+  const frac = span > 1 ? (p - a) / (span - 1) : 0.5;
+  setZoom(p - frac * (next - 1), p - frac * (next - 1) + next - 1, n);
+}
+
+function panBy(samples, n) {
+  const [a, b] = zoomWindow(n);
+  if (!zoom) return;
+  setZoom(a + samples, b + samples, n);
+}
+
+function drawZoomBar(n, z0, z1, cycles, interval) {
+  const bar = document.getElementById('zoombar');
+  const win = document.getElementById('z-win');
+  if (!bar) return;
+  bar.style.display = n > MIN_SPAN ? 'flex' : 'none';
+  const zoomed = z1 - z0 + 1 < n;
+  win.textContent = zoomed
+    ? `cycle ${fmt(Math.max(0, cycles[z0] - interval))}-${fmt(cycles[z1])} ` +
+      `(${fmt(z1 - z0 + 1)} of ${fmt(n)} samples, ${(n / (z1 - z0 + 1)).toFixed(1)}x)`
+    : `all ${fmt(n)} samples`;
+  document.getElementById('z-reset').disabled = !zoomed;
+  document.getElementById('z-out').disabled = !zoomed;
+  document.getElementById('z-in').disabled = z1 - z0 + 1 <= MIN_SPAN;
+}
+
+// Drag to select a range, shift-drag to pan, wheel to scale, double-click to
+// reset. `at(px)` maps a client x to a fractional sample index.
+function zoomable(svg, W, P, plotW, n, at) {
+  svg.classList.add('zoomable');
+  const pxOf = ev => (ev.clientX - svg.getBoundingClientRect().left) * (W / svg.getBoundingClientRect().width);
+  const band = el(svg, 'rect', {y: P.t, height: 1, fill: css('--s1'), opacity: 0,
+                                'pointer-events': 'none'});
+  let drag = null;
+
+  svg.addEventListener('mousedown', ev => {
+    if (ev.button !== 0) return;
+    const px = pxOf(ev);
+    if (px < P.l - 2 || px > W - P.r + 2) return;
+    ev.preventDefault();
+    drag = {x0: px, i0: at(px), pan: ev.shiftKey, moved: false};
+    if (drag.pan) svg.classList.add('panning');
+  });
+
+  svg.addEventListener('mousemove', ev => {
+    if (!drag) return;
+    const px = pxOf(ev);
+    if (Math.abs(px - drag.x0) > 2) { drag.moved = true; dragging = true; }
+    if (drag.pan) return;              // panning commits on mouseup
+    tip.style.opacity = 0;
+    const lo = Math.min(drag.x0, px), hi = Math.max(drag.x0, px);
+    band.setAttribute('x', Math.max(P.l, lo));
+    band.setAttribute('width', Math.max(0, Math.min(W - P.r, hi) - Math.max(P.l, lo)));
+    band.setAttribute('height', svg.getAttribute('height') - P.t - P.b);
+    band.setAttribute('opacity', 0.22);
+  }, true);
+
+  const finish = ev => {
+    if (!drag) return;
+    const d = drag; drag = null; dragging = false;
+    svg.classList.remove('panning');
+    band.setAttribute('opacity', 0);
+    if (!d.moved) return;
+    const i1 = at(pxOf(ev));
+    if (d.pan) { panBy(Math.round(d.i0 - i1), n); return; }
+    const lo = Math.min(d.i0, i1), hi = Math.max(d.i0, i1);
+    if (hi - lo < 1) return;
+    setZoom(lo, hi, n);
+  };
+  svg.addEventListener('mouseup', finish);
+  svg.addEventListener('mouseleave', () => {
+    if (drag) {
+      drag = null; dragging = false;
+      svg.classList.remove('panning'); band.setAttribute('opacity', 0);
+    }
+  });
+
+  svg.addEventListener('wheel', ev => {
+    const px = pxOf(ev);
+    if (px < P.l || px > W - P.r) return;
+    ev.preventDefault();
+    zoomBy(ev.deltaY > 0 ? 1.35 : 1 / 1.35, at(px), n);
+  }, {passive: false});
+
+  svg.addEventListener('dblclick', () => { zoom = null; drawTimeline(); drawBW(); });
+}
+
+
+function coactivity(s, z0, z1) {
   let compute = 0, memory = 0, both = 0, either = 0;
-  for (let i = 0; i < s.cycle.length; i++) {
+  for (let i = z0; i <= z1; i++) {
     const c = s.sa[i] > BUSY || s.vu[i] > BUSY;
     const m = s.dram[i] > BUSY || s.dma[i] > BUSY;
     if (c) compute++;
@@ -725,7 +861,7 @@ function coactivity(s) {
     if (c && m) both++;
     if (c || m) either++;
   }
-  return {compute, memory, both, either, n: s.cycle.length};
+  return {compute, memory, both, either, n: z1 - z0 + 1};
 }
 
 function drawTimeline() {
@@ -734,28 +870,33 @@ function drawTimeline() {
   const W = 1040, LH = 44, LG = 16, P = {l: 116, r: 78, t: 8, b: 30};
   if (!s.cycle.length) {
     svg.setAttribute('height', 40);
+    document.getElementById('zoombar').style.display = 'none';
     note.textContent = `No samples: this kernel ran ${fmt(r.summary.cycles)} cycles, ` +
       `inside a single ${fmt(r.interval)}-cycle sampling window. Lower ` +
       `core_stats_print_period_cycles in the config and re-run to sample it.`;
     return;
   }
-  const co = coactivity(s);
+  const N = s.cycle.length;
+  const [z0, z1] = zoomWindow(N);
+  const co = coactivity(s, z0, z1);
+  drawZoomBar(N, z0, z1, s.cycle, r.interval);
   note.textContent = `${co.n} samples, one per ${fmt(r.interval)} cycles, averaged across ` +
     `${r.summary.cores} core(s). Each lane is 0-100% of that window. Compute and memory ` +
     `were both busy in ${co.both} of ${co.either} active windows ` +
     `(${co.either ? Math.round(100 * co.both / co.either) : 0}% overlap; busy means above ` +
-    `${BUSY}%).`;
+    `${BUSY}%).` + (co.n < N ? ` Zoomed: the figures here describe the ${fmt(co.n)} ` +
+    `visible samples, not the whole run.` : '');
 
   const nl = SERIES.length;
   const H = P.t + nl * LH + (nl - 1) * LG + P.b;
   svg.setAttribute('height', H);
   const plotW = W - P.l - P.r;
   const bw = plotW / co.n;
-  const x = v => P.l + plotW * (v / s.cycle[co.n - 1]);
   const laneTop = i => P.t + i * (LH + LG);
 
   const rows = SERIES.map((sp, i) => {
-    const data = s[sp.k], color = css(sp.v), top = laneTop(i), base = top + LH;
+    const data = s[sp.k].slice(z0, z1 + 1), color = css(sp.v);
+    const top = laneTop(i), base = top + LH;
     el(svg, 'rect', {x: P.l, y: top, width: plotW, height: LH, rx: 3,
                      fill: color, opacity: 0.07});
     el(svg, 'line', {x1: P.l, x2: W - P.r, y1: base, y2: base,
@@ -780,9 +921,10 @@ function drawTimeline() {
     return {label: sp.label, color, data};
   });
 
+  const lo = Math.max(0, s.cycle[z0] - r.interval), hi = s.cycle[z1];
   for (let i = 0; i <= 5; i++) {
-    const v = s.cycle[co.n - 1] * i / 5;
-    el(svg, 'text', {x: x(v), y: H - P.b + 18, 'text-anchor': i === 0 ? 'start' :
+    const v = lo + (hi - lo) * i / 5;
+    el(svg, 'text', {x: P.l + plotW * i / 5, y: H - P.b + 18, 'text-anchor': i === 0 ? 'start' :
                      (i === 5 ? 'end' : 'middle')},
        v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' :
                   (v >= 1e3 ? Math.round(v / 1e3) + 'k' : Math.round(v)));
@@ -790,14 +932,16 @@ function drawTimeline() {
   el(svg, 'text', {x: P.l + plotW / 2, y: H - 2, 'text-anchor': 'middle'}, 'cycle');
 
   const cross = el(svg, 'rect', {y: P.t, width: Math.max(1, bw), height: nl * LH + (nl - 1) * LG,
-                                 fill: css('--ink'), opacity: 0});
+                                 fill: css('--ink'), opacity: 0, 'pointer-events': 'none'});
   svg.addEventListener('mousemove', ev => {
+    if (dragging) return;
     const b = svg.getBoundingClientRect();
     const j = Math.max(0, Math.min(co.n - 1,
       Math.floor(((ev.clientX - b.left) * (W / b.width) - P.l) / bw)));
     cross.setAttribute('x', P.l + j * bw);
     cross.setAttribute('opacity', 0.14);
-    tip.innerHTML = `<div class="th">cycle ${fmt(s.cycle[j] - r.interval)}-${fmt(s.cycle[j])}</div>` +
+    const c = s.cycle[z0 + j];
+    tip.innerHTML = `<div class="th">cycle ${fmt(c - r.interval)}-${fmt(c)}</div>` +
       rows.map(row => `<div class="r"><span><b style="background:${row.color}"></b>` +
                       `${row.label}</span><span>${f1(row.data[j])}%</span></div>`).join('');
     tip.style.opacity = 1;
@@ -807,6 +951,9 @@ function drawTimeline() {
   svg.addEventListener('mouseleave', () => {
     tip.style.opacity = 0; cross.setAttribute('opacity', 0);
   });
+
+  zoomable(svg, W, P, plotW, N,
+           px => z0 + (px - P.l) / plotW * (co.n - 1));
 }
 
 function drawBW() {
@@ -819,22 +966,28 @@ function drawBW() {
       `${fmt(r.interval)}-cycle sampling window. Run totals are above.`;
     return;
   }
-  note.textContent = peak ? `Aggregate across ${r.config.dram_channels} channels; ` +
-    `peak is ${f1(peak)} GB/s.` : 'Aggregate across all channels.';
-  const xmax = s.cycle[s.cycle.length - 1];
-  const ymax = Math.max(peak || 0, ...s.gbps) || 1;
-  const sc = axes(svg, W, H, P, xmax, ymax, ' GB/s', 'cycle');
+  const N = s.cycle.length;
+  const [z0, z1] = zoomWindow(N);
+  const cyc = s.cycle.slice(z0, z1 + 1), gbps = s.gbps.slice(z0, z1 + 1);
+  note.textContent = (peak ? `Aggregate across ${r.config.dram_channels} channels; ` +
+    `peak is ${f1(peak)} GB/s.` : 'Aggregate across all channels.') +
+    (z1 - z0 + 1 < N ? ' Follows the zoom on Utilization over time, so the two line up.' : '');
+  const xmin = Math.max(0, cyc[0] - r.interval), xmax = cyc[cyc.length - 1];
+  const ymax = Math.max(peak || 0, ...gbps) || 1;
+  const sc = axes(svg, W, H, P, xmax, ymax, ' GB/s', 'cycle', true, xmin);
   if (peak) {
     el(svg, 'line', {x1: P.l, x2: W - P.r, y1: sc.y(peak), y2: sc.y(peak),
                      stroke: css('--muted'), 'stroke-width': 1, 'stroke-dasharray': '4 4'});
     el(svg, 'text', {x: W - P.r + 8, y: sc.y(peak) + 4}, 'peak');
   }
-  const row = {label: 'DRAM bandwidth', color: css('--s4'), data: s.gbps};
-  const d = s.gbps.map((v, i) => `${i ? 'L' : 'M'}${sc.x(s.cycle[i]).toFixed(1)} ` +
-                                 `${sc.y(v).toFixed(1)}`).join(' ');
+  const row = {label: 'DRAM bandwidth', color: css('--s4'), data: gbps};
+  const d = gbps.map((v, i) => `${i ? 'L' : 'M'}${sc.x(cyc[i]).toFixed(1)} ` +
+                               `${sc.y(v).toFixed(1)}`).join(' ');
   el(svg, 'path', {d, fill: 'none', stroke: row.color, 'stroke-width': 2,
                    'stroke-linejoin': 'round', 'stroke-linecap': 'round'});
-  hover(svg, W, H, P, sc, s.cycle, [row], ' GB/s');
+  hover(svg, W, H, P, sc, cyc, [row], ' GB/s');
+  zoomable(svg, W, P, W - P.l - P.r, N,
+           px => z0 + (px - P.l) / (W - P.l - P.r) * (cyc.length - 1));
 }
 
 function drawChannels() {
@@ -896,6 +1049,7 @@ function drawTable() {
     `<td>${fmt(r.comp)}</td>` +
     `<td>${fmt(r.movin)}</td><td>${fmt(r.movout)}</td></tr>`).join('');
   tb.querySelectorAll('tr').forEach(tr => tr.addEventListener('click', () => {
+    if (+tr.dataset.i !== sel) zoom = null;   // a new kernel is a new time axis
     sel = +tr.dataset.i; drawAll();
   }));
 }
@@ -1019,6 +1173,31 @@ function drawAll() {
   }
   drawKPIs(); drawTimeline(); drawBW(); drawChannels(); drawTable(); drawCompile();
 }
+
+function samplesOf() { return (RUNS[sel] && RUNS[sel].series.cycle.length) || 0; }
+
+document.getElementById('z-in').addEventListener('click', () => zoomBy(1 / 1.6, null, samplesOf()));
+document.getElementById('z-out').addEventListener('click', () => zoomBy(1.6, null, samplesOf()));
+document.getElementById('z-reset').addEventListener('click', () => {
+  zoom = null; drawTimeline(); drawBW();
+});
+
+// Arrows pan by a tenth of the window, Home/End jump to either end. Ignored
+// while a text field has focus, and while nothing is zoomed there is no pan.
+document.addEventListener('keydown', ev => {
+  if (!zoom || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+  const n = samplesOf();
+  if (!n) return;
+  const [a, b] = zoomWindow(n), step = Math.max(1, Math.round((b - a + 1) / 10));
+  if (ev.key === 'ArrowRight') panBy(step, n);
+  else if (ev.key === 'ArrowLeft') panBy(-step, n);
+  else if (ev.key === 'Home') setZoom(0, b - a, n);
+  else if (ev.key === 'End') setZoom(n - 1 - (b - a), n - 1, n);
+  else if (ev.key === 'Escape') { zoom = null; drawTimeline(); drawBW(); }
+  else return;
+  ev.preventDefault();
+});
 
 document.querySelectorAll('#tbl th').forEach(th => th.addEventListener('click', () => {
   const k = th.dataset.k;
