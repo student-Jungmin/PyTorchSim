@@ -8,6 +8,8 @@ VENDORED = {"promote_to_tensor", "is_floating",
             "minimum", "maximum", "min2", "max2", "any",
             "welford_reduce", "welford_combine", "welford",
             "sort_with_index", "select_one",
+            "minimum_with_index", "maximum_with_index",
+            "min_with_index", "max_with_index",
             "div_floor_integer", "remainder_integer"}
 
 
@@ -215,6 +217,38 @@ def _tnpu_remainder_integer(a, b):
                     remainder + b, remainder)
 
 @triton.jit
+def _tnpu_maximum_with_index(a_value, a_index, b_value, b_index):
+    mask = a_value > b_value
+    equal = a_value == b_value
+    if _tnpu_is_floating(a_value):
+        a_isnan = a_value != a_value
+        b_isnan = b_value != b_value
+        mask |= a_isnan & (not b_isnan)
+        equal |= a_isnan & b_isnan
+    mask |= equal & (a_index < b_index)
+    return tl.where(mask, a_value, b_value), tl.where(mask, a_index, b_index)
+
+@triton.jit
+def _tnpu_minimum_with_index(a_value, a_index, b_value, b_index):
+    mask = a_value < b_value
+    equal = a_value == b_value
+    if _tnpu_is_floating(a_value):
+        a_isnan = a_value != a_value
+        b_isnan = b_value != b_value
+        mask |= a_isnan & (not b_isnan)
+        equal |= a_isnan & b_isnan
+    mask |= equal & (a_index < b_index)
+    return tl.where(mask, a_value, b_value), tl.where(mask, a_index, b_index)
+
+@triton.jit
+def _tnpu_max_with_index(value, index, dim):
+    return tl.reduce((value, index), dim, _tnpu_maximum_with_index)
+
+@triton.jit
+def _tnpu_min_with_index(value, index, dim):
+    return tl.reduce((value, index), dim, _tnpu_minimum_with_index)
+
+@triton.jit
 def _tnpu_select_one(x, mask, dim, keep_dims=False):
     idtype = tl.core.get_int_dtype(x.dtype.primitive_bitwidth, signed=False)
     ix = x.to(idtype, bitcast=True)
@@ -234,6 +268,10 @@ triton_helpers.min2 = _tnpu_min2
 triton_helpers.max2 = _tnpu_max2
 triton_helpers.sort_with_index = _tnpu_sort_with_index
 triton_helpers.select_one = _tnpu_select_one
+triton_helpers.maximum_with_index = _tnpu_maximum_with_index
+triton_helpers.minimum_with_index = _tnpu_minimum_with_index
+triton_helpers.max_with_index = _tnpu_max_with_index
+triton_helpers.min_with_index = _tnpu_min_with_index
 triton_helpers.div_floor_integer = _tnpu_div_floor_integer
 triton_helpers.remainder_integer = _tnpu_remainder_integer
 '''
