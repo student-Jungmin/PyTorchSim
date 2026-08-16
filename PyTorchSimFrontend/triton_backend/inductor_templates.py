@@ -65,7 +65,7 @@ def _gemm_tiles(m, n, k, dtype_size):
     tiles = HardwareInfo().gemm_tile_candidates(
         _round_up_pow2(int(m)), _round_up_pow2(int(n)), _round_up_pow2(int(k)),
         precision_bytes=int(dtype_size),
-        n_prologue_node=2, n_prologue_extra_read=2,
+        n_prologue_node=2, n_prologue_extra_read=4, n_extra_node=2,
         budget_divisor=2)
 
     out = []
