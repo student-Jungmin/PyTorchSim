@@ -11,7 +11,7 @@ from torch._inductor.select_algorithm import ExternKernelChoice
 from torch._inductor.codecache import get_hash
 from AsmParser.tog_generator import tog_generator
 from torch._inductor.codecache import write
-from PyTorchSimFrontend.extension_codecache import get_write_path
+from PyTorchSimFrontend.extension_config import get_write_path
 from PyTorchSimFrontend import extension_config
 from Simulator.simulator import TOGSimulator, TORCH_TO_NUMPY
 

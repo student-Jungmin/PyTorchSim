@@ -330,10 +330,10 @@ CI image, which is why the sweep belongs in CI.
 
 ### The runner
 
-`scripts/ci/triton_route_sweep.py`. `TORCHSIM_TRITON_CODEGEN` is read once at
-device registration (`PyTorchSimDevice/torch_openreg/__init__.py:30`), so **no
-test file needed to change** — all 69 were already tests of this route. Only a
-runner was missing.
+`scripts/ci/triton_route_sweep.py`. The codegen route is fixed at device
+registration (`PyTorchSimDevice/torch_openreg/__init__.py`), so **no test file
+needed to change** — all 69 were already tests of this route. Only a runner was
+missing.
 
 Three outputs:
 

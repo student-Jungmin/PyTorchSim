@@ -145,7 +145,7 @@ def _flatten_add(expr):
 
 def _neg_coeff_dim(summand):
     """If `summand` is `dim * c` with a negative constant `c`, return that dim's
-    position; else None. lower_to_vcix tags each accumulation (reduction) loop var
+    position; else None. triton-npu tags each accumulation (reduction) loop var
     with coefficient -1 in the togsim.wait tag index -- a SENTINEL marking the
     reduction axis, not an arithmetic offset (legacy TileGraphParser skips stride
     -1 for the same reason)."""
@@ -165,14 +165,14 @@ def _strip_accum_terms(ctx, tag_index, anchor_op):
     dropped, so a memory_barrier waits on the SAME subtile slot its async load
     wrote.
 
-    The wait tag index built by lower_to_vcix carries `-acc_iv` for each reduction
-    loop var; the matching load index (dma_fine_grained) is subtile-only. Without
+    The wait tag index triton-npu builds carries `-acc_iv` for each reduction
+    loop var; the matching load index is subtile-only. Without
     this, at reduction iteration > 0 the producer EVALUATES `-acc_iv` to a negative
     slot, so the recorded barrier slot diverges from the load slot and the runtime
     tag pairing fails (TOGSim aborts with "Key does not exist in ... tag table").
     Dropping the -1 terms mirrors legacy TileGraphParser.cc, which skips stride -1
     and routes the reduction axis to a separate accum tag component; here the
-    per-iteration tag alloc (dma_fine_grained) already separates the reductions, so
+    per-iteration tag alloc already separates the reductions, so
     the barrier only needs the subtile slot.
 
     Falls through (returns `tag_index` unchanged) for anything that is not an
@@ -428,7 +428,7 @@ def _emit_computes(ctx, builder, bufs):
 def _transfer_fields(op):
     """Decode a `togsim.transfer`'s fixed operands by position.
 
-    Layout (see mlir_codegen_backend.emit_transfer / lower_transfer_to_gemmini):
+    Layout (as triton-npu's transfer lowering emits it):
         operands: dram, dram_idx, sram, sram_idx, tag, tag_idx[, dma_type], vst
                   [, offset_spad][, mask clamps]
     Unlike the old `memref.dma_start`, dram/sram are FIXED (not direction-swapped):
@@ -442,7 +442,7 @@ def _transfer_fields(op):
     were decoded here too; nothing read either, and under tnpu's layout
     operands[7] does not exist on a plain transfer, so they are gone rather than
     wrong. The offset's owning `memref.get_global` carries the offset symbol name
-    in its "name" attribute (matching lower_transfer_to_gemmini's offset_sym
+    in its "name" attribute (matching triton-npu's offset_sym
     derivation)."""
     from .build_tog import transfer_index_operand
     operands = list(op.operands)
@@ -472,7 +472,7 @@ def _emit_one_dma(ctx, op, node, builder, bufs, tags):
     write_bufs = [] if node.is_write else [spad_id]
     if f["offset"] is not None:  # gather/scatter reads the offset spad -> dep on its build
         # the offset symbol name lives on the offset operand's owning get_global
-        # ("name" attr), the same place lower_transfer_to_gemmini reads it.
+        # ("name" attr), the same place triton-npu reads it.
         off_owner = f["offset"].owner
         off_sym = str(off_owner.attributes["name"]).strip('@" ')
         off_id = bufs.of(off_sym)
@@ -494,7 +494,7 @@ def _emit_one_wait(ctx, op, tags):
     if binding is None:
         return False
     tag_id, buf = binding
-    # honor lower_to_vcix's -1 accumulation marker: strip the reduction terms so
+    # honor the -1 accumulation marker: strip the reduction terms so
     # the barrier slot equals the subtile slot the paired async load wrote.
     tag_index = _strip_accum_terms(ctx, tag_index, op)
     _emit_memory_bar(ctx, op, tag_id, tag_index, [buf])

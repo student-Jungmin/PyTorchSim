@@ -18,9 +18,8 @@ torch.utils.generate_methods_for_privateuse1_backend(for_storage=True)
 
 sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
 import PyTorchSimFrontend.extension_config  # noqa: F401
-from PyTorchSimFrontend import extension_config as _extension_config
-# Above the route branch because it is not about the route: what an op falls
-# back TO is the CPU, whichever backend emits the kernels around it.
+# What an op falls back TO is the CPU, and Inductor refuses to generate code for
+# complex operators, so neither of these is about codegen.
 import PyTorchSimFrontend.extension_decomposition  # noqa: F401
 from PyTorchSimFrontend import extension_counting_sort as _counting_sort
 from PyTorchSimFrontend import extension_grouped_mm as _grouped_mm
@@ -29,32 +28,18 @@ from PyTorchSimFrontend import extension_topk as _topk
 _counting_sort.install()
 _grouped_mm.install()
 _topk.install()
-# Same reason, one level up: Inductor refuses to generate code for complex
-# operators whichever backend is registered, so the rewrite is not the route's.
 import PyTorchSimFrontend.extension_complex_to_real  # noqa: F401
-from PyTorchSimFrontend.mlir.mlir_codegen_backend import ExtensionWrapperCodegen
 
-# Two mutually exclusive codegen routes for `npu`, chosen here because Inductor
-# registers a backend per device, once.
-#   MLIR   (default)  hand-written MLIR emission, PyTorchSimFrontend/mlir
-#   Triton (opt-in)   Inductor's own Triton codegen + the triton-npu passes,
-#                     TORCHSIM_TRITON_CODEGEN=1. WIP; see
-#                     PyTorchSimFrontend/triton_backend/README.md
-if _extension_config.CONFIG_TRITON_CODEGEN:
-    from PyTorchSimFrontend.triton_backend import (
-        TritonNPUScheduling, TritonNPUWrapperCodegen)
-    torch._inductor.codegen.common.register_backend_for_device(
-        "npu",
-        lambda scheduling: TritonNPUScheduling(scheduling),
-        TritonNPUWrapperCodegen
-    )
-else:
-    from PyTorchSimFrontend.mlir.mlir_scheduling import MLIRScheduling
-    torch._inductor.codegen.common.register_backend_for_device(
-        "npu",
-        lambda scheduling: MLIRScheduling(scheduling),
-        ExtensionWrapperCodegen
-    )
+# The `npu` codegen route: Inductor's own Triton codegen, lowered by the
+# triton-npu passes. Registered here because Inductor registers a backend per
+# device, once. See PyTorchSimFrontend/triton_backend/README.md.
+from PyTorchSimFrontend.triton_backend import (
+    TritonNPUScheduling, TritonNPUWrapperCodegen)
+torch._inductor.codegen.common.register_backend_for_device(
+    "npu",
+    lambda scheduling: TritonNPUScheduling(scheduling),
+    TritonNPUWrapperCodegen
+)
 
 torch_openreg.openreg.init()
 sys.modules['torch.npu'] = torch_openreg.openreg

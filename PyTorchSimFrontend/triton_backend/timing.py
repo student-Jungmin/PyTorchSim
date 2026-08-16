@@ -9,7 +9,7 @@ import os
 
 from PyTorchSimFrontend import extension_config
 
-from . import launch
+from . import breakdown, launch
 
 logger = extension_config.setup_logger()
 
@@ -34,7 +34,7 @@ def measure_tile_cycles(workdir, meta):
     build_tog's sample mode makes every loop a single trip, tnpu lowers it and
     gem5 runs it. None on any failure; the caller uses the placeholder table.
     """
-    from PyTorchSimFrontend.mlir.passes.build_tog import run_tog
+    from PyTorchSimFrontend.tog.build_tog import run_tog
 
     from . import tnpu_bridge
     from .tnpu_bridge import stage_artifact
@@ -45,20 +45,25 @@ def measure_tile_cycles(workdir, meta):
         logger.warning("[Gem5] %s not found; cannot sample cycles", spec)
         return None
 
-    run_tog(stage_artifact(workdir, "custom.mlir"),
-            os.path.join(workdir, "tog_sample.py"),
-            os.path.join(workdir, SAMPLE_MLIR), sample_mode=True)
+    with breakdown.span(breakdown.GEM5_SAMPLE, kernel_name):
+        run_tog(stage_artifact(workdir, "custom.mlir"),
+                os.path.join(workdir, "tog_sample.py"),
+                os.path.join(workdir, SAMPLE_MLIR), sample_mode=True)
 
-    rc, output = tnpu_bridge.run_module("tnpu.cycle", spec, workdir)
+    with breakdown.span(breakdown.GEM5_BUILD, kernel_name):
+        rc, output = tnpu_bridge.run_module("tnpu.cycle", spec, workdir)
+    breakdown.ingest_tnpu(workdir, kernel_name, kind="cycle",
+                          name="timing-cycle.json")
     if rc != 0:
         logger.warning("[Gem5] cycle binary build failed:\n%s", output[-2000:])
         return None
 
     from Simulator.simulator import CycleSimulator
     try:
-        return CycleSimulator().compile_and_simulate(
-            os.path.join(workdir, CYCLE_BIN), int(extension_config.vpu_num_lanes),
-            silent_mode=True)
+        with breakdown.span(breakdown.GEM5_RUN, kernel_name):
+            return CycleSimulator().compile_and_simulate(
+                os.path.join(workdir, CYCLE_BIN),
+                int(extension_config.vpu_num_lanes), silent_mode=True)
     except Exception as e:
         logger.warning("[Gem5] sampling failed: %s", e)
         return None
@@ -83,7 +88,7 @@ def work_item_for(meta):
     A TEMPLATE'S AXIS COUNT IS NOT IN ITS NUMELS: counting from them gives 1 and
     leaves a pid argument unaccounted. Only the COUNT is compiled in.
     """
-    from PyTorchSimFrontend.mlir.passes.lower_to_emitc import WorkItem
+    from PyTorchSimFrontend.tog.lower_to_emitc import WorkItem
 
     n_tensor, n_scalar = _runtime_arg_layout(meta)
     pid_base = n_tensor + n_scalar + 3
@@ -141,10 +146,10 @@ def emit_trace(workdir, meta):
 
     Returns the number of compute tiles the cycle table covers.
     """
-    from PyTorchSimFrontend.mlir.passes import build_skeleton as bs
-    from PyTorchSimFrontend.mlir.passes import cycle_table as ct
-    from PyTorchSimFrontend.mlir.passes import lower_to_emitc as l2e
-    from PyTorchSimFrontend.mlir.passes.build_tog import ir
+    from PyTorchSimFrontend.tog import build_skeleton as bs
+    from PyTorchSimFrontend.tog import cycle_table as ct
+    from PyTorchSimFrontend.tog import lower_to_emitc as l2e
+    from PyTorchSimFrontend.tog.build_tog import ir
 
     from .tnpu_bridge import stage_artifact
     postvcix = stage_artifact(workdir, "custom.mlir")

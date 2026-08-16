@@ -1,11 +1,8 @@
 """Decompositions that follow from what the DEVICE can do, not from codegen.
 
-Both routes register a codegen backend for `npu` and only one of them is live in
-a process (torch_openreg/__init__.py picks by TORCHSIM_TRITON_CODEGEN), so a
-decomposition that belongs to one of them lives beside it -- mlir/ has its own.
-This module is for the other kind: an op that has to be rewritten because of
-what running on this device MEANS, which is the same fact whichever backend
-emits the kernels.
+A decomposition that belongs to the codegen backend lives beside it, in
+triton_backend/. This module is for the other kind: an op that has to be
+rewritten because of what running on this device MEANS.
 
 An op with no `npu` kernel falls back, and the fallback runs on the CPU. So the
 set of ops this device supports is ATen's CPU set, and where that set is

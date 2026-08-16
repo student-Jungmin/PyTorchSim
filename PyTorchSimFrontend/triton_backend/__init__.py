@@ -1,11 +1,11 @@
-"""The Triton codegen route: Inductor's Triton backend + the tnpu passes.
+"""The `npu` codegen route: Inductor's Triton backend + the tnpu passes.
 
     Inductor -> TritonNPUScheduling.define_kernel   (scheduling.py)
-             -> TritonNPUCodeCache.load             (codecache.py, kernel_spec.py)
+             -> triton_npu_compile                  (codecache.py, kernel_spec.py)
              -> triton-npu, in a subprocess         (tnpu_bridge.py)
              -> Spike (functional.py) / TOGSim (timing.py)
 
-Chosen at device registration by TORCHSIM_TRITON_CODEGEN=1; default OFF.
+Registered for `npu` at device import; see PyTorchSimDevice/torch_openreg.
 """
 
 from . import _triton_compat, inductor_templates

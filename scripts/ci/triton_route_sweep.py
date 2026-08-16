@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Run the existing test suite through the Triton codegen route.
 
-TORCHSIM_TRITON_CODEGEN is read at device registration, so no test needs to know
-which route it is on. Produces a gate (triton_route_passing.txt), a report
-bucketed by cause and stage, and per-failure artifacts for reporting upstream.
+Produces a gate (triton_route_passing.txt), a report bucketed by cause and
+stage, and per-failure artifacts for reporting upstream.
 
   python scripts/ci/triton_route_sweep.py                  # the allowlist, gating
   python scripts/ci/triton_route_sweep.py --all            # every test, reports
@@ -139,7 +138,7 @@ def run_one(test, timeout, artifacts, scratch):
     dump = os.path.join(scratch, test.replace("/", "_").removesuffix(".py"))
     shutil.rmtree(dump, ignore_errors=True)
     os.makedirs(dump, exist_ok=True)
-    env = dict(os.environ, TORCHSIM_TRITON_CODEGEN="1", TORCHSIM_DUMP_PATH=dump)
+    env = dict(os.environ, TORCHSIM_DUMP_PATH=dump)
     # WHAT THIS SWEEP CHECKS IS VALUES, so it does not pay for cycles. Every test
     # here compares its output against a torch reference and none of them looks
     # at a cycle count, but the default config has pytorchsim_timing_mode on, so

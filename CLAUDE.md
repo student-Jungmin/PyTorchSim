@@ -66,14 +66,14 @@ report next to the number it produced — never folded into a pass.
 
 | Path | Purpose |
 |---|---|
-| `PyTorchSimFrontend/` | Python compiler stack (Inductor backend). `extension_config.py` is the central settings reader; `mlir/` contains MLIR templates per op (gemm, conv, bmm, sdpa, sort, cat, maxpool, …) |
+| `PyTorchSimFrontend/` | Python compiler stack (Inductor backend). `extension_config.py` is the central settings reader; `triton_backend/` is the `npu` codegen route (Inductor's Triton backend + the triton-npu passes); `tog/` turns the MLIR triton-npu emits into TOGSim's trace |
 | `PyTorchSimDevice/` | C++ PyTorch backend registering the `npu` device. Built as a pip-installed package via `setup.py`. Based on `torch_openreg` (PrivateUse1 example). Produces `_C.cpython-*.so` |
-| `Simulator/simulator.py` | Python drivers: `FunctionalSimulator` (Spike), `CycleSimulator` (Gem5), `TOGSimulator` (the cycle-accurate one + multi-tenant context manager) |
+| `Simulator/simulator.py` | Python drivers: `CycleSimulator` (Gem5), `TOGSimulator` (the cycle-accurate one + multi-tenant context manager). Spike is driven by `triton_backend/functional.py` |
 | `Scheduler/scheduler.py` | Poisson arrival generator + scheduling utilities for multi-tenant runs |
 | `TOGSim/` | C++ TOGSim source. `src/Simulator.cc`, `Core.cc`, `Dram.cc`, `Interconnect.cc`, `L2Cache.cc`, `Tile.cc`, `TileGraph.cc` are the core models. Externals: ramulator2, booksim, stonneCore, onnx, protobuf, spdlog, yaml-cpp |
 | `AsmParser/` | `tog_generator.py`, `onnx_utility.py` — legacy ONNX TOG generation; now used only by the STONNE sparse path (the main path emits a C++ `trace.so` instead) |
 | `configs/` | TOGSim hardware configs (YAML). The default is `systolic_ws_128x128_c1_simple_noc_tpuv3.yml`. Naming pattern: `systolic_ws_<size>_c<cores>_<noc>_<target>.yml` |
-| `tests/` | Op- and model-level tests organized under `ops/<family>/` (elementwise, reduce, gemm, conv, attention, view, sort, sparsity, misc, fusion), `models/<name>/` (Llama, Mixtral8x7B, DeepSeek, Diffusion, MoE, MLP, MobileNet, Yolov5) plus single-file model tests (test_resnet, test_transformer, test_vit, test_mlp, test_single_perceptron), and `system/` (scheduler, eager, hetro, stonne, vectorops). Shared helper: `tests/_utils.py` |
+| `tests/` | Op- and model-level tests organized under `ops/<family>/` (elementwise, reduce, gemm, conv, attention, view, sort, sparsity, misc, fusion), `models/<name>/` (Llama, Mixtral8x7B, DeepSeek, Diffusion, MoE, MLP, MobileNet, Yolov5) plus single-file model tests (test_resnet, test_transformer, test_vit, test_mlp, test_single_perceptron), and `system/` (scheduler, eager, hetro, stonne, vectorops). Shared helper: `tests/_utils.py`. **Which of them pass is `scripts/ci/triton_route_passing.txt`**; the rest are known gaps, swept and reported by `scripts/ci/triton_route_sweep.py --all` |
 | `experiments/artifact/` | Paper reproduction scripts (`cycle_validation/run_cycle.sh`, `speedup/run_speedup.sh`) |
 | `scripts/` | One-off experiment runners (CompilerOpt, ILS, batch, chiplet, sparsity, stonne, end2end). `build_from_source.sh` builds gem5/llvm/spike |
 | `gem5_script/` | gem5 wrapper scripts called by `CycleSimulator` |
@@ -95,20 +95,19 @@ python tests/system/test_eager.py      # eager-fallback registration
 
 Run a model from `tests/models/Llama/`, `tests/models/DeepSeek/`, etc. similarly.
 
-**CI coverage:** the GitHub Actions workflow `.github/workflows/pytorchsim_test.yml` runs an **explicit allowlist** of `tests/*.py` files (~40 jobs, one Docker container per test). Adding a new file under `tests/` does *not* automatically gate PRs — register it in `pytorchsim_test.yml` if you want CI to exercise it. Conversely, files like `tests/ops/attention/test_gqa.py`, `tests/ops/attention/test_gqa_decode.py`, and `tests/system/test_eager.py` exist in the repo but are *not* in CI, so local validation is the only safety net for them.
+**CI coverage:** `.github/workflows/docker-image.yml` is the PR gate. It builds the base image, then the triton-npu toolchain layer (`Dockerfile.tnpu`, pinned by `thirdparty/triton-npu.json`), then the app image, and calls `.github/workflows/pytorchsim_test.yml` once per hardware config. That workflow is a **matrix over `scripts/ci/triton_route_passing.txt`**, one Docker container per test — so adding a test file gates PRs only once it is in that allowlist. Regenerate the allowlist with `python scripts/ci/triton_route_sweep.py --all --update-allowlist` and mirror it into the workflow.
 
-The Triton codegen route has its own workflow, `.github/workflows/triton_npu.yml`, kept separate because its toolchain layer is ~1.8 GiB that no other job needs. It builds `torchsim_tnpu_base` (pinned by `thirdparty/triton-npu.json` + `Dockerfile.tnpu`) and needs `secrets.TNPU_TOKEN` plus a toolchain release on the private `PSAL-POSTECH/triton-npu`; see `PyTorchSimFrontend/triton_backend/README.md`.
+`.github/workflows/triton_npu.yml` runs when the toolchain pin itself moves: triton-npu's own kernels end to end, plus the full coverage sweep (allowlist *and* the rest, reported not gated). Both workflows need `secrets.TNPU_TOKEN` — `PSAL-POSTECH/triton-npu` is private. See `PyTorchSimFrontend/triton_backend/README.md`.
 
 **For fast iteration** (skip functional check):
 ```bash
 export pytorchsim_functional_mode=False   # skips Spike
 ```
 
-**To dump intermediate IR while debugging:**
-```bash
-export TORCHSIM_DUMP_MLIR_IR=1
-export TORCHSIM_DUMP_LLVM_IR=1
-```
+**To read the IR a kernel went through:** every stage is left in
+`$TORCHSIM_DUMP_PATH/triton_<hash>/` — `01-ttir.mlir`, `02-ttshared.mlir`,
+`03-adapted.mlir`, `04-custom.mlir`, then the ELF. The stage a failure did not
+reach is the one that owns it.
 
 **To find which op a wrong result first diverges at** (per-kernel CPU cross-check;
 sub-option of functional mode). Set `pytorchsim_functional_verify_per_kernel: 1`
@@ -128,11 +127,10 @@ Read in `PyTorchSimFrontend/extension_config.py`:
 | `TORCHSIM_LLVM_PATH` | `/usr/bin` | LLVM tool dir |
 | `TORCHSIM_LOG_PATH` | `$TORCHSIM_DIR/togsim_results` | where TOGSim logs go |
 | `TORCHSIM_DUMP_PATH` | `$TORCHSIM_DIR` | misc dumps |
-| `TORCHSIM_TLS_MODE` | `1` | TLS vs ILS mode |
-| `TORCHSIM_USE_TIMING_POOLING` | `0` | lightweight pooling timing |
 | `TORCHSIM_DEBUG_MODE` | `0` | extra debug |
-| `TORCHSIM_DUMP_MLIR_IR` | `0` | dump MLIR |
-| `TORCHSIM_DUMP_LLVM_IR` | `0` | dump LLVM IR |
+| `TORCHSIM_BREAKDOWN` | `0` | `1` prints where the run's wall clock went (tnpu compile per stage/pass, Spike, gem5, TOGSim) at exit, and writes `breakdown.json` into the dump path |
+| `TNPU_DIR` | `$TORCHSIM_DIR/triton-npu` | triton-npu checkout (stages 1-5) |
+| `TNPU_PYTHON` | `sys.executable` | interpreter tnpu runs under (it needs LLVM 23's MLIR bindings, this process holds LLVM 20's) |
 | `SRAM_BUFFER_PLAN_PATH` | unset | L2/CMEM persistent-cache tensor plan (Python file with `plan = {...}`) |
 | `TOGSIM_DEBUG_LEVEL` | unset | passed to TOGSim `--log_level` |
 
@@ -150,9 +148,6 @@ Located under `configs/*.yml`:
 - `l2d_type` (e.g., `datacache`), `l2d_config` (AccelSim-format cache config string)
 - `pytorchsim_functional_mode` (Spike on/off), `pytorchsim_timing_mode`
 - `pytorchsim_functional_verify_per_kernel` (debug: per-kernel CPU cross-check)
-- `codegen_mapping_strategy`: `heuristic` | `autotune` | `external-then-heuristic` | `external-then-autotune`
-- `codegen_external_mapping_file` (key `"M_N_K"` → `{TILE_M, TILE_K, TILE_N}` JSON)
-- `codegen_compiler_optimization`: `"all"` | `"none"` | a list from `{fusion, reduction_epilogue, reduction_reduction, prologue, single_batch_conv, multi_tile_conv, subtile}`
 - `num_partition` + `partition: {core_0: 0, core_1: 1}` for multi-tenant `stream_index` mapping
 
 ## Multi-tenant API (Simulator/simulator.py + scheduler)
@@ -179,10 +174,10 @@ Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11
 
 ## Where to look for X
 
-- **Adding a new op (Inductor lowering):** `PyTorchSimFrontend/mlir/mlir_ops.py`, `mlir_lowering.py`, plus a new `mlir_<op>_template.py` if it needs its own MLIR template. Decomposition rules: `mlir_decomposition.py`. Scheduling: `mlir_scheduling.py`. Autotune: `mlir_autotune.py`.
+- **Adding a new op:** nothing here, usually — Inductor's own Triton lowerings emit the kernel and `triton-npu` lowers it. What lives here is the device-level rewrites: `extension_decomposition.py` (ops with no `npu` kernel), `extension_complex_to_real.py`. GEMM/BMM tile selection: `triton_backend/inductor_templates.py` + `triton_backend/hardware.py`. Kernel source fixups before tnpu sees them: `triton_backend/source_rewrite.py`.
 - **Adding a PyTorch device op:** `PyTorchSimDevice/csrc/aten/native/*` (Minimal/Extra split mirrors `torch_openreg`).
 - **TOGSim hardware model changes:** `TOGSim/src/{Core,Dram,Interconnect,L2Cache,Tile,TileGraph}.cc` + matching `include/*.h`.
-- **TOG generation:** the main path compiles each kernel to a C++ **`trace.so`** (`mlir/passes/build_skeleton.py` + `lower_to_emitc.py`) plus a `trace_cycles.tsv` cycle table, which TOGSim turns into a TileGraph via `trace_to_tilegraph`. `AsmParser/tog_generator.py` + `onnx_utility.py` (the legacy ONNX TOG) remain only for the **STONNE sparse path** (`extension_op.py`).
+- **TOG generation:** each kernel compiles to a C++ **`trace.so`** (`PyTorchSimFrontend/tog/build_skeleton.py` + `lower_to_emitc.py`) plus a `trace_cycles.tsv` cycle table, driven from `triton_backend/timing.py`; TOGSim turns them into a TileGraph via `trace_to_tilegraph`. `AsmParser/tog_generator.py` + `onnx_utility.py` (the legacy ONNX TOG) remain only for the **STONNE sparse path** (`extension_op.py`).
 - **Eager fallback registration:** `torch.npu.register_eager_to_compile([...])` — see `tests/system/test_eager.py`.
 - **Per-run results:** `togsim_results/<YYYYMMDD_HHMMSS_<hash>>.log` (stats) and `.trace` (instruction trace). The path is also printed at the end of every run.
 - **Wrapper codegen path:** printed as `Wrapper Codegen Path = /tmp/torchinductor_<user>/<hash>/...py` — useful for inspecting generated kernel code and tensor names for `SRAM_BUFFER_PLAN_PATH`.
@@ -196,7 +191,7 @@ Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11
 - Multi-tenant runs **must** use the `with TOGSimulator(...)` context manager — otherwise compile-time `TOGSIM_CONFIG` and runtime config can diverge.
 - `pytorchsim_functional_mode` exists as both an **env var** and a **YAML key**; the env var path is via `extension_config.py` while the YAML key is read inside the same module. They should agree.
 - "No CUDA runtime is found" warnings on `import torch` are expected — this is a CPU + simulated-NPU environment, not real CUDA.
-- **Codegen changes are sticky across runs because of caches.** When iterating on `PyTorchSimFrontend/mlir/*` or any code that affects emitted MLIR/wrapper code, clear `$TORCHSIM_DUMP_PATH` (default `$TORCHSIM_DIR/outputs/`) before re-running — it holds both Inductor's compile cache (`.torchinductor/`, set via `TORCHINDUCTOR_CACHE_DIR` inside `extension_config.get_dump_path()`) and the per-source-hash MLIR/wrapper dirs (`<hash>/`) keyed by `extension_codecache.get_write_path(src_code)`. Otherwise a buggy graph compiled before your fix is replayed verbatim. `togsim_results/` (TOGSim run logs) is cosmetic and not part of the codegen replay path. For parallel worktrees see `docs/worktrees.md`.
+- **Codegen changes are sticky across runs because of caches.** When iterating on `PyTorchSimFrontend/triton_backend/*`, `PyTorchSimFrontend/tog/*` or triton-npu, clear `$TORCHSIM_DUMP_PATH` (default `$TORCHSIM_DIR/outputs/`) before re-running — it holds Inductor's compile cache (`.torchinductor/`, set via `TORCHINDUCTOR_CACHE_DIR` inside `extension_config.get_dump_path()`), the per-source wrapper dirs (`<hash>/`) keyed by `extension_config.get_write_path(src_code)`, and the per-kernel artifacts (`triton_<hash>/`). A tnpu-side fix does NOT move the Inductor hash, so `triton_*` is the one that most often needs deleting; `scripts/clear_codegen_cache.sh` does all three. Otherwise a buggy graph compiled before your fix is replayed verbatim. `togsim_results/` (TOGSim run logs) is cosmetic and not part of the codegen replay path. For parallel worktrees see `docs/worktrees.md`.
 
 ## Comments: a three-line docstring per function, and nothing else
 

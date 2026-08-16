@@ -1,20 +1,16 @@
-"""Drive the Triton codegen route as far as it currently goes.
+"""Drive the codegen route end to end and report where it stops.
 
-This route is WIP (see PyTorchSimFrontend/triton_backend/README.md). The test is
-written to report WHERE it stops rather than to assert success: the value right
-now is a reproducible statement of the next gap, not a pass/fail gate. Register
-it in .github/workflows/pytorchsim_test.yml only once the route runs end to end.
+Written to report WHERE it stops rather than to assert success: the value is a
+reproducible statement of the next gap. See
+PyTorchSimFrontend/triton_backend/README.md.
 
-    TORCHSIM_TRITON_CODEGEN=1 python tests/system/test_triton_codegen.py
+    python tests/system/test_triton_codegen.py
 """
 import os
 import sys
 import traceback
 
-# Must be set before torch_openreg registers the Inductor backend for `npu`.
-os.environ.setdefault("TORCHSIM_TRITON_CODEGEN", "1")
-
-import torch  # noqa: E402
+import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -38,8 +34,8 @@ def check_multi_axis_grid():
     only uses y/z when x would overflow, so a 1-D grid exercises just the first
     iteration of the nest.
     """
-    from PyTorchSimFrontend.mlir.passes import lower_to_emitc as l2e
-    from PyTorchSimFrontend.mlir.passes.build_tog import ir
+    from PyTorchSimFrontend.tog import lower_to_emitc as l2e
+    from PyTorchSimFrontend.tog.build_tog import ir
 
     src = """
     module {
@@ -141,7 +137,6 @@ def main():
           f"{'ok' if check_multi_axis_grid() else 'FAILED'}")
     print(f"reduction is right       = "
           f"{'ok' if check_reduction_is_right() else 'FAILED'}")
-    print(f"TORCHSIM_TRITON_CODEGEN = {extension_config.CONFIG_TRITON_CODEGEN}")
     print(f"TNPU_DIR                = {extension_config.CONFIG_TNPU_DIR}")
     ok, _out = tnpu_bridge.doctor()
     print(f"tnpu doctor             = {'ok' if ok else 'FAILED (see run.py doctor)'}")

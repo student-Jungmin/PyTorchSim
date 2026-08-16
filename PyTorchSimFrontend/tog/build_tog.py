@@ -49,7 +49,7 @@ _COMPUTE_TYPE_NAME = {
 # Unique-id counter (TOGNode::unique_id), incremented at construction. The C++
 # pass keeps this as a process global, but each kernel runs in its own mlir-opt
 # PROCESS so the counters never collide. Here the pass runs in-process and
-# extension_codecache compiles kernels CONCURRENTLY in a thread pool, so a single
+# Kernels may be compiled CONCURRENTLY in a thread pool, so a single
 # module global would race across threads (one kernel's reset/increments interleave
 # with another's, leaving nodes -- including the root -- with wrong ids). Keep the
 # counter thread-local so each compile thread has an isolated counter, mirroring
@@ -283,7 +283,7 @@ def transfer_index_operand(op):
 
     READ OFF THE OPERAND TYPES, NOT OFF A SLOT NUMBER, BECAUSE THERE ARE TWO
     PRODUCERS AND THEY DISAGREE. The MLIR route mints this op in
-    mlir_codegen_backend.emit_transfer with a `dma_type` operand at slot 6, so
+    triton-npu emits the transfer with a `dma_type` operand at slot 6, so
     its index lands at 8. triton-npu mints the same op without one -- it says
     what the `dma_kind` attribute already said, and tnpu deleted it (see that
     repo's passes/lib_transfer.py, which now names INDIRECT = 7) -- so its index
@@ -790,7 +790,7 @@ class TogBuilder:
         """Decode a `togsim.transfer` into the legacy src/dst view.
 
         togsim.transfer operand layout (mirrors build_skeleton._transfer_fields /
-        lower_transfer_to_gemmini):
+        triton-npu's transfer lowering):
             dram, dram_idx, sram, sram_idx, tag, tag_idx[, dma_type], vst[, offset]
         The DRAM side is always operand[0]/[1], the SRAM spad operand[2]/[3], the
         runtime tag slot operand[4] (tag memref) + operand[5] (tag_idx). The

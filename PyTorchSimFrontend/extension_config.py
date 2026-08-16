@@ -8,15 +8,7 @@ CONFIG_TORCHSIM_DIR = os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorch
 CONFIG_GEM5_PATH = os.environ.get('GEM5_PATH', default="/workspace/gem5/build/RISCV/gem5.opt")
 CONFIG_TORCHSIM_LLVM_PATH = os.environ.get('TORCHSIM_LLVM_PATH', default="/usr/bin")
 
-CONFIG_TORCHSIM_DUMP_MLIR_IR = int(os.environ.get("TORCHSIM_DUMP_MLIR_IR", default=False))
-CONFIG_TORCHSIM_DUMP_LLVM_IR = int(os.environ.get("TORCHSIM_DUMP_LLVM_IR", default=False))
-
-# --- Triton codegen route (WIP, opt-in) --------------------------------------
-# Replaces the hand-written MLIR emission in PyTorchSimFrontend/mlir with
-# Inductor's own Triton codegen, lowered to the NPU by the triton-npu (tnpu)
-# pass pipeline. OFF by default: the MLIR route stays the production path until
-# this one is complete. See PyTorchSimFrontend/triton_backend/README.md.
-CONFIG_TRITON_CODEGEN = bool(int(os.environ.get("TORCHSIM_TRITON_CODEGEN", default=0)))
+# --- Triton codegen route ----------------------------------------------------
 # The triton-npu checkout that owns stages 1-5 (ttir -> ttshared -> tnpu passes
 # -> RISC-V ELF). It is a SEPARATE repository, deliberately not vendored.
 CONFIG_TNPU_DIR = os.environ.get(
@@ -41,6 +33,16 @@ def get_dump_path():
     )
     os.environ["TORCHINDUCTOR_CACHE_DIR"] = os.path.join(dump_path, ".torchinductor")
     return dump_path
+
+
+def hash_prefix(hash_value):
+    return hash_value[1:12]
+
+
+def get_write_path(src_code):
+    """The per-source directory under the dump path that holds its artifacts."""
+    from torch._inductor.codecache import get_hash
+    return os.path.join(get_dump_path(), hash_prefix(get_hash(src_code.strip())))
 
 
 def __getattr__(name):
@@ -94,66 +96,6 @@ def __getattr__(name):
         return bool(config_yaml.get('pytorchsim_functional_verify_per_kernel', False)) \
             and bool(config_yaml['pytorchsim_functional_mode'])
 
-    # Mapping strategy
-    if name == "codegen_mapping_strategy":
-        codegen_mapping_strategy = config_yaml["codegen_mapping_strategy"]
-        assert(codegen_mapping_strategy in ["heuristic", "autotune", "external-then-heuristic", "external-then-autotune"]), "Invalid mapping strategy!"
-        return codegen_mapping_strategy
-
-    if name == "codegen_external_mapping_file":
-        return config_yaml["codegen_external_mapping_file"]
-
-    # Autotune config
-    if name == "codegen_autotune_max_retry":
-        return config_yaml["codegen_autotune_max_retry"]
-    if name == "codegen_autotune_template_topk":
-        return config_yaml["codegen_autotune_template_topk"]
-    # Added to first candidate wall time for other candidates' TOGSim subprocess timeout (>= 1 s).
-    if name == "codegen_autotune_wall_slack_sec":
-        v = float(config_yaml.get("codegen_autotune_wall_slack_sec", 15))
-        return max(1.0, v)
-
-    # Compiler Optimization
-    if name == "codegen_compiler_optimization":
-        opt_level = config_yaml["codegen_compiler_optimization"]
-        valid_opts = {
-            "fusion",
-            "reduction_epilogue",
-            "reduction_reduction",
-            "prologue",
-            "single_batch_conv",
-            "multi_tile_conv",
-            "subtile"
-        }
-        if opt_level == "all" or opt_level == "none":
-            pass
-        elif isinstance(opt_level, list):
-            # Check if provided list contains only valid options
-            invalids = set(opt_level) - valid_opts
-            assert not invalids, f"Invalid optimization options found: {invalids}"
-        else:
-            assert False, "Invalid format: Must be 'all', none, or a list of options."
-        return opt_level
-
-    # Advanced fusion options
-    is_opt_enabled = lambda key: (__getattr__("codegen_compiler_optimization") == "all") or \
-                                 (isinstance(__getattr__("codegen_compiler_optimization"), list) and \
-                                  key in __getattr__("codegen_compiler_optimization"))
-    if name == "CONFIG_FUSION":
-        return is_opt_enabled("fusion")
-    if name == "CONFIG_FUSION_REDUCTION_EPILOGUE":
-        return is_opt_enabled("reduction_epilogue") # Fixed typo here as well
-    if name == "CONFIG_FUSION_REDUCTION_REDUCTION":
-        return is_opt_enabled("reduction_reduction")
-    if name == "CONFIG_FUSION_PROLOGUE":
-        return is_opt_enabled("prologue")
-    if name == "CONFIG_SINGLE_BATCH_CONV":
-        return is_opt_enabled("single_batch_conv")
-    if name == "CONFIG_MULTI_TILE_CONV":
-        return is_opt_enabled("multi_tile_conv")
-    if name == "CONFIG_SUBTILE":
-        return is_opt_enabled("subtile")
-
     if name == "CONFIG_TOGSIM_DEBUG_LEVEL":
         return os.environ.get("TOGSIM_DEBUG_LEVEL", "")
     if name == "CONFIG_TORCHSIM_LOG_PATH":
@@ -181,11 +123,6 @@ def load_plan_from_module(module_path):
 
 CONFIG_SRAM_BUFFER_PLAN_PATH = os.environ.get("SRAM_BUFFER_PLAN_PATH", default=None)
 CONFIG_SRAM_BUFFER_PLAN = load_plan_from_module(CONFIG_SRAM_BUFFER_PLAN_PATH)
-
-# For ILS experiment
-CONFIG_TLS_MODE = int(os.environ.get('TORCHSIM_TLS_MODE', default=1))
-
-CONFIG_USE_TIMING_POOLING = int(os.environ.get('TORCHSIM_USE_TIMING_POOLING', default=0))
 
 CONFIG_DEBUG_MODE = int(os.environ.get('TORCHSIM_DEBUG_MODE', default=0))
 
