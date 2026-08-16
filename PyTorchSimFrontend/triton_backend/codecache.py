@@ -43,8 +43,6 @@ class TritonNPULauncher:
         if extension_config.pytorchsim_functional_mode:
             with breakdown.span(breakdown.SPIKE, self.kernel_name):
                 written = functional.run(self.workdir, self.meta, args)
-            breakdown.ingest_tnpu(self.workdir, self.kernel_name, kind="spike",
-                                  name="timing-spike.json")
             logger.info("[Spike] %s wrote %s", self.kernel_name, written)
         else:
             logger.warning(
@@ -57,11 +55,7 @@ class TritonNPULauncher:
                 self.kernel_name)
             return None
 
-        if not os.path.isfile(os.path.join(self.workdir, timing.TRACE_SO)):
-            with breakdown.span(breakdown.TOGSIM_TRACE, self.kernel_name):
-                timing.emit_trace(self.workdir, self.meta)
-        with breakdown.span(breakdown.TOGSIM_RUN, self.kernel_name):
-            result = timing.run_togsim(self.workdir, self.meta, args)
+        result = timing.run(self.workdir, self.meta, args)
         logger.info("[TOGSim] %s simulated -> %s", self.kernel_name, result)
         return result
 

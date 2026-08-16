@@ -1,15 +1,17 @@
 """Where a run's wall clock went: tnpu compile, Spike, gem5, TOGSim.
 
-Off unless TORCHSIM_BREAKDOWN=1; one table at process exit, breakdown.json
-beside it. Nested spans are charged self time, so gem5 inside the trace build
-is not counted twice.
+Off unless TORCHSIM_BREAKDOWN=1; one table at process exit and a
+breakdown_<run-id>.json beside it, stamped so parallel runs do not share a file.
+Nested spans are charged self time, so gem5 inside a trace build counts once.
 """
 
 import atexit
+import datetime
 import json
 import os
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 
 from PyTorchSimFrontend import extension_config
@@ -17,7 +19,7 @@ from PyTorchSimFrontend import extension_config
 logger = extension_config.setup_logger()
 
 ENV = "TORCHSIM_BREAKDOWN"
-FILENAME = "breakdown.json"
+PREFIX = "breakdown"
 
 TNPU = "tnpu"
 SPIKE = "spike"
@@ -35,6 +37,15 @@ def enabled():
     return os.environ.get(ENV, "0") not in ("0", "", "no", "false", "False")
 
 
+def new_run_id():
+    """A per-run stamp, `<YYYYMMDD_HHMMSS>_<8 hex>`, as togsim_results names its logs.
+
+    Parallel experiments sharing one dump path would otherwise write one file.
+    """
+    return (datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            + "_" + uuid.uuid4().hex[:8])
+
+
 class Record:
     """One process's spans, per component and per kernel, plus tnpu's own JSON."""
 
@@ -43,6 +54,7 @@ class Record:
         self.kernels = {}
         self.tnpu = []
         self.started = time.perf_counter()
+        self.run_id = new_run_id()
         self._local = threading.local()
         self._lock = threading.Lock()
 
@@ -72,6 +84,8 @@ class Record:
 
     def as_dict(self):
         return {
+            "run": self.run_id,
+            "pid": os.getpid(),
             "wall": time.perf_counter() - self.started,
             "measured": self.measured,
             "components": {c: {"calls": n, "seconds": dt}
@@ -136,10 +150,11 @@ def _at_exit():
     text = render(REC.as_dict())
     print("\n" + text, flush=True)
     try:
-        path = os.path.join(extension_config.get_dump_path(), FILENAME)
+        path = os.path.join(extension_config.get_dump_path(),
+                            f"{PREFIX}_{REC.run_id}.json")
         with open(path, "w") as f:
             json.dump(REC.as_dict(), f, indent=2)
-        print(f"  breakdown.json: {path}", flush=True)
+        print(f"  {os.path.basename(path)}: {path}", flush=True)
     except OSError:
         pass
 
@@ -198,7 +213,8 @@ def render(rec):
     launch = [e["timing"] for e in entries
               if e.get("kind") in ("spike", "cycle")]
 
-    out = [f"BREAKDOWN   {wall:.2f}s since the npu backend loaded, "
+    out = [f"BREAKDOWN  {rec.get('run') or '?'}  pid {rec.get('pid')}",
+           f"           {wall:.2f}s since the npu backend loaded, "
            f"{len(kernels)} kernel(s)", ""]
     groups = {}
     for c, e in comps.items():

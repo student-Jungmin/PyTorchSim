@@ -10,11 +10,10 @@ import os
 
 from PyTorchSimFrontend import extension_config
 
-from . import layout
+from . import breakdown, layout, session
 
 logger = extension_config.setup_logger()
 
-RUNTIME_DIR = "runtime"
 REPLAY_DIR = ".triton_replay"
 
 
@@ -83,8 +82,7 @@ def write_inputs(workdir, meta, args):
     pairs = tensor_args(meta, args)
     _check(meta, pairs)
 
-    runtime = os.path.join(workdir, RUNTIME_DIR)
-    os.makedirs(runtime, exist_ok=True)
+    runtime = session.runtime_dir(workdir)
     for m, t in pairs:
         path = os.path.join(runtime, f"{m['name']}.raw")
         if m["role"] not in ("in", "inout"):
@@ -113,7 +111,7 @@ def read_outputs(workdir, meta, args):
     import numpy as np
     import torch
 
-    runtime = os.path.join(workdir, RUNTIME_DIR)
+    runtime = session.runtime_dir(workdir)
     written = []
     for m, t in tensor_args(meta, args):
         if m["role"] not in ("out", "inout"):
@@ -193,27 +191,17 @@ def _save_replay(workdir, meta, runtime, key):
 def run(workdir, meta, args):
     """Execute the kernel on the launch's tensors. Returns the names written.
 
-    ONE LAUNCH AT A TIME PER KERNEL, across all three steps: `runtime/` is a
-    fixed name two sessions share, and interleaving swaps tensors silently.
+    No lock: every file this writes is under `session.runtime_dir`, which is
+    this process's own, so concurrent launches of one kernel never meet.
+    Replay is OFF by default -- a result out of a file is not one the simulator
+    produced today; it is for the inner loop, not for reporting.
     """
-    from filelock import FileLock
-
     from . import tnpu_bridge
 
     spec = os.path.join(workdir, f"{meta['kernel_name']}_spec.py")
     if not os.path.isfile(spec):
         raise FileNotFoundError(f"{spec} not found -- compile the kernel first")
 
-    with FileLock(os.path.join(workdir, ".launch.lock"), timeout=1800):
-        return _run_locked(workdir, meta, args, spec, tnpu_bridge)
-
-
-def _run_locked(workdir, meta, args, spec, tnpu_bridge):
-    """`run` with the per-kernel launch lock already held.
-
-    Replay is OFF by default: a result that came out of a file is not a result
-    the simulator produced today. It is for the inner loop, not for reporting.
-    """
     runtime = write_inputs(workdir, meta, args)
 
     key = None
@@ -224,7 +212,10 @@ def _run_locked(workdir, meta, args, spec, tnpu_bridge):
                         meta["kernel_name"], key)
             return read_outputs(workdir, meta, args)
 
-    rc, output = tnpu_bridge.run_module("tnpu.spike", spec, workdir)
+    rc, output = tnpu_bridge.run_module("tnpu.spike", spec, workdir,
+                                        "--runtime", runtime)
+    breakdown.ingest_tnpu(runtime, meta["kernel_name"], kind="spike",
+                          name="timing-spike.json")
     if rc != 0:
         raise RuntimeError(
             f"[Spike] {meta['kernel_name']} failed:\n" + output[-2000:])

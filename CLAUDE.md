@@ -128,7 +128,7 @@ Read in `PyTorchSimFrontend/extension_config.py`:
 | `TORCHSIM_LOG_PATH` | `$TORCHSIM_DIR/togsim_results` | where TOGSim logs go |
 | `TORCHSIM_DUMP_PATH` | `$TORCHSIM_DIR` | misc dumps |
 | `TORCHSIM_DEBUG_MODE` | `0` | extra debug |
-| `TORCHSIM_BREAKDOWN` | `0` | `1` prints where the run's wall clock went (tnpu compile per stage/pass, Spike, gem5, TOGSim) at exit, and writes `breakdown.json` into the dump path |
+| `TORCHSIM_BREAKDOWN` | `0` | `1` prints where the run's wall clock went (tnpu compile per stage/pass, Spike, gem5, TOGSim) at exit, and writes `breakdown_<YYYYMMDD_HHMMSS>_<hash>.json` into the dump path — stamped like `togsim_results/`, so parallel runs sharing a dump path each keep their own |
 | `TNPU_DIR` | `$TORCHSIM_DIR/triton-npu` | triton-npu checkout (stages 1-5) |
 | `TNPU_PYTHON` | `sys.executable` | interpreter tnpu runs under (it needs LLVM 23's MLIR bindings, this process holds LLVM 20's) |
 | `SRAM_BUFFER_PLAN_PATH` | unset | L2/CMEM persistent-cache tensor plan (Python file with `plan = {...}`) |
@@ -187,6 +187,7 @@ Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11
 - The repo expects `python` to be a Python 3.10+ binary with `torch==2.10.0` (torchvision `0.25.0`, triton `3.6.0`). The frontend extends the PyTorch 2 Inductor stack — pin to this version. 2.10 specifically: it is the first release whose Inductor targets triton 3.6, the version triton-npu is built against. The pins live in `Dockerfile.base`, and editing that file changes the base-image tag automatically (the tag is `thirdparty-<sha256 of thirdparty/github-releases.json + Dockerfile.base>`, see `scripts/ci/thirdparty_base_pin.sh`).
 - The default Gem5 path is hard-coded to `/workspace/gem5/build/RISCV/gem5.opt`. Override with `GEM5_PATH` if you build elsewhere.
 - `_C.cpython-311-*.so` and `torch_openreg/lib/` are build artifacts — already in `.gitignore`, don't commit.
+- **Parallel runs sharing a `TORCHSIM_DUMP_PATH`** share every per-kernel workdir, and that is deliberate: the workdir holds what compiling produced, which is a function of the source and the machine. A **launch** is not, so each process gets `<workdir>/launch-<pid>/` (`triton_backend/session.py`) holding its own `runtime/*.raw`, its own `trace_shape.txt` and symlinks to the shared trace — TOGSim resolves the cycle table and the shape from the directory of the trace it is handed, so linking is enough. What is left locked is only *building* the shared thing, once: `.compile.lock` (tnpu compile) and `.timing.lock` (trace.so + its gem5 cycle table). Launches take no lock. Measured on a warm cache, two `test_add.py` in parallel: 40s when launches were locked, **31s** now, against 30s for one run alone.
 - TOGSim creates a per-PID FIFO under `/tmp/togsim_fifo_<pid>` for command/event comm; if a previous run crashed and left stale FIFOs, they get cleaned up on the next start, but watch for orphaned processes if you Ctrl-C mid-run.
 - Multi-tenant runs **must** use the `with TOGSimulator(...)` context manager — otherwise compile-time `TOGSIM_CONFIG` and runtime config can diverge.
 - `pytorchsim_functional_mode` exists as both an **env var** and a **YAML key**; the env var path is via `extension_config.py` while the YAML key is read inside the same module. They should agree.
