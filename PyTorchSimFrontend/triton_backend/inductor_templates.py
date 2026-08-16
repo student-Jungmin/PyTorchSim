@@ -40,6 +40,25 @@ def _claim_triton_present():
         scheduler.has_triton = lambda: True
 
 
+def _lowering_npu():
+    """Whether the graph being lowered right now targets this device."""
+    from torch._inductor.virtualized import V
+
+    try:
+        return V.graph.get_current_device_or_throw().type == "npu"
+    except Exception:  # noqa: BLE001 - no graph in scope is not npu
+        return False
+
+
+def _is_npu(obj):
+    """Whether a device, device string, tensor, layout or node is on this device."""
+    dev = getattr(obj, "device", obj)
+    dev = getattr(dev, "device", dev)
+    if isinstance(dev, str):
+        return dev.split(":")[0] == "npu"
+    return getattr(dev, "type", None) == "npu"
+
+
 def _power_of_two(n):
     return n >= 1 and (n & (n - 1)) == 0
 
@@ -322,8 +341,13 @@ def _size_grouped_conv_grid_per_group():
     from torch._inductor.kernel import conv as conv_kernel
     from torch._inductor.select_algorithm import SymbolicGridFn
 
+    orig2d = conv_kernel.conv2d_grid
+    orig3d = conv_kernel.conv3d_grid
+
     @SymbolicGridFn
     def conv2d_grid(n, c, h, w, meta, *, cdiv):
+        if not _lowering_npu():
+            return orig2d(n, c, h, w, meta)
         groups = meta.get("GROUPS", 1) or 1
         return (
             cdiv(n * h * w, meta["BLOCK_M"]),
@@ -333,6 +357,8 @@ def _size_grouped_conv_grid_per_group():
 
     @SymbolicGridFn
     def conv3d_grid(n, c, d, h, w, meta, *, cdiv):
+        if not _lowering_npu():
+            return orig3d(n, c, d, h, w, meta)
         groups = meta.get("GROUPS", 1) or 1
         return (
             cdiv(n * d * h * w, meta["BLOCK_M"]),
@@ -374,6 +400,8 @@ def _short_circuit_degenerate_gemms():
                 m, n, k = (int(V.graph.sizevars.size_hint(s)) for s in (m, n, k))
             except Exception:
                 return _orig(*args, **kwargs)
+            if not _is_npu(layout):
+                return _orig(*args, **kwargs)
             if m == 0 or n == 0 or (k == 0 and not bias):
                 return full(layout.size, 0, dtype=layout.dtype,
                             device=layout.device)
@@ -403,8 +431,8 @@ def _npu_choices_class():
         def should_use_persistent_reduction(features, cooperative_reduction):
             base = InductorChoices.should_use_persistent_reduction(
                 features, cooperative_reduction)
-            if not base:
-                return False
+            if not base or not _lowering_npu():
+                return base
             try:
                 extent = int(features.reduction_numel)
             except (TypeError, ValueError):
@@ -422,6 +450,9 @@ def _npu_choices_class():
             Splitting buys parallelism across blocks that run at the same time;
             this route walks the grid sequentially in its own wrapper.
             """
+            if getattr(device, "type", device) != "npu":
+                return InductorChoices.reduction_split_factor(
+                    device, reduction_numel_hint, numel_hint, inner_reduction)
             if os.environ.get("TORCHSIM_LOG_SPLIT"):
                 would = InductorChoices.reduction_split_factor(
                     device, reduction_numel_hint, numel_hint, inner_reduction)
@@ -493,12 +524,29 @@ def _lower_conv1d_as_conv2d():
 def _install_selection():
     from torch._inductor.select_algorithm import AlgorithmSelectorCache
 
+    orig_benchmark = AlgorithmSelectorCache.__dict__["benchmark_choices"].__func__
+    orig_precompile = AlgorithmSelectorCache.make_precompile_fn
+    orig_example = AlgorithmSelectorCache.__dict__["generate_example_value"].__func__
+
+    def _choices_are_npu(choices):
+        return any(_is_npu(getattr(c, "layout", None)) for c in choices)
+
     def benchmark_choices(cls, choices, autotune_args, is_collective=False):
+        if not _choices_are_npu(choices):
+            return orig_benchmark(cls, choices, autotune_args, is_collective)
         return pick_config(choices)
+
+    def make_precompile_fn(self, choices, *args, **kwargs):
+        if not _choices_are_npu(choices):
+            return orig_precompile(self, choices, *args, **kwargs)
+        return lambda: None
 
     def generate_example_value(size, stride, device, dtype, extra_size,
                                allocation_size=None):
         """An unread benchmark operand, allocated rather than sampled."""
+        if not _is_npu(device):
+            return orig_example(size, stride, device, dtype, extra_size,
+                                allocation_size)
         shape = size if allocation_size is None else allocation_size
         needed = extra_size
         if all(s > 0 for s in shape):
@@ -508,7 +556,7 @@ def _install_selection():
         return view if tuple(shape) == tuple(size) else view.as_strided(size, stride)
 
     AlgorithmSelectorCache.benchmark_choices = classmethod(benchmark_choices)
-    AlgorithmSelectorCache.make_precompile_fn = lambda self, *a, **k: (lambda: None)
+    AlgorithmSelectorCache.make_precompile_fn = make_precompile_fn
     AlgorithmSelectorCache.generate_example_value = staticmethod(
         generate_example_value)
 
