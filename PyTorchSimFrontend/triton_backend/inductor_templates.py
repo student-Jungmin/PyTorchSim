@@ -496,8 +496,21 @@ def _install_selection():
     def benchmark_choices(cls, choices, autotune_args, is_collective=False):
         return pick_config(choices)
 
+    def generate_example_value(size, stride, device, dtype, extra_size,
+                               allocation_size=None):
+        """An unread benchmark operand, allocated rather than sampled."""
+        shape = size if allocation_size is None else allocation_size
+        needed = extra_size
+        if all(s > 0 for s in shape):
+            needed += sum((s - 1) * t for s, t in zip(shape, stride)) + 1
+        view = torch.as_strided(
+            torch.empty(needed, dtype=dtype, device=device), shape, stride)
+        return view if tuple(shape) == tuple(size) else view.as_strided(size, stride)
+
     AlgorithmSelectorCache.benchmark_choices = classmethod(benchmark_choices)
     AlgorithmSelectorCache.make_precompile_fn = lambda self, *a, **k: (lambda: None)
+    AlgorithmSelectorCache.generate_example_value = staticmethod(
+        generate_example_value)
 
 
 def install():
