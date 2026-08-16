@@ -42,6 +42,8 @@ torch._inductor.codegen.common.register_backend_for_device(
 )
 
 torch_openreg.openreg.init()
+torch_openreg.openreg.register_eager_to_compile(
+    torch_openreg.openreg.DEFAULT_EAGER_TO_COMPILE)
 sys.modules['torch.npu'] = torch_openreg.openreg
 
 def _autoload():

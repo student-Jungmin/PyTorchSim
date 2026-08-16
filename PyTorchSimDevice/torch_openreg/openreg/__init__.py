@@ -13,6 +13,22 @@ _initialized = False
 _default_streams = {}  # Dictionary to store default streams per device
 _tog_simulator = None  # Singleton TOGSimulator instance
 _launch_context = threading.local() # storage for launch_kernel context
+_eager_compiled = set()  # op names already given an eager_to_compile wrapper
+
+# Ops with no npu kernel that Inductor can codegen. Registering them here rather
+# than per test is what keeps `every operation runs on the NPU` true by default.
+DEFAULT_EAGER_TO_COMPILE = (
+    "aten::fill_.Scalar",
+    "aten::zero_",
+    "aten::cat.out",
+    "aten::mm.out",
+    "aten::max_pool2d_with_indices.out",
+    "aten::upsample_nearest2d.out",
+    "aten::argmax.out",
+    "aten::argmin.out",
+    "aten::max.dim_max",
+    "aten::min.dim_min",
+)
 
 class device:
     r"""Context-manager that changes the selected device.
@@ -358,6 +374,9 @@ def eager_to_compile(op_name):
         finally:
             in_flight.busy = False
 
+    if op_name in _eager_compiled:
+        return
+    _eager_compiled.add(op_name)
     torch.library.impl(op_name, "npu", wrapper)
 
 def register_eager_to_compile(ops):
@@ -401,4 +420,5 @@ __all__ = [
     "set_tog_simulator",
     "eager_to_compile",
     "register_eager_to_compile",
+    "DEFAULT_EAGER_TO_COMPILE",
 ]
