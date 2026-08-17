@@ -68,6 +68,23 @@ def _stat_tools(paths):
     return out
 
 
+def _trace_abi():
+    """A digest of the runtime header a cached trace.so was compiled against.
+
+    TOGSim declares that it refuses a producer whose ABI does not match and does
+    not check; making the header part of the artifact's identity gets the same
+    protection as a cache miss rather than a load-time refusal.
+    """
+    from PyTorchSimFrontend.tog.lower_to_emitc import _default_include_dir
+
+    path = os.path.join(_default_include_dir(), "togsim_runtime.h")
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()[:16]
+    except OSError:
+        return None
+
+
 def current():
     """This process's build identity, computed once and reused."""
     global _current
@@ -82,6 +99,7 @@ def current():
             "tnpu": _tnpu_git(tnpu_dir),
             "tools": _stat_tools(paths) if paths else None,
             "machine": tnpu_bridge.machine(),
+            "trace_abi": _trace_abi(),
         }
     return _current
 
