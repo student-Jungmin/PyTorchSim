@@ -200,11 +200,13 @@ def emit_trace(workdir, meta):
 
 
 def run_togsim(workdir, meta, args=()):
-    """Simulate the emitted trace. Returns TOGSimulator's parsed result dict.
+    """Simulate the emitted trace, or hand it to an open TOGSimulator.
 
-    Runs out of this process's launch directory: the shared trace is linked in
-    and the grid written beside it, so concurrent launches need no lock.
+    Standalone returns the parsed result; a queued launch returns its kernel id,
+    since the stream's numbers are only whole when the simulator closes.
     """
+    import torch
+
     from Simulator.simulator import TOGSimulator
 
     so = os.path.join(workdir, TRACE_SO)
@@ -214,8 +216,11 @@ def run_togsim(workdir, meta, args=()):
     write_shape(workdir, meta, args)
 
     handle = os.path.join(mine, "tile_graph.onnx")
-    result_path = TOGSimulator.run_standalone(
-        handle, os.path.join(mine, "attribute"))
+    attribute = os.path.join(mine, "attribute")
+    if torch.npu.get_tog_simulator() is not None:
+        return torch.npu.launch_kernel(handle, attribute)
+
+    result_path = TOGSimulator.run_standalone(handle, attribute)
     return TOGSimulator.get_result_from_file(result_path)
 
 
