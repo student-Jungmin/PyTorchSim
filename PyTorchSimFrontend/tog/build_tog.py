@@ -236,8 +236,44 @@ class TOGComputeNode(TOGNode):
 # ---------------------------------------------------------------------------
 # MLIR helpers.
 # ---------------------------------------------------------------------------
+_INDEX_ARITH = ("arith.index_cast", "arith.index_castui", "arith.extsi",
+                "arith.muli", "arith.addi", "arith.subi")
+
+
 def _op_name(value_or_op):
     return value_or_op.operation.name
+
+
+_VCIX_OF_INTRINSIC = {
+    "llvm.riscv.sf.vc.iv.se": "vcix.iv",
+    "llvm.riscv.sf.vc.i.se": "vcix.i",
+    "llvm.riscv.sf.vc.v.i.se": "vcix.v.i",
+}
+
+
+def _vcix_name(op):
+    """The VCIX op this is, spelled as a dialect op or as an intrinsic call."""
+    name = _op_name(op)
+    if name != "llvm.call_intrinsic":
+        return name
+    attrs = op.operation.attributes
+    if "intrin" not in attrs:
+        return name
+    return _VCIX_OF_INTRINSIC.get(ir.StringAttr(attrs["intrin"]).value, name)
+
+
+def _vcix_opcode(op):
+    """A VCIX op's opcode, from its attribute or its first operand constant."""
+    attrs = op.operation.attributes
+    if "opcode" in attrs:
+        return ir.IntegerAttr(attrs["opcode"]).value
+    operands = op.operation.operands
+    if not len(operands) or _is_block_arg(operands[0]):
+        return None
+    const = operands[0].owner
+    if const.name != "llvm.mlir.constant" or "value" not in const.attributes:
+        return None
+    return ir.IntegerAttr(const.attributes["value"]).value
 
 
 def _is_block_arg(value):
@@ -434,8 +470,11 @@ def _collect_dividers(expr):
 # ---------------------------------------------------------------------------
 # The builder (mirrors TestTileOperationGraph members).
 # ---------------------------------------------------------------------------
+_LOOP_OPS = ("affine.for", "scf.for")
+
 SKIP_OPS = {
-    "affine.yield", "affine.apply", "memref.get_global", "arith.constant",
+    "affine.yield", "scf.yield", "affine.apply", "memref.get_global",
+    "arith.constant", "llvm.mlir.constant",
     "memref.alloc", "memref.reinterpret_cast",
 }
 
@@ -545,19 +584,15 @@ class TogBuilder:
     # ---- vcix classification ----
     @staticmethod
     def _vcix_iv_opcode(op):
-        if _op_name(op) != "vcix.iv":
+        if _vcix_name(op) != "vcix.iv":
             return None
-        if "opcode" not in op.operation.attributes:
-            return None
-        return ir.IntegerAttr(op.operation.attributes["opcode"]).value
+        return _vcix_opcode(op)
 
     @staticmethod
     def _vcix_vi_opcode(op):
-        if _op_name(op) != "vcix.v.i":
+        if _vcix_name(op) != "vcix.v.i":
             return None
-        if "opcode" not in op.operation.attributes:
-            return None
-        return ir.IntegerAttr(op.operation.attributes["opcode"]).value
+        return _vcix_opcode(op)
 
     # ---- affine.for bounds ----
     @staticmethod
@@ -585,6 +620,15 @@ class TogBuilder:
             end = _const_index_value(operands[n_lb])
         return start, end, step
 
+    @staticmethod
+    def _scf_for_bounds(forop):
+        """(start, end, step) of an scf.for, or None if a bound is not constant."""
+        operands = list(forop.operation.operands)
+        if len(operands) < 3:
+            return None
+        bounds = [_const_index_value(v) for v in operands[:3]]
+        return None if any(b is None for b in bounds) else tuple(bounds)
+
     # ---- DRAM index processing ----
     def _process_dram_indices(self, value, loop_index_list, indirect_box):
         if not _is_block_arg(value) and value.owner.name == "affine.apply":
@@ -603,12 +647,37 @@ class TogBuilder:
                 else:
                     self._process_dram_indices(op_v, loop_index_list, indirect_box)
         elif _is_block_arg(value):
-            key = self.loop_var_name[_value_key(value)]
-            loop_index_list.append((key, 1))
+            key = self.loop_var_name.get(_value_key(value))
+            if key is not None:
+                loop_index_list.append((key, 1))
+        elif value.owner.name in _INDEX_ARITH:
+            self._process_arith_index(value, 1, loop_index_list)
         else:
             c = _const_index_value(value)
             if c is not None:
                 loop_index_list.append(("c" + str(c), c))
+
+    def _process_arith_index(self, value, coeff, loop_index_list):
+        """Walk an index built by arith, accumulating each loop variable's scale."""
+        if _is_block_arg(value):
+            key = self.loop_var_name.get(_value_key(value))
+            if key is not None:
+                loop_index_list.append((key, coeff))
+            return
+        name = value.owner.name
+        operands = list(value.owner.operands)
+        if name in ("arith.index_cast", "arith.index_castui", "arith.extsi"):
+            self._process_arith_index(operands[0], coeff, loop_index_list)
+        elif name == "arith.muli":
+            for a, b in ((0, 1), (1, 0)):
+                c = _const_index_value(operands[a])
+                if c is not None:
+                    self._process_arith_index(operands[b], coeff * c,
+                                              loop_index_list)
+                    return
+        elif name in ("arith.addi", "arith.subi"):
+            for v in operands[:2]:
+                self._process_arith_index(v, coeff, loop_index_list)
 
     # ---- main recursion ----
     def visit_operation(self, op, node):
@@ -622,40 +691,31 @@ class TogBuilder:
         if name in SKIP_OPS:
             return
 
-        if name == "affine.for":
+        if name in _LOOP_OPS:
             oper = op.operation
-            attrs = oper.attributes
-            loop_type = ""
-
-            def bool_true(k):
-                return k in attrs and ir.BoolAttr(attrs[k]).value
-
-            if bool_true("outer_loop"):
-                loop_type = "outer_loop"
-            elif bool_true("accumulation_loop"):
-                loop_type = "accumulation_loop"
-            elif bool_true("inner_loop"):
-                loop_type = "inner_loop"
-
-            if (bool_true("outer_loop") or bool_true("accumulation_loop")
-                    or bool_true("inner_loop")):
-                start, end, step = self._affine_for_bounds(op)
-                loop_index = "loop_arg%03d" % self.nr_loop
-                self.nr_loop += 1
-                iter_var = oper.regions[0].blocks[0].arguments[0]
-                self.loop_var_name[_value_key(iter_var)] = loop_index
-                loop_node = TOGLoopNode("loopNode", loop_index, start, end, step,
-                                        loop_type)
-                loop_node.op = op
-                self.loop_nodes.append(loop_node)
+            bounds = (self._affine_for_bounds(op) if name == "affine.for"
+                      else self._scf_for_bounds(op))
+            if bounds is None or not _replayed_loop(op):
                 if node is not None:
-                    node.add_child(loop_node)
-                    loop_node.add_parent(node)
-                for region in oper.regions:
-                    for block in region.blocks:
-                        for inner in block.operations:
-                            self.visit_operation(inner, loop_node)
+                    self._handle_compute(op, node)
                 return
+
+            start, end, step = bounds
+            loop_index = "loop_arg%03d" % self.nr_loop
+            self.nr_loop += 1
+            iter_var = oper.regions[0].blocks[0].arguments[0]
+            self.loop_var_name[_value_key(iter_var)] = loop_index
+            loop_node = TOGLoopNode("loopNode", loop_index, start, end, step, "")
+            loop_node.op = op
+            self.loop_nodes.append(loop_node)
+            if node is not None:
+                node.add_child(loop_node)
+                loop_node.add_parent(node)
+            for region in oper.regions:
+                for block in region.blocks:
+                    for inner in block.operations:
+                        self.visit_operation(inner, loop_node)
+            return
 
         if name == "togsim.transfer":
             self._handle_dma_start(op, node)
@@ -672,7 +732,7 @@ class TogBuilder:
 
     # ---- compute / matmul FSM dispatch ----
     def _handle_compute(self, op, node):
-        if _op_name(op) == "vcix.iv":
+        if _vcix_name(op) == "vcix.iv":
             if (self.matmul_fsm == MatmulFsm.MMEpilogue
                     and self.current_matmul_compute_node):
                 self._finish_matmul_block()
@@ -724,7 +784,7 @@ class TogBuilder:
             self._append_vector_compute(node, op)
             return
 
-        if _op_name(op) == "vcix.v.i":
+        if _vcix_name(op) == "vcix.v.i":
             viopc = self._vcix_vi_opcode(op)
             if viopc is not None and viopc == 2:
                 if (self.matmul_fsm == MatmulFsm.MMPush
@@ -1092,8 +1152,11 @@ def _rewrite_loop_steps(builder):
     index_t = ir.IndexType.get()
     for node in builder.loop_nodes:
         forop = node.op.operation
-        new_step = ir.IntegerAttr.get(index_t, node.loop_end)
-        forop.attributes["step"] = new_step
+        if forop.name == "scf.for":
+            forop.operands[1] = forop.operands[2]
+            continue
+        once = max(node.loop_end - node.loop_start, node.loop_step)
+        forop.attributes["step"] = ir.IntegerAttr.get(index_t, once)
 
 
 def _insert_compute_markers(builder):
@@ -1135,14 +1198,32 @@ def _find_kernel(module):
     return funcs[0] if len(funcs) == 1 else None
 
 
-#: The loop roles (sec 9.1). Without one, a loop is a micro-loop the compute FSM
-#: folds into a single node, not a tile loop.
-_LOOP_ROLE_ATTRS = ("outer_loop", "accumulation_loop", "inner_loop")
+def _replayed_loop(op):
+    """Whether the trace replays this loop, so gem5 must sample one trip of it.
 
+    True exactly when the body still holds work the skeleton keeps: a transfer,
+    a wait, or a systolic push. A loop of plain arithmetic is emptied by the DCE
+    and folded away, so it stays inside its compute node and is measured whole.
+    """
+    found = [False]
 
-def _has_loop_role(op):
-    attrs = op.operation.attributes
-    return any(k in attrs and ir.BoolAttr(attrs[k]).value for k in _LOOP_ROLE_ATTRS)
+    def walk(o):
+        if found[0]:
+            return
+        if (o.operation.name in ("togsim.transfer", "togsim.wait")
+                or _vcix_name(o) == "vcix.iv"):
+            found[0] = True
+            return
+        for region in o.operation.regions:
+            for block in region.blocks:
+                for inner in block.operations:
+                    walk(inner)
+
+    for region in op.operation.regions:
+        for block in region.blocks:
+            for inner in block.operations:
+                walk(inner)
+    return found[0]
 
 
 def _is_address_plumbing(op):
@@ -1177,22 +1258,9 @@ def _build(module, builder):
 
     block = func_op.regions[0].blocks[0]
     out = []
-    # A root is a top-level TILE loop, identified by its role attribute (sec
-    # 9.1) -- not by being an affine.for: bank_vectorize leaves a bare one for
-    # the tile's vector work, and rooting there orphans every DMA.
-    roots = [op for op in block.operations
-             if op.operation.name == "affine.for" and _has_loop_role(op)]
-    if roots:
-        for op in roots:
-            root = TOGNode("root")
-            builder._reset_matmul_fsm()
-            builder.visit_operation(op, root)
-            root.bfs(out)
-        return "".join(out)
-
-    # No top-level loop: the body is ONE work-item -- the shape a Triton kernel
-    # arrives in, its grid becoming the trace producer's dispatch loop (sec 9.3).
-    # PyTorchSim's codegen keeps the tile loops in the kernel and never lands here.
+    # The body is ONE work-item -- the shape a Triton kernel arrives in, its grid
+    # becoming the trace producer's dispatch loop (sec 9.3). Every top-level op
+    # is visited, loops included, so a transfer beside a loop is not orphaned.
     root = TOGNode("root")
     builder._reset_matmul_fsm()
     for op in block.operations:

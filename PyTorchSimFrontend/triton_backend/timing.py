@@ -162,6 +162,7 @@ def emit_trace(workdir, meta):
             f"no *-custom.mlir in {workdir} -- tnpu must run far enough to emit "
             f"the post-vcix IR, which is what the trace is built from")
 
+    kernel = meta["kernel_name"]
     cycles = measure_tile_cycles(workdir, meta)
 
     ctx = ir.Context()
@@ -172,21 +173,19 @@ def emit_trace(workdir, meta):
         compute_types = ct._compute_types(module)
         n_tiles = len(compute_types)
 
-        if cycles:
-            cl = list(cycles)
-            if len(cl) != n_tiles:
-                logger.warning("[Gem5] returned %d cycle(s) for %d "
-                               "tile(s); padding with the last", len(cl), n_tiles)
-                cl = (cl + [cl[-1]] * n_tiles)[:n_tiles]
-            lanes = int(extension_config.vpu_num_lanes)
-            table = ct.build_cycle_table(module, cl, x_offset=lanes, w_offset=0)
-        else:
-            table = [(PLACEHOLDER_CYCLE, 0)] * n_tiles
-            logger.warning(
-                "[Gem5] %s holds PLACEHOLDER cycles (%d per tile x %d "
-                "tiles): gem5 sampling did not produce a measurement, so "
-                "compute latency is NOT modelled",
-                CYCLE_TSV, PLACEHOLDER_CYCLE, n_tiles)
+        if cycles is None:
+            raise RuntimeError(
+                f"[Gem5] sampling failed for {kernel}, so compute latency "
+                f"would not be modelled at all")
+        cl = list(cycles)
+        if len(cl) != n_tiles:
+            raise RuntimeError(
+                f"[Gem5] returned {len(cl)} cycle sample(s) for {n_tiles} "
+                f"compute node(s) in {kernel}: a marker fired a different "
+                f"number of times than there are tiles, so the table would be "
+                f"keyed by the wrong samples")
+        lanes = int(extension_config.vpu_num_lanes)
+        table = ct.build_cycle_table(module, cl, x_offset=lanes, w_offset=0)
 
         wi = work_item_for(meta)
         l2e.skeleton_to_so(module, os.path.join(workdir, TRACE_SO), work_item=wi)

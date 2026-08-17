@@ -621,7 +621,12 @@ def _retype_for_to_size_t(module):
     in `size_t`) cast-free. So: set each IV to size_t, then for every
     index<->size_t cast replace its result with its source (every consumer here
     -- `emitc.for` bounds, `emitc.call_opaque` operands, `emitc` arith -- accepts
-    either, and after the IV retype each such cast bridges equal types)."""
+    either, and after the IV retype each such cast bridges equal types).
+
+    The bounds settle only after the fold, so the induction variable is matched
+    to them again at the end: a loop whose bounds are neither index nor size_t
+    (Triton's own i32 reduction loop) keeps its own type, which `emitc.for`
+    requires the induction variable to share."""
     idx = ir.IndexType.get()
     st = ir.Type.parse("!emitc.size_t", module.context)
 
@@ -645,6 +650,13 @@ def _retype_for_to_size_t(module):
             d.operation.erase()
         except Exception:
             pass
+
+    for op in list(walk_ops(module.body)):
+        if op.operation.name != "emitc.for":
+            continue
+        bounds = {v.type for v in list(op.operation.operands)[:3]}
+        if len(bounds) == 1:
+            op.operation.regions[0].blocks[0].arguments[0].set_type(bounds.pop())
 
 
 def _add_extern_c(module, ctx):

@@ -257,7 +257,7 @@ def _results_unused(op):
     return True
 
 
-def _strip_loop_iter_args(block):
+def _strip_loop_iter_args(block, builder=None):
     """Drop loop-carried values (iter_args) from every affine.for/scf.for.
 
     The skeleton only needs the loop STRUCTURE (iteration counts) and the
@@ -281,7 +281,15 @@ def _strip_loop_iter_args(block):
                 break
         if tgt is None:
             return
-        _rebuild_loop_no_iter(tgt)
+        owner = None
+        if builder is not None:
+            for node in builder.loop_nodes:
+                if node.op.operation == tgt.operation:
+                    owner = node
+                    break
+        fresh = _rebuild_loop_no_iter(tgt)
+        if owner is not None and fresh is not None:
+            owner.op = fresh
 
 
 def _rebuild_loop_no_iter(op):
@@ -321,6 +329,7 @@ def _rebuild_loop_no_iter(op):
         for bop in list(old_block.operations)[:-1]:           # move body (drop old yield)
             bop.operation.move_before(new_term)
         o.erase()
+    return new
 
 
 def _dce(block):
@@ -556,11 +565,50 @@ def build_skeleton(module):
         except Exception:
             pass
     _dce(block)                    # drop dead consumers (e.g. the result store) first,
-    _strip_loop_iter_args(block)   # so a now-unused loop result lets us strip its iter_args
+    _strip_loop_iter_args(block, builder)   # a rebuilt loop keeps its node
     _dce(block)                    # then clean the orphaned accumulate ops
 
+    _check_replayed_loops_are_sampled(block, builder)
     return ("skeleton: compute=%d dma=%d wait=%d (unpaired waits dropped)"
             % (n_compute, n_dma, n_wait))
+
+
+def _check_replayed_loops_are_sampled(block, builder):
+    """Every loop left for the trace must be one gem5 samples a single trip of.
+
+    A survivor with no node is measured whole and replayed anyway; a node whose
+    loop was folded away is measured once and never replayed. Only equality is
+    a cost model.
+    """
+    from .build_tog import _LOOP_OPS
+
+    terminators = ("affine.yield", "scf.yield")
+
+    def carries_work(op):
+        """An emptied loop is folded away by the EmitC pipeline, and a loop
+        holding only such loops empties with them."""
+        for region in op.operation.regions:
+            for blk in region.blocks:
+                for inner in blk.operations:
+                    name = inner.operation.name
+                    if name in terminators:
+                        continue
+                    if name in _LOOP_OPS:
+                        if carries_work(inner):
+                            return True
+                        continue
+                    return True
+        return False
+
+    nodes = {id(n.op.operation) for n in builder.loop_nodes}
+    orphans = [op for op in walk_ops(block)
+               if op.operation.name in _LOOP_OPS
+               and id(op.operation) not in nodes and carries_work(op)]
+    if orphans:
+        raise RuntimeError(
+            f"{len(orphans)} loop(s) survive into the trace without a TOG node, "
+            f"so gem5 measures every trip of them and TOGSim replays them too: "
+            f"{[op.operation.name for op in orphans]}")
 
 
 def run(module, vectorlane=128):
