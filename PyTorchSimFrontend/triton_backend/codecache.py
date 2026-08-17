@@ -14,7 +14,7 @@ from torch._inductor.codecache import get_hash
 
 from PyTorchSimFrontend import extension_config
 
-from . import breakdown, functional, kernel_spec, timing, tnpu_bridge
+from . import breakdown, functional, kernel_spec, provenance, timing, tnpu_bridge
 
 logger = extension_config.setup_logger()
 
@@ -115,6 +115,12 @@ def triton_npu_compile(src_code, meta, kernel_name):
     with lock:
         spec_path = os.path.join(write_path, f"{kernel_name}_spec.py")
         elf = tnpu_bridge.stage_artifact(write_path, f"{kernel_name}.elf")
+        if elf is not None and not provenance.matches(write_path):
+            logger.info(
+                "[triton-npu] %s: cached artifacts carry a different toolchain "
+                "or machine identity, rebuilding", kernel_name)
+            provenance.clear_stale(write_path)
+            elf = None
         if elf is None:
             with open(os.path.join(write_path, "kernel.py"), "w") as f:
                 f.write(src_code)
@@ -180,5 +186,6 @@ def triton_npu_compile(src_code, meta, kernel_name):
                         {k: v for k, v in meta["fixed_config"].items()
                          if k.endswith("BLOCK")})
             timing.store_meta(write_path, meta)
+            provenance.store(write_path)
         logger.info("[triton-npu] %s -> %s", kernel_name, write_path)
         return TritonNPULauncher(kernel_name, write_path, meta)
