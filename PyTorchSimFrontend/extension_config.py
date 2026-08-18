@@ -6,16 +6,19 @@ import logging
 
 CONFIG_TORCHSIM_DIR = os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim')
 CONFIG_GEM5_PATH = os.environ.get('GEM5_PATH', default="/workspace/gem5/build/RISCV/gem5.opt")
-CONFIG_TORCHSIM_LLVM_PATH = os.environ.get('TORCHSIM_LLVM_PATH', default="/usr/bin")
+CONFIG_TORCHSIM_LLVM_PATH = os.environ.get(
+    'TORCHSIM_LLVM_PATH',
+    default=os.environ.get(
+        'TNPU_LLVM_PATH', "/workspace/LLVM_DIR/llvm-project/build/install/bin"))
 
 # --- Triton codegen route ----------------------------------------------------
 # The triton-npu checkout that owns stages 1-5 (ttir -> ttshared -> tnpu passes
 # -> RISC-V ELF). It is a SEPARATE repository, deliberately not vendored.
 CONFIG_TNPU_DIR = os.environ.get(
     "TNPU_DIR", default=os.path.join(CONFIG_TORCHSIM_DIR, "triton-npu"))
-# tnpu runs in its own process: its passes need LLVM 23's MLIR bindings while
-# this process holds LLVM 20's, and `mlir` is a namespace package, so the two
-# cannot coexist in one interpreter (tnpu/config.py:activate_bindings).
+# tnpu runs in its own process. Both sides now hold the same LLVM 23 bindings,
+# so the seam is a process boundary rather than a version one; `mlir` is a
+# namespace package, and each side still selects its own root explicitly.
 CONFIG_TNPU_PYTHON = os.environ.get("TNPU_PYTHON", default=sys.executable)
 
 

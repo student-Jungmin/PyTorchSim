@@ -1,5 +1,16 @@
 # Enabling MLIR Python bindings
 
+> **SUPERSEDED for `tog/`.** The TOG builder now links the SAME LLVM triton-npu
+> prints its IR with -- LLVM 23, unpacked by `triton-npu/setup/restore.sh` into
+> `/workspace/LLVM_DIR/llvm-project/build/install`, and named by
+> `TORCHSIM_LLVM_PATH` (set in `Dockerfile.tnpu`). `PyTorchSimFrontend/tog/__init__.py`
+> selects those bindings and removes every other LLVM's from `sys.path`.
+>
+> The `/riscv-llvm` (LLVM 20) bindings this document describes are no longer read
+> by `tog/`, and nothing else in the Python stack asks for `TORCHSIM_LLVM_PATH`.
+> The rest of this file is kept for the fork/release machinery it documents.
+
+
 Goal: ship the MLIR Python bindings (`import mlir`, `mlir.ir`, `mlir.dialects`)
 so `PyTorchSimFrontend/tog/` can read the MLIR triton-npu emits and build
 TOGSim's trace from it, in Python rather than as C++ passes in the

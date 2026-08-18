@@ -270,12 +270,19 @@ def _bind_runtime_bounds(pending, shape_arg, ctx):
             kc = ir.Operation.create(
                 "emitc.constant", results=[i64],
                 attributes={"value": ir.IntegerAttr.get(i64, k)}).results[0]
-            elem = ir.Operation.create(
-                "emitc.subscript", results=[i64],
+            ref = ir.Operation.create(
+                "emitc.subscript", results=[_lvalue(i64)],
                 operands=[shape_arg, kc]).results[0]
+            elem = ir.Operation.create(
+                "emitc.load", results=[i64], operands=[ref]).results[0]
             bound = arith.IndexCastOp(idxty, elem).result
         _replace_all_uses(placeholder, bound)
         placeholder.owner.erase()
+
+
+def _lvalue(ty):
+    """`!emitc.lvalue<ty>`, the result an `emitc.subscript` is required to have."""
+    return ir.Type.parse(f"!emitc.lvalue<{ty}>", ty.context)
 
 
 def _replace_all_uses(old, new):
@@ -435,8 +442,10 @@ def _outline_work_item(ctx, kernel, ctx_val):
         for k in range(len(ivs)):
             kc = ir.Operation.create("emitc.constant", results=[i64],
                     attributes={"value": ir.IntegerAttr.get(i64, k)}, loc=loc).results[0]
-            elem = ir.Operation.create("emitc.subscript", results=[i64],
+            ref = ir.Operation.create("emitc.subscript", results=[_lvalue(i64)],
                     operands=[iv2, kc], loc=loc).results[0]
+            elem = ir.Operation.create("emitc.load", results=[i64],
+                    operands=[ref], loc=loc).results[0]
             idx_vals.append(ir.Operation.create("arith.index_cast", results=[idxty],
                     operands=[elem], loc=loc).results[0])
 
@@ -510,7 +519,7 @@ def _outline_work_item(ctx, kernel, ctx_val):
                         attributes={"value": ir.IntegerAttr.get(i64, k)}, loc=loc).results[0]
                 v64 = ir.Operation.create("arith.index_cast", results=[i64],
                         operands=[iv], loc=loc).results[0]
-                sub = ir.Operation.create("emitc.subscript", results=[i64],
+                sub = ir.Operation.create("emitc.subscript", results=[_lvalue(i64)],
                         operands=[arr, kc], loc=loc).results[0]
                 # emitc.assign operands are (lvalue dest, value).
                 ir.Operation.create("emitc.assign", results=[], operands=[sub, v64], loc=loc)

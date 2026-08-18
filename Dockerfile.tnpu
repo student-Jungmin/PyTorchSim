@@ -34,6 +34,10 @@ RUN --mount=type=secret,id=tnpu_token \
       /workspace/triton-npu/setup/restore.sh --prebuilt
 
 ENV TNPU_DIR=/workspace/triton-npu
+# The TOG builder parses the IR tnpu prints, so it has to link the SAME LLVM.
+# torchsim_base sets this to /riscv-llvm (LLVM 20) because that is all it has;
+# LLVM 23 arrives with restore.sh above, so the pointer is corrected here.
+ENV TORCHSIM_LLVM_PATH=/workspace/LLVM_DIR/llvm-project/build/install/bin
 # tnpu defaults to a separate fp8 spike and asks for zvfp8; the released spike
 # has neither, and an unknown extension stops spike at startup. Drop once
 # PSAL-POSTECH/riscv-isa-sim#7 is in the release.

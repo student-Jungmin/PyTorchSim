@@ -134,10 +134,11 @@ def _emit_memory_bar(ctx, anchor_op, tag_id, tag_index, write_bufs):
 
 
 def _flatten_add(expr):
-    """Top-level additive summands of an AffineExpr (`.lhs`/`.rhs` come back typed
-    as the base AffineExpr, so use the `isinstance`/cast pattern, not Python
-    isinstance)."""
-    if ir.AffineAddExpr.isinstance(expr):
+    """Top-level additive summands of an AffineExpr.
+
+    `.lhs`/`.rhs` come back typed, so `isinstance` decides and the cast narrows.
+    """
+    if isinstance(expr, ir.AffineAddExpr):
         a = ir.AffineAddExpr(expr)
         return _flatten_add(a.lhs) + _flatten_add(a.rhs)
     return [expr]
@@ -149,12 +150,12 @@ def _neg_coeff_dim(summand):
     with coefficient -1 in the togsim.wait tag index -- a SENTINEL marking the
     reduction axis, not an arithmetic offset (legacy TileGraphParser skips stride
     -1 for the same reason)."""
-    if not ir.AffineMulExpr.isinstance(summand):
+    if not isinstance(summand, ir.AffineMulExpr):
         return None
     mul = ir.AffineMulExpr(summand)
     l, r = mul.lhs, mul.rhs
-    dim = l if ir.AffineDimExpr.isinstance(l) else (r if ir.AffineDimExpr.isinstance(r) else None)
-    con = l if ir.AffineConstantExpr.isinstance(l) else (r if ir.AffineConstantExpr.isinstance(r) else None)
+    dim = l if isinstance(l, ir.AffineDimExpr) else (r if isinstance(r, ir.AffineDimExpr) else None)
+    con = l if isinstance(l, ir.AffineConstantExpr) else (r if isinstance(r, ir.AffineConstantExpr) else None)
     if dim is None or con is None or ir.AffineConstantExpr(con).value >= 0:
         return None
     return ir.AffineDimExpr(dim).position
@@ -301,7 +302,8 @@ def _rebuild_loop_no_iter(op):
     old_block = o.regions[0].blocks[0]
     oargs = list(old_block.arguments)  # [iv, *iter_args]
 
-    attrs = {na.name: na.attr for na in o.attributes}
+    attrs = {o.attributes[i].name: o.attributes[i].attr
+             for i in range(len(o.attributes))}
     # affine.for tags its operand groups; zero the iter-arg group (last entry).
     if "operandSegmentSizes" in attrs:
         seg = [int(x) for x in str(attrs["operandSegmentSizes"]).split(":")[1].strip(" >").split(",")]
@@ -369,7 +371,7 @@ def _collect_dma_nodes(builder):
             return
         seen.add(id(n))
         if isinstance(n, (TOGDMANode, TOGDMAWaitNode)) and n.op is not None:
-            by_op[id(n.op.operation)] = n
+            by_op[n.op.operation] = n
         for c in n.children:
             visit(c)
 
@@ -523,7 +525,7 @@ def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs):
     for op in list(walk_ops(block)):
         name = op.operation.name
         if name == "togsim.transfer":
-            node = dma_by_op.get(id(op.operation))
+            node = dma_by_op.get(op.operation)
             if node is None:
                 continue
             _emit_one_dma(ctx, op, node, builder, bufs, tags)
@@ -600,10 +602,10 @@ def _check_replayed_loops_are_sampled(block, builder):
                     return True
         return False
 
-    nodes = {id(n.op.operation) for n in builder.loop_nodes}
+    nodes = {n.op.operation for n in builder.loop_nodes}
     orphans = [op for op in walk_ops(block)
                if op.operation.name in _LOOP_OPS
-               and id(op.operation) not in nodes and carries_work(op)]
+               and op.operation not in nodes and carries_work(op)]
     if orphans:
         raise RuntimeError(
             f"{len(orphans)} loop(s) survive into the trace without a TOG node, "

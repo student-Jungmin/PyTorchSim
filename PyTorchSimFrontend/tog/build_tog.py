@@ -9,17 +9,20 @@ mlir/include/mlir/Analysis/TileOperationGraph.h).
 Usage:
     python3 build_tog.py <postvcix.mlir>
 
-Requires the MLIR Python bindings on PYTHONPATH
-(/riscv-llvm/python_packages/mlir_core).
+Requires the MLIR Python bindings of the LLVM triton-npu prints this IR with;
+the package `__init__` selects them from TORCHSIM_LLVM_PATH.
 """
 
 import os
 import sys
 
-# Allow running standalone without PYTHONPATH set.
-_DEFAULT_BINDINGS = "/riscv-llvm/python_packages/mlir_core"
-if os.path.isdir(_DEFAULT_BINDINGS) and _DEFAULT_BINDINGS not in sys.path:
-    sys.path.insert(0, _DEFAULT_BINDINGS)
+if __package__ in (None, ""):
+    _llvm = os.environ.get(
+        "TORCHSIM_LLVM_PATH",
+        "/workspace/LLVM_DIR/llvm-project/build/install/bin").rstrip("/")
+    _bindings = os.path.join(os.path.dirname(_llvm), "python_packages", "mlir_core")
+    if os.path.isdir(_bindings) and _bindings not in sys.path:
+        sys.path.insert(0, _bindings)
 
 import mlir.ir as ir  # noqa: E402
 
@@ -277,7 +280,7 @@ def _vcix_opcode(op):
 
 
 def _is_block_arg(value):
-    return ir.BlockArgument.isinstance(value)
+    return isinstance(value, ir.BlockArgument)
 
 
 def _defining_op_name(value):
@@ -310,7 +313,7 @@ def _value_key(value):
 
 
 #: First slot after the tag pair. Everything at or past it is scalar (dma_type,
-#: vlane stride, mask clamps) except the indirect index, which is a tile.
+#: the vlane stride, a masked transfer's clamps) except the indirect index.
 _TRANSFER_TAIL = 6
 
 
@@ -318,33 +321,17 @@ def transfer_index_operand(op):
     """The indirect gather index of a `togsim.transfer`, or None if it has none.
 
     READ OFF THE OPERAND TYPES, NOT OFF A SLOT NUMBER, BECAUSE THERE ARE TWO
-    PRODUCERS AND THEY DISAGREE. The MLIR route mints this op in
-    triton-npu emits the transfer with a `dma_type` operand at slot 6, so
-    its index lands at 8. triton-npu mints the same op without one -- it says
-    what the `dma_kind` attribute already said, and tnpu deleted it (see that
-    repo's passes/lib_transfer.py, which now names INDIRECT = 7) -- so its index
-    lands at 7. Both readers here had 8 written in, which is why the whole
-    Triton route stopped producing a trace the moment triton-npu's develop was
-    merged:
-
-        offset = operands[8] if "indirect" in op.attributes else None
-        IndexError: list index out of range
-
-    and, in _dma_start_fields, the softer half of the same bug: `if
-    len(operands) > 8` is False for tnpu's eight-operand indirect transfer, so
-    the index was silently dropped and the gather lost its dependency edge.
-
-    THE TYPES SAY IT AND THE SLOT NUMBERS DO NOT. Everything from slot 6 on is
-    an `index` scalar -- dma_type where it exists, the vlane stride, and a
-    masked transfer's clamp operands -- except the index buffer, which is the
-    only shaped operand back there. So the first shaped operand past the tag is
-    the answer under either layout, and a masked transfer with no `indirect`
-    attribute correctly has none.
+    PRODUCERS AND THEY DISAGREE. Everything from slot 6 on is an `index` scalar
+    -- dma_type where it exists, the vlane stride, and a masked transfer's clamp
+    operands -- except the index buffer, which is the only shaped operand back
+    there. So the first shaped operand past the tag is the answer under either
+    layout, and a masked transfer with no `indirect` attribute correctly has
+    none.
     """
     if "indirect" not in op.attributes:
         return None
     for v in list(op.operands)[_TRANSFER_TAIL:]:
-        if ir.ShapedType.isinstance(v.type):
+        if isinstance(v.type, ir.ShapedType):
             return v
     return None
 
@@ -366,9 +353,9 @@ def _int_array_attr(op, key):
 
 # ----- affine expr utilities (mirror the C++ free functions) ---------------
 def _is_function_of_dim(expr, dim):
-    if ir.AffineDimExpr.isinstance(expr):
+    if isinstance(expr, ir.AffineDimExpr):
         return ir.AffineDimExpr(expr).position == dim
-    if ir.AffineBinaryExpr.isinstance(expr):
+    if isinstance(expr, ir.AffineBinaryExpr):
         b = ir.AffineBinaryExpr(expr)
         return _is_function_of_dim(b.lhs, dim) or _is_function_of_dim(b.rhs, dim)
     return False
@@ -376,17 +363,17 @@ def _is_function_of_dim(expr, dim):
 
 def _get_coefficient_from_dim(expr, dim):
     """Port of getCoefficientFromDim: coefficient of `dim` in expr, or -1."""
-    if ir.AffineMulExpr.isinstance(expr):
+    if isinstance(expr, ir.AffineMulExpr):
         b = ir.AffineMulExpr(expr)
         lhs, rhs = b.lhs, b.rhs
-        if ir.AffineConstantExpr.isinstance(lhs) and ir.AffineDimExpr.isinstance(rhs):
+        if isinstance(lhs, ir.AffineConstantExpr) and isinstance(rhs, ir.AffineDimExpr):
             if _is_function_of_dim(rhs, dim):
                 return ir.AffineConstantExpr(lhs).value
-        elif ir.AffineConstantExpr.isinstance(rhs) and ir.AffineDimExpr.isinstance(lhs):
+        elif isinstance(rhs, ir.AffineConstantExpr) and isinstance(lhs, ir.AffineDimExpr):
             if _is_function_of_dim(lhs, dim):
                 return ir.AffineConstantExpr(rhs).value
         return -1
-    if ir.AffineAddExpr.isinstance(expr):
+    if isinstance(expr, ir.AffineAddExpr):
         b = ir.AffineAddExpr(expr)
         r = _get_coefficient_from_dim(b.lhs, dim)
         if r != -1:
@@ -395,7 +382,7 @@ def _get_coefficient_from_dim(expr, dim):
         if r != -1:
             return r
         return -1
-    if ir.AffineDimExpr.isinstance(expr):
+    if isinstance(expr, ir.AffineDimExpr):
         if _is_function_of_dim(expr, dim):
             return 1
     return -1
@@ -406,28 +393,28 @@ def _collect_coefficients(expr):
     out = []
 
     def rec(e):
-        if ir.AffineMulExpr.isinstance(e):
+        if isinstance(e, ir.AffineMulExpr):
             b = ir.AffineMulExpr(e)
             lhs, rhs = b.lhs, b.rhs
-            if ir.AffineConstantExpr.isinstance(lhs):
-                if ir.AffineDimExpr.isinstance(rhs):
+            if isinstance(lhs, ir.AffineConstantExpr):
+                if isinstance(rhs, ir.AffineDimExpr):
                     out.append(ir.AffineConstantExpr(lhs).value)
-                elif ir.AffineFloorDivExpr.isinstance(rhs):
+                elif isinstance(rhs, ir.AffineFloorDivExpr):
                     out.append(ir.AffineConstantExpr(lhs).value)
-            elif ir.AffineConstantExpr.isinstance(rhs):
-                if ir.AffineDimExpr.isinstance(lhs):
+            elif isinstance(rhs, ir.AffineConstantExpr):
+                if isinstance(lhs, ir.AffineDimExpr):
                     out.append(ir.AffineConstantExpr(rhs).value)
-                elif ir.AffineFloorDivExpr.isinstance(lhs):
+                elif isinstance(lhs, ir.AffineFloorDivExpr):
                     out.append(ir.AffineConstantExpr(rhs).value)
-        elif ir.AffineAddExpr.isinstance(e):
+        elif isinstance(e, ir.AffineAddExpr):
             b = ir.AffineAddExpr(e)
             rec(b.lhs)
             rec(b.rhs)
-        elif ir.AffineFloorDivExpr.isinstance(e):
+        elif isinstance(e, ir.AffineFloorDivExpr):
             b = ir.AffineFloorDivExpr(e)
-            if ir.AffineConstantExpr.isinstance(b.rhs):
+            if isinstance(b.rhs, ir.AffineConstantExpr):
                 out.append(ir.AffineConstantExpr(b.rhs).value)
-        elif ir.AffineDimExpr.isinstance(e):
+        elif isinstance(e, ir.AffineDimExpr):
             out.append(1)
 
     rec(expr)
@@ -439,28 +426,28 @@ def _collect_dividers(expr):
     out = []
 
     def rec(e):
-        if ir.AffineMulExpr.isinstance(e):
+        if isinstance(e, ir.AffineMulExpr):
             b = ir.AffineMulExpr(e)
             lhs, rhs = b.lhs, b.rhs
-            if ir.AffineConstantExpr.isinstance(lhs):
-                if ir.AffineDimExpr.isinstance(rhs):
+            if isinstance(lhs, ir.AffineConstantExpr):
+                if isinstance(rhs, ir.AffineDimExpr):
                     out.append(1)
-                elif ir.AffineFloorDivExpr.isinstance(rhs):
+                elif isinstance(rhs, ir.AffineFloorDivExpr):
                     rec(rhs)
-            elif ir.AffineConstantExpr.isinstance(rhs):
-                if ir.AffineDimExpr.isinstance(lhs):
+            elif isinstance(rhs, ir.AffineConstantExpr):
+                if isinstance(lhs, ir.AffineDimExpr):
                     out.append(1)
-                elif ir.AffineFloorDivExpr.isinstance(lhs):
+                elif isinstance(lhs, ir.AffineFloorDivExpr):
                     rec(lhs)
-        elif ir.AffineAddExpr.isinstance(e):
+        elif isinstance(e, ir.AffineAddExpr):
             b = ir.AffineAddExpr(e)
             rec(b.lhs)
             rec(b.rhs)
-        elif ir.AffineFloorDivExpr.isinstance(e):
+        elif isinstance(e, ir.AffineFloorDivExpr):
             b = ir.AffineFloorDivExpr(e)
-            if ir.AffineConstantExpr.isinstance(b.rhs):
+            if isinstance(b.rhs, ir.AffineConstantExpr):
                 out.append(ir.AffineConstantExpr(b.rhs).value)
-        elif ir.AffineDimExpr.isinstance(e):
+        elif isinstance(e, ir.AffineDimExpr):
             out.append(1)
 
     rec(expr)
@@ -607,7 +594,7 @@ class TogBuilder:
         operands = list(oper.operands)
 
         def single_const(m):
-            return len(m.results) == 1 and ir.AffineConstantExpr.isinstance(m.results[0])
+            return len(m.results) == 1 and isinstance(m.results[0], ir.AffineConstantExpr)
 
         if single_const(lb_map):
             start = ir.AffineConstantExpr(lb_map.results[0]).value
@@ -849,20 +836,9 @@ class TogBuilder:
     def _dma_start_fields(self, op):
         """Decode a `togsim.transfer` into the legacy src/dst view.
 
-        togsim.transfer operand layout (mirrors build_skeleton._transfer_fields /
-        triton-npu's transfer lowering):
-            dram, dram_idx, sram, sram_idx, tag, tag_idx[, dma_type], vst[, offset]
-        The DRAM side is always operand[0]/[1], the SRAM spad operand[2]/[3], the
-        runtime tag slot operand[4] (tag memref) + operand[5] (tag_idx). The
-        optional indirect-offset spad is NOT at a fixed slot -- the two producers
-        of this op differ from slot 6 on -- so it comes from
-        `transfer_index_operand`, which reads it off the operand types.
-
-        Direction (from dma_kind / dma_type) decides the src/dst mapping so the
-        rest of build_tog keeps the old memref.dma_start convention: for a load
-        the DRAM side is the SOURCE and the SRAM spad the DEST; a store reverses
-        it. src/dst therefore still carry the right memory spaces (DRAM=0,
-        SRAM=1) that `_handle_dma_start` recovers is_write from."""
+        Only slots 0-5 are fixed; the indirect offset comes from
+        `transfer_index_operand` rather than a slot number.
+        """
         operands = list(op.operands)
         dram, dram_idx = operands[0], operands[1]
         sram, sram_idx = operands[2], operands[3]
@@ -942,9 +918,9 @@ class TogBuilder:
 
         # element size
         et = tile_mt.element_type
-        if ir.IntegerType.isinstance(et):
+        if isinstance(et, ir.IntegerType):
             element_size = ir.IntegerType(et).width
-        elif ir.FloatType.isinstance(et):
+        elif isinstance(et, ir.FloatType):
             element_size = ir.FloatType(et).width
         else:
             raise RuntimeError("Unsupported element type")
@@ -1244,7 +1220,7 @@ def _is_address_plumbing(op):
     results = list(op.operation.results)
     if not results:
         return False
-    return all(ir.IndexType.isinstance(r.type) or ir.IntegerType.isinstance(r.type)
+    return all(isinstance(r.type, ir.IndexType) or isinstance(r.type, ir.IntegerType)
                for r in results)
 
 

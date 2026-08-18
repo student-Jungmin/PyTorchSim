@@ -65,7 +65,7 @@ _IGNORE_OPS = {"memref.dealloc",
 
 def _is_memref(v):
     try:
-        return ir.MemRefType.isinstance(v.type)
+        return isinstance(v.type, ir.MemRefType)
     except Exception:
         return False
 

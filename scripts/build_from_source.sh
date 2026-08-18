@@ -45,6 +45,10 @@ export GEM5_PATH="$home/gem5/build/RISCV/gem5.opt"
 cd "$home"
 
 # LLVM + MLIR (RISCV target)
+# NOTE: `tog/` no longer reads these bindings. It links the LLVM 23 that
+# triton-npu/setup/restore.sh installs, named by TORCHSIM_LLVM_PATH. What is
+# built here is the RISC-V LLVM; the bindings below are legacy.
+#
 # MLIR Python bindings are enabled so Python-side MLIR passes can run. The
 # bindings are a native extension: they MUST be built against the same Python
 # that runs PyTorchSim at runtime (the conda 3.11 here) or `import mlir` will
