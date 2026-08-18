@@ -312,21 +312,16 @@ def _value_key(value):
     return ("res", value.owner, 0)
 
 
-#: First slot after the tag pair. Everything at or past it is scalar (dma_type,
-#: the vlane stride, a masked transfer's clamps) except the indirect index.
+#: First slot after the tag pair; everything before it is fixed.
 _TRANSFER_TAIL = 6
 
 
 def transfer_index_operand(op):
     """The indirect gather index of a `togsim.transfer`, or None if it has none.
 
-    READ OFF THE OPERAND TYPES, NOT OFF A SLOT NUMBER, BECAUSE THERE ARE TWO
-    PRODUCERS AND THEY DISAGREE. Everything from slot 6 on is an `index` scalar
-    -- dma_type where it exists, the vlane stride, and a masked transfer's clamp
-    operands -- except the index buffer, which is the only shaped operand back
-    there. So the first shaped operand past the tag is the answer under either
-    layout, and a masked transfer with no `indirect` attribute correctly has
-    none.
+    Found by TYPE, not slot: past the tag the other operands are `index`
+    scalars (runtime strides, a masked transfer's clamps) and this is the
+    only shaped one.
     """
     if "indirect" not in op.attributes:
         return None
@@ -814,39 +809,37 @@ class TogBuilder:
 
     # ---- transfer (formerly memref.dma_start) ----
     @staticmethod
-    def _transfer_is_load(op, dma_type_operand):
+    def _transfer_is_load(op):
         """True if a `togsim.transfer` is a load (DRAM -> SRAM), False for a store.
 
-        Prefer the `dma_kind` attr ("MVIN"/"MVIN2"/"MVIN3" load, "MVOUT" store);
-        fall back to the `dma_type` operand constant (MVIN=2/MVIN2=1/MVIN3=14 are
-        loads, MVOUT=3 is a store)."""
+        From `dma_kind` alone: MVIN/MVIN2/MVIN3 load, MVOUT store.
+        """
         oper = op.operation
-        if "dma_kind" in oper.attributes:
-            try:
-                kind = ir.StringAttr(oper.attributes["dma_kind"]).value
-            except Exception:
-                kind = str(oper.attributes["dma_kind"]).strip('"')
-            if kind:
-                return kind.upper().startswith("MVIN")
-        c = _const_index_value(dma_type_operand)
-        if c is not None:
-            return c in (1, 2, 14)
-        return True
+        if "dma_kind" not in oper.attributes:
+            raise RuntimeError(
+                "togsim.transfer carries no dma_kind, so its direction is "
+                "unknown. The producer puts it on every transfer "
+                "(triton-npu passes/lib_transfer.py PLAIN_ATTRS); a transfer "
+                "without one did not come from there.")
+        try:
+            kind = ir.StringAttr(oper.attributes["dma_kind"]).value
+        except Exception:
+            kind = str(oper.attributes["dma_kind"]).strip('"')
+        return kind.upper().startswith("MVIN")
 
     def _dma_start_fields(self, op):
         """Decode a `togsim.transfer` into the legacy src/dst view.
 
-        Only slots 0-5 are fixed; the indirect offset comes from
-        `transfer_index_operand` rather than a slot number.
+        Only slots 0-5 are fixed (dram, dram_idx, sram, sram_idx, tag, tag_idx);
+        the indirect offset comes from `transfer_index_operand`, not a slot.
         """
         operands = list(op.operands)
         dram, dram_idx = operands[0], operands[1]
         sram, sram_idx = operands[2], operands[3]
         tag, tag_idx = operands[4], operands[5]
-        dma_type = operands[6]
         offset = transfer_index_operand(op)
 
-        if self._transfer_is_load(op, dma_type):   # DRAM -> SRAM
+        if self._transfer_is_load(op):             # DRAM -> SRAM
             src, src_idx = dram, dram_idx
             dst, dst_idx = sram, sram_idx
         else:                                       # SRAM -> DRAM
@@ -856,7 +849,7 @@ class TogBuilder:
             "src": src, "src_type": src.type, "src_indices": [src_idx],
             "dst": dst, "dst_type": dst.type, "dst_indices": [dst_idx],
             "tag": tag, "tag_indices": [tag_idx],
-            "dma_type": dma_type, "offset": offset,
+            "offset": offset,
         }
 
     def _handle_dma_start(self, op, node):
