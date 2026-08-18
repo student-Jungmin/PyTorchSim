@@ -85,17 +85,20 @@ def _walk_compute_ops(cn):
 
 
 def _rw_buffers_of_compute(cn):
-    """(reads, writes): the @global SRAM buffers a compute node reads/writes, walking
-    nested regions and classifying each op that touches a memref."""
-    reads, writes = set(), set()
+    """(reads, writes): the @global SRAM buffers a compute node reads/writes.
+
+    Deduped IN IR ORDER, not as sets: the caller numbers buffers by first
+    sight, so an unordered container makes the numbering vary per run.
+    """
+    reads, writes = {}, {}
     def rd(v):
         b = _global_of(v)
         if b:
-            reads.add(b)
+            reads.setdefault(b)
     def wr(v):
         b = _global_of(v)
         if b:
-            writes.add(b)
+            writes.setdefault(b)
     for op in _walk_compute_ops(cn):
         if any(_is_memref(r) for r in op.results):
             continue                                   # view/cast/alloc -- address only
@@ -144,7 +147,7 @@ def _rw_buffers_of_compute(cn):
             raise RuntimeError(
                 f"dep_analysis: unclassified memref op '{name}' in a compute node -- "
                 f"it touches an SRAM buffer; classify it in _LOAD_OPS/_STORE_OPS")
-    return reads, writes
+    return list(reads), list(writes)
 
 
 def _dma_buffer(builder, dma_node):
@@ -167,10 +170,10 @@ def compute_buffers(cn):
     """(read_buffers, write_buffers) for one compute node, including the virtual
     SA_WEIGHTS edge (preload writes it, matmul reads it)."""
     reads, writes = _rw_buffers_of_compute(cn)
-    if cn.compute_type == 1:      # MATMUL consumes the preloaded weights
-        reads.add(SA_WEIGHTS)
-    elif cn.compute_type == 2:    # PRELOAD loads them
-        writes.add(SA_WEIGHTS)
+    if cn.compute_type == 1 and SA_WEIGHTS not in reads:
+        reads.append(SA_WEIGHTS)
+    elif cn.compute_type == 2 and SA_WEIGHTS not in writes:
+        writes.append(SA_WEIGHTS)
     return reads, writes
 
 
@@ -190,8 +193,8 @@ def analyze(module):
         nodes.append({
             "kind": "STORE" if dn.is_write else "LOAD",
             "buf": buf, "arg": str(dn.base_addr),
-            "reads": {buf} if dn.is_write else set(),
-            "writes": {buf} if not dn.is_write else set(),
+            "reads": [buf] if dn.is_write else [],
+            "writes": [buf] if not dn.is_write else [],
             "node": dn,
         })
     for cn in builder.compute_nodes:
