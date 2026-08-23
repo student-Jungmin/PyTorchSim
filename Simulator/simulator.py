@@ -69,6 +69,33 @@ TORCH_TO_NUMPY = {
     torch.float16: np.float16,
 }
 
+#: What gem5 says when it dies, as opposed to the libc backtrace that follows it.
+_GEM5_SIGNAL = re.compile(
+    r"^(?:.*\b(?:panic|fatal):.*|.*Assertion.*|Program aborted at tick.*)$", re.M)
+
+
+def _gem5_failure(proc, log_path):
+    """The message a failed gem5 run should raise, from the log it redirects to.
+
+    `-r` sends stdout AND stderr to `--stdout-file`, so the pipes are empty and
+    a return code on its own says nothing: gem5 panics and aborts.
+    """
+    how = (f"signal {-proc.returncode}" if proc.returncode < 0
+           else f"exit {proc.returncode}")
+    try:
+        with open(log_path, errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        text = (proc.stderr or "") + (proc.stdout or "")
+    hits = [h.strip() for h in _GEM5_SIGNAL.findall(text)]
+    if not hits:
+        hits = [l.strip() for l in text.strip().splitlines()[-3:]]
+    if not hits:
+        hits = [f"gem5 left no diagnostic; see {log_path}"]
+    return (f"Gem5 Simulation Failed ({how}); full log in {log_path}\n  "
+            + "\n  ".join(h[:300] for h in hits[:3]))
+
+
 class CycleSimulator():
     def __init__(self) -> None:
         pass
@@ -82,13 +109,9 @@ class CycleSimulator():
             logger.debug(f"[Gem5] cmd> {' '.join(gem5_cmd)}")
             logger.info("[Gem5] Gem5 simulation started")
 
-        try:
-            #with ProgressBar("[Gem5] Running simulation", silent_mode=is_dryrun):
-            output = subprocess.check_output(gem5_cmd, stderr=subprocess.DEVNULL)
-        except subprocess.CalledProcessError as e:
-            output_error = e.output.decode() if isinstance(e.output, bytes) else str(e.output)
-            logger.debug(f"[Gem5] Gem5 simulation failed with error: \"{output_error}\"")
-            raise RuntimeError(f"Gem5 Simulation Failed: \"{output_error}\"")
+        proc = subprocess.run(gem5_cmd, capture_output=True, text=True, errors="replace")
+        if proc.returncode != 0:
+            raise RuntimeError(_gem5_failure(proc, os.path.join(dir_path, "sto.log")))
 
         with open(f"{dir_path}/stats.txt", "r") as stat_file:
             raw_list = stat_file.readlines()
