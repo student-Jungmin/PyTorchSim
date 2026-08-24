@@ -45,7 +45,19 @@ python timing_mode_validation/summary.py --op rmsnorm --machine v6e
 
 ## 폭
 
-fp32와 fp16 두 번 돌린다. **bf16은 백엔드가 거부한다** —
+fp32와 fp16 두 번 돌린다.
+
+**fp16은 spike를 끈 상태에서만 돈다.** 이 빌드의 spike에는 `zvfh`가 없어서 벡터 fp16
+명령을 실행하지 못한다 — 타이밍 전용 실행에는 상관없지만, `TOGSIM_CONFIG`가
+functional mode를 켜는 config(예: `..._tpuv6e.yml`)를 가리키고 있으면 fp16이 spike에서
+죽는다. `run.py`는 `_timing_only` config를 기본으로 잡지만 이미 설정된 `TOGSIM_CONFIG`를
+덮지 않으므로, `tnpu-env.sh`를 source한 셸에서는 직접 지정해야 한다:
+
+```bash
+export TOGSIM_CONFIG=$TORCHSIM_DIR/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e_timing_only.yml
+```
+
+**bf16은 백엔드가 거부한다** —
 `tnpu/passes/p00_refuse_narrow_floats.py`가 "bf16 has no instruction on this machine"으로
 멈춘다. TPU 쪽은 bf16이 네이티브이므로 2바이트 열은 **우리 fp16 대 TPU bf16**으로 짝짓고,
 보고서에 그 치환을 적는다.
