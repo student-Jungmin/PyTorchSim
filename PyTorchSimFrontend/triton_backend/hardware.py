@@ -21,6 +21,9 @@ class HardwareInfo:
         size = tile_m * ((tile_n + self.vector_lane - 1) // self.vector_lane)
         return max(size, 2)  # vector load/store
 
+    #: Triton refuses a tensor with more elements than this, whatever its dtype.
+    TRITON_MAX_TILE_NUMEL = 1 << 20
+
     def gemm_tile_candidates(self, M, N, K, n_extra_node=0, n_prologue_node=0,
                              n_prologue_extra_read=0, pad_k=True,
                              precision_bytes=4, budget_divisor=1):
@@ -55,6 +58,9 @@ class HardwareInfo:
                 tile_M = i * self.vector_lane if M > self.vector_lane else M_padded
                 for j in tile_N_range:
                     tile_N = j * self.vector_lane if N > self.vector_lane else N_padded
+                    if max(tile_M * tile_K, tile_K * tile_N,
+                           tile_M * tile_N) > self.TRITON_MAX_TILE_NUMEL:
+                        continue
                     used_spad_size = (tile_M * tile_K * (1 + n_prologue_node)
                                       + tile_K * tile_N * (1 + n_prologue_extra_read)
                                       + tile_M * tile_N * (1 + n_extra_node)) * precision_bytes
