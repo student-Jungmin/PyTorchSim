@@ -12,6 +12,19 @@ sys.path.insert(0, HERE)
 
 from cases import load, ops  # noqa: E402
 
+
+def descriptions():
+    """One line per op, read from its builder's docstring in bench.py."""
+    import ast
+    src = open(os.path.join(HERE, "bench.py")).read()
+    out = {}
+    for node in ast.parse(src).body:
+        if isinstance(node, ast.FunctionDef):
+            doc = (ast.get_docstring(node) or "").split("\n")[0]
+            if doc:
+                out[node.name] = doc
+    return out
+
 OUT = os.path.join(HERE, "PARAMS.md")
 
 
@@ -27,6 +40,7 @@ def _fmt(vals, limit=14):
 
 
 def main():
+    desc = descriptions()
     body, total = [], 0
     for op in ops():
         cases = load([op])
@@ -36,6 +50,7 @@ def main():
         added = [c for c in cases if c["origin"] == "added"]
         body += [f"## `{op}` — {len(cases)}개 "
                   f"(모델 {len(real)} / 추가 {len(added)})", "",
+                  desc.get(op, ""), "",
                   "| 파라미터 | 범위 | 모델 값 | 추가 값 |", "|---|---|---|---|"]
         for i, name in enumerate(names):
             col = [c["size"][i] for c in cases]

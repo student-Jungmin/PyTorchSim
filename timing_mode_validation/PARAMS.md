@@ -8,6 +8,8 @@
 
 ## `attention` — 3개 (모델 3 / 추가 0)
 
+Score, softmax and context together -- the same math as attention.py.
+
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
 | `B` | 12 – 32 | 12, 32 | — |
@@ -15,6 +17,8 @@
 | `D` | 64 – 128 | 64, 128 | — |
 
 ## `attn_block` — 4개 (모델 2 / 추가 2)
+
+One attention block end to end: projections, GQA repeat, scores, context.
 
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
@@ -25,6 +29,8 @@
 
 ## `attn_causal` — 2개 (모델 2 / 추가 0)
 
+Attention with the additive causal mask the models actually build.
+
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
 | `B` | 32 | 32 | — |
@@ -32,6 +38,8 @@
 | `D` | 128 | 128 | — |
 
 ## `attn_decode` — 7개 (모델 2 / 추가 5)
+
+One query against a KV cache: the matrix-vector regime of serving.
 
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
@@ -41,6 +49,8 @@
 
 ## `attn_pv` — 7개 (모델 4 / 추가 3)
 
+The context matmul alone: [B,S,S] @ [B,S,D].
+
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
 | `B` | 1 – 32 | 32 | 1, 4 |
@@ -49,6 +59,8 @@
 
 ## `attn_qk` — 17개 (모델 8 / 추가 9)
 
+The score matmul alone: [B,S,D] @ [B,D,S].
+
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
 | `B` | 1 – 32 | 8, 12, 16, 32 | 1, 4, 32 |
@@ -56,6 +68,8 @@
 | `D` | 32 – 512 | 64, 88, 128, 192, 256 | 32, 96, 128, 160, 512 |
 
 ## `conv` — 13개 (모델 9 / 추가 4)
+
+A dense 2-D convolution, the ResNet-shaped baseline.
 
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
@@ -70,6 +84,8 @@
 
 ## `conv1d_causal` — 1개 (모델 1 / 추가 0)
 
+The depthwise causal Conv1d a linear-attention block puts in the loop.
+
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
 | `N` | 1 | 1 | — |
@@ -78,6 +94,8 @@
 | `R` | 4 | 4 | — |
 
 ## `convtranspose` — 1개 (모델 1 / 추가 0)
+
+A transposed convolution, which the frontend rewrites as a direct one.
 
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
@@ -91,6 +109,8 @@
 
 ## `dispatch` — 1개 (모델 1 / 추가 0)
 
+Gather tokens to experts and scatter the results back.
+
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
 | `tokens` | 2048 | 2048 | — |
@@ -98,6 +118,8 @@
 | `hidden` | 4096 | 4096 | — |
 
 ## `dwconv` — 5개 (모델 2 / 추가 3)
+
+Depthwise convolution: groups == channels, one filter per channel.
 
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
@@ -110,6 +132,8 @@
 
 ## `embedding` — 4개 (모델 2 / 추가 2)
 
+Token embedding: T rows gathered out of a [V, H] table.
+
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
 | `vocab` | 32000 – 262144 | 32000, 128256 | 50257, 262144 |
@@ -118,12 +142,16 @@
 
 ## `gelu` — 5개 (모델 2 / 추가 3)
 
+GELU on an MLP-width tensor.
+
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
 | `rows` | 512 – 2048 | 512, 2048 | 2048 |
 | `interm` | 3072 – 12288 | 3072 | 4096, 8192, 12288 |
 
 ## `gemm` — 79개 (모델 42 / 추가 37)
+
+A @ B, the projection shape every transformer layer is made of.
 
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
@@ -133,6 +161,8 @@
 
 ## `gemm_bias` — 1개 (모델 1 / 추가 0)
 
+A @ B + bias, the shape a projection with bias takes.
+
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
 | `M` | 2048 | 2048 | — |
@@ -140,6 +170,8 @@
 | `N` | 4096 | 4096 | — |
 
 ## `gqa_attn` — 6개 (모델 3 / 추가 3)
+
+Attention with repeat_kv in the graph, which is what GQA costs.
 
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
@@ -150,12 +182,16 @@
 
 ## `layernorm` — 7개 (모델 4 / 추가 3)
 
+LayerNorm over the last axis, the encoder-side norm.
+
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
 | `rows` | 512 – 8192 | 512, 2048, 8192 | 2048 |
 | `hidden` | 768 – 8192 | 768, 4096 | 1024, 2048, 8192 |
 
 ## `maxpool` — 3개 (모델 2 / 추가 1)
+
+Max pooling, the YOLO SPPF and ResNet stem shape.
 
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
@@ -168,6 +204,8 @@
 
 ## `mlp_swiglu` — 4개 (모델 2 / 추가 2)
 
+A whole gated MLP: three GEMMs and the elementwise between them.
+
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
 | `S` | 128 – 4096 | 512, 2048 | 128, 4096 |
@@ -176,6 +214,8 @@
 
 ## `moe_route` — 3개 (모델 2 / 추가 1)
 
+Router softmax, top-k and renormalise -- the whole gate.
+
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
 | `tokens` | 2048 | 2048 | 2048 |
@@ -183,6 +223,8 @@
 | `k` | 6 – 8 | 8 | 6 |
 
 ## `patch_embed` — 2개 (모델 2 / 추가 0)
+
+The vision patch embedding: kernel == stride, no overlap.
 
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
@@ -194,6 +236,8 @@
 
 ## `pwconv` — 4개 (모델 2 / 추가 2)
 
+Pointwise 1x1 convolution, the most common conv node in the census.
+
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
 | `N` | 1 | 1 | 1 |
@@ -204,12 +248,16 @@
 
 ## `reduce_sum` — 3개 (모델 1 / 추가 2)
 
+Row-wise sum, the reduction shape a norm and a softmax share.
+
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
 | `rows` | 512 – 8192 | 2048 | 512, 8192 |
 | `cols` | 4096 | 4096 | 4096 |
 
 ## `residual` — 9개 (모델 1 / 추가 8)
+
+A plain residual add, the cheapest DRAM-bound shape in a layer.
 
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
@@ -218,12 +266,16 @@
 
 ## `rmsnorm` — 19개 (모델 7 / 추가 12)
 
+RMSNorm over the last axis -- 45 of the 68 captured models use it.
+
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
 | `rows` | 1 – 16384 | 128, 512, 2048, 4096 | 1, 8, 64, 1024, 2048, 8192, 16384 |
 | `hidden` | 512 – 16384 | 2048, 3072, 4096, 8192 | 512, 1024, 4096, 5120, 6144, 12288, 16384 |
 
 ## `rope` — 2개 (모델 2 / 추가 0)
+
+Rotary embedding applied to one projection, rotate_half form.
 
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
@@ -234,6 +286,8 @@
 
 ## `rope_outer` — 2개 (모델 2 / 추가 0)
 
+The inv_freq outer product: a matmul whose K is 1.
+
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
 | `S` | 512 – 2048 | 512, 2048 | — |
@@ -241,12 +295,16 @@
 
 ## `softmax` — 5개 (모델 3 / 추가 2)
 
+Row softmax, the shape attention scores arrive in.
+
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
 | `rows` | 512 – 8192 | 512, 2048, 8192 | 1024, 4096 |
 | `cols` | 512 – 128256 | 512, 2048, 8192 | 4096, 128256 |
 
 ## `softmax3d` — 6개 (모델 3 / 추가 3)
+
+Softmax on a [head, query, key] score tensor, without the matmuls.
 
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
@@ -256,6 +314,8 @@
 
 ## `sort1d` — 3개 (모델 2 / 추가 1)
 
+The router's argsort of flattened top-k ids -- what counting sort replaces.
+
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
 | `tokens` | 512 – 2048 | 2048 | 512 |
@@ -264,12 +324,16 @@
 
 ## `swiglu` — 8개 (모델 3 / 추가 5)
 
+silu(gate) * up, the elementwise half of a gated MLP.
+
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
 | `rows` | 512 – 2048 | 512, 2048 | 2048 |
 | `interm` | 4096 – 28672 | 14336, 24576 | 4096, 8192, 11008, 16384, 28672 |
 
 ## `topk` — 7개 (모델 3 / 추가 4)
+
+Top-k over per-token expert logits, the MoE router's first step.
 
 | 파라미터 | 범위 | 모델 값 | 추가 값 |
 |---|---|---|---|
