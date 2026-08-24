@@ -9,7 +9,7 @@ sys.path.insert(0, base_path)
 import torch
 from Simulator.simulator import TOGSimulator
 
-config = os.environ.get('TOGSIM_CONFIG', f'{base_path}/configs/systolic_ws_128x128_c1_simple_noc_tpuv3.yml')
+config = os.environ.get('TOGSIM_CONFIG', f'{base_path}/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml')
 os.environ['TOGSIM_CONFIG'] = config
 
 def attention(query, key, value):

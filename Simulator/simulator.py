@@ -103,7 +103,12 @@ class CycleSimulator():
     def compile_and_simulate(self, target_binary, vectorlane_size, silent_mode=False):
         dir_path = os.path.join(os.path.dirname(target_binary), "m5out")
         gem5_script_path = os.path.join(extension_config.CONFIG_TORCHSIM_DIR, "gem5_script/script_systolic.py")
-        gem5_cmd = [extension_config.CONFIG_GEM5_PATH, "-r", "--stdout-file=sto.log", "-d", dir_path, gem5_script_path, "-c", target_binary, "--vlane", str(vectorlane_size)]
+        # --vlen too: script_systolic.py defaults to 256, while tnpu.cycle builds the
+        # sample with +zvl<VLEN>b from the same config. A sample measured at a register
+        # width the binary was not built for is not this machine's cycle count.
+        gem5_cmd = [extension_config.CONFIG_GEM5_PATH, "-r", "--stdout-file=sto.log", "-d", dir_path, gem5_script_path,
+                    "-c", target_binary, "--vlane", str(vectorlane_size),
+                    "--vlen", str(extension_config.vpu_vector_length_bits)]
 
         if not silent_mode:
             logger.debug(f"[Gem5] cmd> {' '.join(gem5_cmd)}")
@@ -578,7 +583,7 @@ if __name__ == "__main__":
     test_attribute_path = "/workspace/PyTorchSim/outputs/6vxl6mwzhfl/runtime_0001/attribute/0"
 
     # Test: Launch multiple kernels
-    sim = TOGSimulator(config_path="/workspace/PyTorchSim/configs/systolic_ws_128x128_c1_simple_noc_tpuv3.yml")
+    sim = TOGSimulator(config_path="/workspace/PyTorchSim/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml")
     with sim:
         try:
             id1 = torch.npu.launch_kernel(tog_path=test_tog_path, attribute_path=test_attribute_path)

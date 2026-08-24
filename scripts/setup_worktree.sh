@@ -89,7 +89,12 @@ _self="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 export TORCHSIM_DIR="$_self"
 export TORCHSIM_DUMP_PATH="$_self/outputs"
 export TORCHSIM_LOG_PATH="$_self/togsim_results"
-export TOGSIM_CONFIG="$_self/configs/systolic_ws_128x128_c1_simple_noc_tpuv3.yml"
+# TPU v6e is the default machine; a branch that predates its config keeps v3.
+if [ -f "$_self/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml" ]; then
+  export TOGSIM_CONFIG="$_self/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml"
+else
+  export TOGSIM_CONFIG="$_self/configs/systolic_ws_128x128_c1_simple_noc_tpuv3.yml"
+fi
 
 # Make `import torch_openreg` resolve to THIS worktree's .so first,
 # overriding the conda-wide editable install that points at the main worktree.

@@ -234,7 +234,7 @@ jobs:
     uses: ./.github/workflows/pytorchsim_test.yml
     with:
       image_name: ghcr.io/psal-postech/torchsim-test:${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-      togsim_config: /workspace/PyTorchSim/configs/systolic_ws_128x128_c1_simple_noc_tpuv3.yml
+      togsim_config: /workspace/PyTorchSim/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml
       run_accuracy: true
 
   test-pytorchsim-wrapper2:

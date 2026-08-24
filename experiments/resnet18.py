@@ -9,7 +9,7 @@ import torch
 from torchvision.models import resnet18
 from Simulator.simulator import TOGSimulator
 
-config = os.environ.get('TOGSIM_CONFIG', f'{base_path}/configs/systolic_ws_128x128_c1_simple_noc_tpuv3.yml')
+config = os.environ.get('TOGSIM_CONFIG', f'{base_path}/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml')
 os.environ['TOGSIM_CONFIG'] = config
 
 if __name__ == "__main__":

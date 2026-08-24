@@ -56,7 +56,10 @@ should_run() {
   [[ ",${ONLY}," == *",${name},"* ]]
 }
 
-export TOGSIM_CONFIG=$TORCHSIM_DIR/configs/systolic_ws_128x128_c1_simple_noc_tpuv3_timing_only.yml
+# The ONLY v3 pin left: this script's reference column (baseline_cycle.csv) was
+# measured on a TPUv3, so simulating v6e here would compare two different machines.
+# Everything else validates v6e. Override TOGSIM_CONFIG if you want a v6e run anyway.
+export TOGSIM_CONFIG="${TOGSIM_CONFIG:-$TORCHSIM_DIR/configs/systolic_ws_128x128_c1_simple_noc_tpuv3_timing_only.yml}"
 LOG_DIR=$TORCHSIM_DIR/experiments/artifact/logs
 mkdir -p $LOG_DIR
 

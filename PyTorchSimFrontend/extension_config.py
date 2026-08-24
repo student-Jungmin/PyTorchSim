@@ -51,7 +51,7 @@ def get_write_path(src_code):
 def __getattr__(name):
     # TOGSim config
     config_path = os.environ.get('TOGSIM_CONFIG',
-                default=f"{CONFIG_TORCHSIM_DIR}/configs/systolic_ws_128x128_c1_simple_noc_tpuv3.yml")
+                default=f"{CONFIG_TORCHSIM_DIR}/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml")
     if name == "CONFIG_TOGSIM_CONFIG":
         return config_path
 

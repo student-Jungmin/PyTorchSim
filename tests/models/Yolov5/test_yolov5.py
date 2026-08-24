@@ -230,7 +230,7 @@ if __name__ == "__main__":
     base_dir = os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim")
     config = os.environ.get(
         "TOGSIM_CONFIG",
-        default=f"{base_dir}/configs/systolic_ws_128x128_c1_simple_noc_tpuv3.yml",
+        default=f"{base_dir}/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml",
     )
     args = argparse.ArgumentParser()
     args.add_argument("--batch", type=int, default=1)

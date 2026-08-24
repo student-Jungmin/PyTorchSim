@@ -112,7 +112,7 @@ Worktree-scoped (auto-set by `.envrc`):
 | `TORCHSIM_DIR` | `$PWD` of the worktree |
 | `TORCHSIM_DUMP_PATH` | `$PWD/outputs` |
 | `TORCHSIM_LOG_PATH` | `$PWD/togsim_results` |
-| `TOGSIM_CONFIG` | `$PWD/configs/systolic_ws_128x128_c1_simple_noc_tpuv3.yml` |
+| `TOGSIM_CONFIG` | `$PWD/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml` |
 | `PYTHONPATH` | `$PWD/PyTorchSimDevice:$PWD:$PYTHONPATH` |
 
 Shared (container-dedicated, set the same in every `.envrc`):

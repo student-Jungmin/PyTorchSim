@@ -72,7 +72,7 @@ report next to the number it produced — never folded into a pass.
 | `Scheduler/scheduler.py` | Poisson arrival generator + scheduling utilities for multi-tenant runs |
 | `TOGSim/` | C++ TOGSim source. `src/Simulator.cc`, `Core.cc`, `Dram.cc`, `Interconnect.cc`, `L2Cache.cc`, `Tile.cc`, `TileGraph.cc` are the core models. Externals: ramulator2, booksim, stonneCore, onnx, protobuf, spdlog, yaml-cpp |
 | `AsmParser/` | `tog_generator.py`, `onnx_utility.py` — legacy ONNX TOG generation; now used only by the STONNE sparse path (the main path emits a C++ `trace.so` instead) |
-| `configs/` | TOGSim hardware configs (YAML). The default is `systolic_ws_128x128_c1_simple_noc_tpuv3.yml`. Naming pattern: `systolic_ws_<size>_c<cores>_<noc>_<target>.yml` |
+| `configs/` | TOGSim hardware configs (YAML). The default is `systolic_ws_256x256_c1_simple_noc_tpuv6e.yml`. Naming pattern: `systolic_ws_<size>_c<cores>_<noc>_<target>.yml` |
 | `tests/` | Op- and model-level tests organized under `ops/<family>/` (elementwise, reduce, gemm, conv, attention, view, sort, sparsity, misc, fusion), `models/<name>/` (Llama, Mixtral8x7B, DeepSeek, Diffusion, MoE, MLP, MobileNet, Yolov5) plus single-file model tests (test_resnet, test_transformer, test_vit, test_mlp, test_single_perceptron), and `system/` (scheduler, eager, hetro, stonne, vectorops). Shared helper: `tests/_utils.py`. **Which of them pass is `scripts/ci/triton_route_passing.txt`**; the rest are known gaps, swept and reported by `scripts/ci/triton_route_sweep.py --all` |
 | `experiments/artifact/` | Paper reproduction scripts (`cycle_validation/run_cycle.sh`, `speedup/run_speedup.sh`) |
 | `scripts/` | One-off experiment runners (CompilerOpt, ILS, batch, chiplet, sparsity, stonne, end2end). `build_from_source.sh` builds gem5/llvm/spike |
@@ -122,7 +122,7 @@ Read in `PyTorchSimFrontend/extension_config.py`:
 | Var | Default | Purpose |
 |---|---|---|
 | `TORCHSIM_DIR` | `/workspace/PyTorchSim` | repo root |
-| `TOGSIM_CONFIG` | `configs/systolic_ws_128x128_c1_simple_noc_tpuv3.yml` | TOGSim hardware YAML |
+| `TOGSIM_CONFIG` | `configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml` | TOGSim hardware YAML |
 | `GEM5_PATH` | `/workspace/gem5/build/RISCV/gem5.opt` | gem5 binary |
 | `TORCHSIM_LLVM_PATH` | `$TNPU_LLVM_PATH`, else `/workspace/LLVM_DIR/llvm-project/build/install/bin` | LLVM tool dir **and** the MLIR python bindings `tog/` links. Must be the LLVM triton-npu prints its IR with (23) -- `tog/__init__.py` selects it and drops every other LLVM's bindings; `run.py doctor` reports MISMATCH if the two drift |
 | `TORCHSIM_LOG_PATH` | `$TORCHSIM_DIR/togsim_results` | where TOGSim logs go |

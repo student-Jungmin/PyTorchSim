@@ -154,7 +154,7 @@ def run_one(test, timeout, artifacts, scratch):
     # sets TOGSIM_CONFIG itself and this leaves it alone.
     env.setdefault("TOGSIM_CONFIG", os.path.join(
         ROOT, "configs",
-        "systolic_ws_128x128_c1_simple_noc_tpuv3_functional_only.yml"))
+        "systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml"))
 
     t0, timed_out = time.time(), False
     try:
