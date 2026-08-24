@@ -100,8 +100,15 @@ def cost(op, s):
         n, c, l, r = s
         return n * c * l * r, 4 * (2 * n * c * l + c * r)
     if op == "convtranspose":
+        # The MACs are the ones the backend EMITS, not the transposed
+        # convolution's own. inductor_templates rewrites it as the direct
+        # convolution over a zero-spread input, so the work is the OUTPUT
+        # grid's -- st^2 times the ideal, with those extra products against
+        # inserted zeros.
         n, c, h, w, k, r, st = s
-        return n * h * w * c * k * r * r, 4 * (n * c * h * w + c * k * r * r + n * k * h * st * w * st)
+        oh, ow = (h - 1) * st + r, (w - 1) * st + r
+        return (n * oh * ow * c * k * r * r,
+                4 * (n * c * h * w + c * k * r * r + n * k * oh * ow))
     if op == "maxpool":
         n, c, h, w, k, st = s
         return 0, 4 * (n * c * h * w + n * c * (h // st) * (w // st))

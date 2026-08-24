@@ -47,7 +47,7 @@ conv_16x56x56x64x64x3x1x1,conv,16 56 56 64 64 3 1 1,added,shape,"N, H, W, C_in, 
 conv_1x224x224x3x64x7x2x3,conv,1 224 224 3 64 7 2 3,added,exact,"N, H, W, C_in, C_out, R, stride, pad",118013952,3851008,1925504,30.64,61.29,DRAM,DRAM,DRAM,DRAM,resnet stem 7x7 s2,
 conv_1x56x56x64x64x3x2x1,conv,1 56 56 64 64 3 2 1,added,exact,"N, H, W, C_in, C_out, R, stride, pad",28901376,1150976,575488,25.11,50.22,DRAM,DRAM,DRAM,DRAM,stride 2 3x3,
 conv1d_causal_1x8192x2048x4,conv1d_causal,1 8192 2048 4,census,shape,"N, C, L, R",67108864,134348800,67174400,0.5,1.0,DRAM,DRAM,DRAM,DRAM,qwen3-next causal Conv1d @ 실물 seq,
-convtranspose_1x256x20x20x128x2x2,convtranspose,1 256 20 20 128 2 2,census,none,"N, C_in, H, W, C_out, R, stride",52428800,1753088,876544,29.91,59.81,DRAM,DRAM,DRAM,DRAM,yolov6 neck,직접 conv로 재작성됨
+convtranspose_1x256x20x20x128x2x2,convtranspose,1 256 20 20 128 2 2,census,none,"N, C_in, H, W, C_out, R, stride",209715200,1753088,876544,119.63,239.25,MXU,MXU,DRAM,DRAM,yolov6 neck,직접 conv로 재작성됨
 dispatch_2048x8x4096,dispatch,2048 8 4096,census,none,"tokens, k, hidden",0,100663296,50331648,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,MoE 토큰 분배/취합,index_select + index_add
 dwconv_1x384x14x14x3x1,dwconv,1 384 14 14 3 1,census,exact,"N, C, H, W, R, stride",677376,615936,307968,1.1,2.2,DRAM,DRAM,DRAM,DRAM,mobilenet-v2 depthwise,
 dwconv_1x96x112x112x3x2,dwconv,1 96 112 112 3 2,census,exact,"N, C, H, W, R, stride",2709504,6024576,3012288,0.45,0.9,DRAM,DRAM,DRAM,DRAM,mobilenet-v2 depthwise,groups=C
