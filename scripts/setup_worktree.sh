@@ -89,12 +89,18 @@ _self="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 export TORCHSIM_DIR="$_self"
 export TORCHSIM_DUMP_PATH="$_self/outputs"
 export TORCHSIM_LOG_PATH="$_self/togsim_results"
-# TPU v6e is the default machine; a branch that predates its config keeps v3.
-if [ -f "$_self/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml" ]; then
-  export TOGSIM_CONFIG="$_self/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml"
-else
-  export TOGSIM_CONFIG="$_self/configs/systolic_ws_128x128_c1_simple_noc_tpuv3.yml"
+# TPU v6e IS the machine, and a missing config must not quietly become another
+# one: v3 has 128 lanes where v6e has 256, and three coverage kernels answer
+# differently by lane count alone -- two of them WRONG at 256 while the 128-lane
+# run reports them green. A silent downgrade reads as "it passed yesterday".
+_v6e="$_self/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml"
+export TOGSIM_CONFIG="$_v6e"
+if [ ! -f "$_v6e" ]; then
+  echo "setup_worktree.sh: MISSING $_v6e" >&2
+  echo "  this worktree's branch predates the v6e config. Check it out or move" >&2
+  echo "  the branch; NOT falling back to v3, which is a different answer." >&2
 fi
+unset _v6e
 
 # Make `import torch_openreg` resolve to THIS worktree's .so first,
 # overriding the conda-wide editable install that points at the main worktree.
