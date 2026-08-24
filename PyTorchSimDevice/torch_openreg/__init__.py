@@ -21,11 +21,9 @@ import PyTorchSimFrontend.extension_config  # noqa: F401
 # What an op falls back TO is the CPU, and Inductor refuses to generate code for
 # complex operators, so neither of these is about codegen.
 import PyTorchSimFrontend.extension_decomposition  # noqa: F401
-from PyTorchSimFrontend import extension_counting_sort as _counting_sort
 from PyTorchSimFrontend import extension_grouped_mm as _grouped_mm
 from PyTorchSimFrontend import extension_topk as _topk
 
-_counting_sort.install()
 _grouped_mm.install()
 _topk.install()
 import PyTorchSimFrontend.extension_complex_to_real  # noqa: F401

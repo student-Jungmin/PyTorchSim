@@ -1,9 +1,8 @@
 """`topk` as k rounds of max-and-mask, so the selection stays in the graph.
 
-A post-grad pass and not a decomposition: extension_counting_sort proves its
-bound from `aten.topk.default` being in the post-grad graph, and a decomposition
-removes it before that pass ever runs. Installed last so it expands topk only
-after everything that reads its contract has.
+A post-grad pass rather than a decomposition, and what decides that is now only
+the ops it emits: `max(dim)` reaches `triton_helpers` inside torch, which the
+tnpu venv has no copy of, and scatter is itself an extern here.
 """
 
 import torch

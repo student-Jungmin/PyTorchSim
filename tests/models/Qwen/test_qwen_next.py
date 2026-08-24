@@ -64,10 +64,10 @@ while a value held across it kept registers llc then had to spill, which spike's
 sp remap cannot store.  Gating this before `thirdparty/triton-npu.json` carries
 that commit turns CI red on a fix that has landed nowhere it can see.
 
-qwen3_vl_moe and qwen3_5_moe both route through
-`extension_counting_sort`, which is what keeps their `torch.sort` from lowering
-to a bitonic network the scratchpad cannot hold -- so this file is also what
-stops that rewrite from being a one-model patch.
+qwen3_vl_moe and qwen3_5_moe lower their `torch.sort` the way Inductor does, to
+a bitonic network -- which this machine now holds. The rewrite that used to
+stand in for it is gone; see PyTorchSim's commit retiring extension_counting_sort
+for what it cost and what would bring it back.
 """
 
 import argparse
