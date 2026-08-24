@@ -15,13 +15,7 @@ attn_decode_32x16384x128,attn_decode,32 16384 128,added,shape,"B, S_kv, D",13421
 attn_decode_32x32768x128,attn_decode,32 32768 128,added,shape,"B, S_kv, D",268435456,1077952512,538976256,0.25,0.5,DRAM,DRAM,DRAM,DRAM,KV 캐시 길이 스윕,서빙에서 실제로 움직이는 축
 attn_decode_32x512x128,attn_decode,32 512 128,added,shape,"B, S_kv, D",4194304,16859136,8429568,0.25,0.5,DRAM,DRAM,DRAM,DRAM,KV 캐시 길이 스윕,서빙에서 실제로 움직이는 축
 attn_decode_32x8192x128,attn_decode,32 8192 128,added,shape,"B, S_kv, D",67108864,269500416,134750208,0.25,0.5,DRAM,DRAM,DRAM,DRAM,KV 캐시 길이 스윕,서빙에서 실제로 움직이는 축
-attn_pv_32x128x128,attn_pv,32 128 128,census,shape,"B, S, D",67108864,6291456,3145728,10.67,21.33,DRAM,DRAM,DRAM,DRAM,llama3-8b PV,
-attn_pv_32x2048x128,attn_pv,32 2048 128,census,shape,"B, S, D",17179869184,603979776,301989888,28.44,56.89,DRAM,DRAM,DRAM,DRAM,llama3-8b PV,
-attn_pv_32x4096x128,attn_pv,32 4096 128,census,shape,"B, S, D",68719476736,2281701376,1140850688,30.12,60.24,DRAM,DRAM,DRAM,DRAM,llama3-8b PV,
-attn_pv_32x512x128,attn_pv,32 512 128,census,shape,"B, S, D",1073741824,50331648,25165824,21.33,42.67,DRAM,DRAM,DRAM,DRAM,llama3-8b PV,
-attn_pv_1x16384x128,attn_pv,1 16384 128,added,shape,"B, S, D",34359738368,1090519040,545259520,31.51,63.02,DRAM,DRAM,DRAM,DRAM,긴 컨텍스트,
-attn_pv_1x8192x128,attn_pv,1 8192 128,added,shape,"B, S, D",8589934592,276824064,138412032,31.03,62.06,DRAM,DRAM,DRAM,DRAM,긴 컨텍스트,
-attn_pv_4x8192x128,attn_pv,4 8192 128,added,shape,"B, S, D",34359738368,1107296256,553648128,31.03,62.06,DRAM,DRAM,DRAM,DRAM,긴 컨텍스트,
+attn_pv_32x2048x128,attn_pv,32 2048 128,census,exact,"B, S, D",17179869184,603979776,301989888,28.44,56.89,DRAM,DRAM,DRAM,DRAM,llama3-8b PV,attn_qk와 같은 MAC·같은 트래픽. 다르게 나오면 그 차이가 transpose 아니면 읽기/쓰기 비대칭
 attn_qk_12x512x64,attn_qk,12 512 64,census,exact,"B(=batch*heads), S, D(head_dim)",201326592,15728640,7864320,12.8,25.6,DRAM,DRAM,DRAM,DRAM,bert-base / gpt2,기존 attention_12x512x64와 같은 폭
 attn_qk_16x2048x192,attn_qk,16 2048 192,census,shape,"B(=batch*heads), S, D(head_dim)",12884901888,318767104,159383552,40.42,80.84,DRAM,MXU,DRAM,DRAM,deepseek-v3 MLA,head_dim 192
 attn_qk_16x577x88,attn_qk,16 577 88,census,exact,"B(=batch*heads), S, D(head_dim)",468764032,27806784,13903392,16.86,33.72,DRAM,DRAM,DRAM,DRAM,llama4-vision,head_dim 88 — 128 배수가 아니다
