@@ -29,6 +29,22 @@ os.environ['TOGSIM_CONFIG'] = config
 DTYPES = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
 
 
+def widen_result(fn):
+    """Keep the operands narrow and hand the result back as fp32.
+
+    The only narrow-float form this backend carries is the one
+    kernels/coverage/mixed/mixed_gemm_fp16.py pins: fp16 operands go straight
+    into `tl.dot`, the accumulator and the store are fp32, and nothing touches
+    fp16 in the vector unit -- a convert there scalarises and stage 6 refuses it.
+    """
+    def call(*args):
+        out = fn(*args)
+        if torch.is_tensor(out) and out.is_floating_point():
+            return out.float()
+        return out
+    return call
+
+
 def _rand(*shape, dtype=torch.float32):
     return torch.randn(*shape, dtype=dtype)
 
@@ -301,6 +317,8 @@ if __name__ == "__main__":
 
     dt = DTYPES[args.dtype]
     fn, tensors = OPS[args.op](*args.size, dt)
+    if dt is not torch.float32:
+        fn = widen_result(fn)
 
     device = torch.device("npu:0")
     torch.manual_seed(0)
