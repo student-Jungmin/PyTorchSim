@@ -1,8 +1,0 @@
-workload,op,dtype,origin,census_match,regime,sim_cycles,ref_cycles,error_pct
-layernorm_2048x4096,layernorm,float32,census,none,VPU/DRAM,,,
-layernorm_2048x768,layernorm,float32,anchor,shape,VPU/DRAM,93622,98234.0,-4.7
-layernorm_512x768,layernorm,float32,anchor,exact,VPU/DRAM,94103,24895.0,278.0
-layernorm_8192x768,layernorm,float32,anchor,shape,VPU/DRAM,93298,389863.0,-76.1
-layernorm_2048x1024,layernorm,float32,added,none,VPU/DRAM,,,
-layernorm_2048x2048,layernorm,float32,added,none,VPU/DRAM,,,
-layernorm_2048x8192,layernorm,float32,added,none,VPU/DRAM,,,
