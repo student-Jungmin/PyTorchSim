@@ -1,0 +1,244 @@
+workload,op,size,origin,census_match,params,macs,bytes_fp32,bytes_fp16,intensity_fp32,intensity_fp16,regime_v3_fp32,regime_v3_fp16,regime_v6e_fp32,regime_v6e_fp16,source,note
+attention_12x512x64,attention,12 512 64,census,exact,"B, S, D",402653184,17301504,8650752,23.27,46.55,DRAM,DRAM,DRAM,DRAM,기존 attention_12x512x64,앵커
+attention_32x2048x128,attention,32 2048 128,census,shape,"B, S, D",34359738368,637534208,318767104,53.89,107.79,DRAM,MXU,DRAM,DRAM,llama3-8b attention 블록,QK^T+softmax+PV 한 덩어리
+attention_32x512x128,attention,32 512 128,census,shape,"B, S, D",2147483648,58720256,29360128,36.57,73.14,DRAM,MXU,DRAM,DRAM,llama3-8b attention 블록,QK^T+softmax+PV 한 덩어리
+attn_block_2048x4096x32x8,attn_block,2048 4096 32 8,census,none,"S, hidden, H_q, H_kv",120259084288,234881024,117440512,512.0,1024.0,MXU,MXU,MXU,MXU,llama3-8b attention 블록 전체,부분의 합이 전체와 맞는지 보는 자리
+attn_block_512x4096x32x8,attn_block,512 4096 32 8,census,none,"S, hidden, H_q, H_kv",23622320128,184549376,92274688,128.0,256.0,MXU,MXU,DRAM,DRAM,llama3-8b attention 블록 전체,
+attn_block_128x4096x32x8,attn_block,128 4096 32 8,added,none,"S, hidden, H_q, H_kv",5502926848,171966464,85983232,32.0,64.0,DRAM,DRAM,DRAM,DRAM,블록 seq 격자,
+attn_block_4096x4096x32x8,attn_block,4096 4096 32 8,added,none,"S, hidden, H_q, H_kv",309237645312,301989888,150994944,1024.0,2048.0,MXU,MXU,MXU,MXU,블록 seq 격자,
+attn_causal_32x2048x128,attn_causal,32 2048 128,census,shape,"B, S, D",34359738368,637534208,318767104,53.89,107.79,DRAM,MXU,DRAM,DRAM,causal mask 포함,마스크 add의 비용
+attn_causal_32x512x128,attn_causal,32 512 128,census,shape,"B, S, D",2147483648,58720256,29360128,36.57,73.14,DRAM,MXU,DRAM,DRAM,causal mask 포함,마스크 add의 비용
+attn_decode_32x2048x128,attn_decode,32 2048 128,census,shape,"B, S_kv, D",16777216,67387392,33693696,0.25,0.5,DRAM,DRAM,DRAM,DRAM,llama3-8b decode (KV 2048),M=1. 서빙의 지배적 모양이고 완전히 DRAM bound
+attn_decode_32x4096x128,attn_decode,32 4096 128,census,shape,"B, S_kv, D",33554432,134758400,67379200,0.25,0.5,DRAM,DRAM,DRAM,DRAM,llama3-8b decode (KV 4096),
+attn_decode_32x1024x128,attn_decode,32 1024 128,added,shape,"B, S_kv, D",8388608,33701888,16850944,0.25,0.5,DRAM,DRAM,DRAM,DRAM,KV 캐시 길이 스윕,서빙에서 실제로 움직이는 축
+attn_decode_32x16384x128,attn_decode,32 16384 128,added,shape,"B, S_kv, D",134217728,538984448,269492224,0.25,0.5,DRAM,DRAM,DRAM,DRAM,KV 캐시 길이 스윕,서빙에서 실제로 움직이는 축
+attn_decode_32x32768x128,attn_decode,32 32768 128,added,shape,"B, S_kv, D",268435456,1077952512,538976256,0.25,0.5,DRAM,DRAM,DRAM,DRAM,KV 캐시 길이 스윕,서빙에서 실제로 움직이는 축
+attn_decode_32x512x128,attn_decode,32 512 128,added,shape,"B, S_kv, D",4194304,16859136,8429568,0.25,0.5,DRAM,DRAM,DRAM,DRAM,KV 캐시 길이 스윕,서빙에서 실제로 움직이는 축
+attn_decode_32x8192x128,attn_decode,32 8192 128,added,shape,"B, S_kv, D",67108864,269500416,134750208,0.25,0.5,DRAM,DRAM,DRAM,DRAM,KV 캐시 길이 스윕,서빙에서 실제로 움직이는 축
+attn_pv_32x128x128,attn_pv,32 128 128,census,shape,"B, S, D",67108864,6291456,3145728,10.67,21.33,DRAM,DRAM,DRAM,DRAM,llama3-8b PV,
+attn_pv_32x2048x128,attn_pv,32 2048 128,census,shape,"B, S, D",17179869184,603979776,301989888,28.44,56.89,DRAM,DRAM,DRAM,DRAM,llama3-8b PV,
+attn_pv_32x4096x128,attn_pv,32 4096 128,census,shape,"B, S, D",68719476736,2281701376,1140850688,30.12,60.24,DRAM,DRAM,DRAM,DRAM,llama3-8b PV,
+attn_pv_32x512x128,attn_pv,32 512 128,census,shape,"B, S, D",1073741824,50331648,25165824,21.33,42.67,DRAM,DRAM,DRAM,DRAM,llama3-8b PV,
+attn_pv_1x16384x128,attn_pv,1 16384 128,added,shape,"B, S, D",34359738368,1090519040,545259520,31.51,63.02,DRAM,DRAM,DRAM,DRAM,긴 컨텍스트,
+attn_pv_1x8192x128,attn_pv,1 8192 128,added,shape,"B, S, D",8589934592,276824064,138412032,31.03,62.06,DRAM,DRAM,DRAM,DRAM,긴 컨텍스트,
+attn_pv_4x8192x128,attn_pv,4 8192 128,added,shape,"B, S, D",34359738368,1107296256,553648128,31.03,62.06,DRAM,DRAM,DRAM,DRAM,긴 컨텍스트,
+attn_qk_12x512x64,attn_qk,12 512 64,census,exact,"B(=batch*heads), S, D(head_dim)",201326592,15728640,7864320,12.8,25.6,DRAM,DRAM,DRAM,DRAM,bert-base / gpt2,기존 attention_12x512x64와 같은 폭
+attn_qk_16x2048x192,attn_qk,16 2048 192,census,shape,"B(=batch*heads), S, D(head_dim)",12884901888,318767104,159383552,40.42,80.84,DRAM,MXU,DRAM,DRAM,deepseek-v3 MLA,head_dim 192
+attn_qk_16x577x88,attn_qk,16 577 88,census,exact,"B(=batch*heads), S, D(head_dim)",468764032,27806784,13903392,16.86,33.72,DRAM,DRAM,DRAM,DRAM,llama4-vision,head_dim 88 — 128 배수가 아니다
+attn_qk_32x128x128,attn_qk,32 128 128,census,shape,"B(=batch*heads), S, D(head_dim)",67108864,6291456,3145728,10.67,21.33,DRAM,DRAM,DRAM,DRAM,"llama3-8b QK^T (B·H=32, head_dim 128)",S가 실물. 스코어는 S^2로 큰다
+attn_qk_32x2048x128,attn_qk,32 2048 128,census,shape,"B(=batch*heads), S, D(head_dim)",17179869184,603979776,301989888,28.44,56.89,DRAM,DRAM,DRAM,DRAM,"llama3-8b QK^T (B·H=32, head_dim 128)",S가 실물. 스코어는 S^2로 큰다
+attn_qk_32x4096x128,attn_qk,32 4096 128,census,shape,"B(=batch*heads), S, D(head_dim)",68719476736,2281701376,1140850688,30.12,60.24,DRAM,DRAM,DRAM,DRAM,"llama3-8b QK^T (B·H=32, head_dim 128)",S가 실물. 스코어는 S^2로 큰다
+attn_qk_32x512x128,attn_qk,32 512 128,census,shape,"B(=batch*heads), S, D(head_dim)",1073741824,50331648,25165824,21.33,42.67,DRAM,DRAM,DRAM,DRAM,"llama3-8b QK^T (B·H=32, head_dim 128)",S가 실물. 스코어는 S^2로 큰다
+attn_qk_8x2048x256,attn_qk,8 2048 256,census,shape,"B(=batch*heads), S, D(head_dim)",8589934592,167772160,83886080,51.2,102.4,DRAM,MXU,DRAM,DRAM,gemma-2b MQA,"head_dim 256, kv head 1"
+attn_qk_1x16384x128,attn_qk,1 16384 128,added,shape,"B(=batch*heads), S, D(head_dim)",34359738368,1090519040,545259520,31.51,63.02,DRAM,DRAM,DRAM,DRAM,긴 컨텍스트,스코어가 S^2이라 헤드 수를 줄였다
+attn_qk_1x8192x128,attn_qk,1 8192 128,added,shape,"B(=batch*heads), S, D(head_dim)",8589934592,276824064,138412032,31.03,62.06,DRAM,DRAM,DRAM,DRAM,긴 컨텍스트,스코어가 S^2이라 헤드 수를 줄였다
+attn_qk_32x1024x128,attn_qk,32 1024 128,added,shape,"B(=batch*heads), S, D(head_dim)",4294967296,167772160,83886080,25.6,51.2,DRAM,DRAM,DRAM,DRAM,S 격자 보간,
+attn_qk_32x256x128,attn_qk,32 256 128,added,shape,"B(=batch*heads), S, D(head_dim)",268435456,16777216,8388608,16.0,32.0,DRAM,DRAM,DRAM,DRAM,S 격자 보간,
+attn_qk_32x512x160,attn_qk,32 512 160,added,none,"B(=batch*heads), S, D(head_dim)",1342177280,54525952,27262976,24.62,49.23,DRAM,DRAM,DRAM,DRAM,head_dim 격자,96/160은 캡처에 없다
+attn_qk_32x512x32,attn_qk,32 512 32,added,shape,"B(=batch*heads), S, D(head_dim)",268435456,37748736,18874368,7.11,14.22,DRAM,DRAM,DRAM,DRAM,head_dim 격자,96/160은 캡처에 없다
+attn_qk_32x512x512,attn_qk,32 512 512,added,shape,"B(=batch*heads), S, D(head_dim)",4294967296,100663296,50331648,42.67,85.33,DRAM,MXU,DRAM,DRAM,head_dim 격자,96/160은 캡처에 없다
+attn_qk_32x512x96,attn_qk,32 512 96,added,shape,"B(=batch*heads), S, D(head_dim)",805306368,46137344,23068672,17.45,34.91,DRAM,DRAM,DRAM,DRAM,head_dim 격자,96/160은 캡처에 없다
+attn_qk_4x8192x128,attn_qk,4 8192 128,added,shape,"B(=batch*heads), S, D(head_dim)",34359738368,1107296256,553648128,31.03,62.06,DRAM,DRAM,DRAM,DRAM,긴 컨텍스트,스코어가 S^2이라 헤드 수를 줄였다
+conv_1x14x14x256x256x3x1x1,conv,1 14 14 256 256 3 1 1,census,exact,"N, H, W, C_in, C_out, R, stride, pad",115605504,2760704,1380352,41.88,83.75,DRAM,MXU,DRAM,DRAM,"resnet, batch 1",batch 축의 효과
+conv_1x28x28x128x128x3x1x1,conv,1 28 28 128 128 3 1 1,census,exact,"N, H, W, C_in, C_out, R, stride, pad",115605504,1392640,696320,83.01,166.02,MXU,MXU,DRAM,DRAM,"resnet, batch 1",batch 축의 효과
+conv_1x320x320x64x64x3x1x1,conv,1 320 320 64 64 3 1 1,census,shape,"N, H, W, C_in, C_out, R, stride, pad",3774873600,52576256,26288128,71.8,143.6,MXU,MXU,DRAM,DRAM,yolo @ 실물 640 입력,테스트는 64x64로 도는데 실물은 640이다
+conv_1x56x56x64x64x3x1x1,conv,1 56 56 64 64 3 1 1,census,exact,"N, H, W, C_in, C_out, R, stride, pad",115605504,1753088,876544,65.94,131.89,DRAM,MXU,DRAM,DRAM,"resnet, batch 1",batch 축의 효과
+conv_1x7x7x512x512x3x1x1,conv,1 7 7 512 512 3 1 1,census,exact,"N, H, W, C_in, C_out, R, stride, pad",115605504,9637888,4818944,11.99,23.99,DRAM,DRAM,DRAM,DRAM,"resnet, batch 1",batch 축의 효과
+conv_64x14x14x256x256x3x1x1,conv,64 14 14 256 256 3 1 1,anchor,shape,"N, H, W, C_in, C_out, R, stride, pad",7398752256,28049408,14024704,263.78,527.55,MXU,MXU,DRAM,MXU,기존 baseline_cycle.csv,앵커
+conv_64x28x28x128x128x3x1x1,conv,64 28 28 128 128 3 1 1,anchor,shape,"N, H, W, C_in, C_out, R, stride, pad",7398752256,51970048,25985024,142.37,284.73,MXU,MXU,DRAM,MXU,기존 baseline_cycle.csv,앵커
+conv_64x56x56x64x64x3x1x1,conv,64 56 56 64 64 3 1 1,anchor,shape,"N, H, W, C_in, C_out, R, stride, pad",7398752256,102907904,51453952,71.9,143.79,MXU,MXU,DRAM,DRAM,기존 baseline_cycle.csv,앵커
+conv_64x7x7x512x512x3x1x1,conv,64 7 7 512 512 3 1 1,anchor,shape,"N, H, W, C_in, C_out, R, stride, pad",7398752256,22282240,11141120,332.05,664.09,MXU,MXU,MXU,MXU,기존 baseline_cycle.csv,앵커
+conv_16x14x14x256x256x3x1x1,conv,16 14 14 256 256 3 1 1,added,shape,"N, H, W, C_in, C_out, R, stride, pad",1849688064,8781824,4390912,210.63,421.25,MXU,MXU,DRAM,MXU,batch 16,
+conv_16x56x56x64x64x3x1x1,conv,16 56 56 64 64 3 1 1,added,shape,"N, H, W, C_in, C_out, R, stride, pad",1849688064,25837568,12918784,71.59,143.18,MXU,MXU,DRAM,DRAM,batch 16,batch 축
+conv_1x224x224x3x64x7x2x3,conv,1 224 224 3 64 7 2 3,added,exact,"N, H, W, C_in, C_out, R, stride, pad",118013952,3851008,1925504,30.64,61.29,DRAM,DRAM,DRAM,DRAM,resnet stem 7x7 s2,
+conv_1x56x56x64x64x3x2x1,conv,1 56 56 64 64 3 2 1,added,exact,"N, H, W, C_in, C_out, R, stride, pad",28901376,1150976,575488,25.11,50.22,DRAM,DRAM,DRAM,DRAM,stride 2 3x3,
+conv1d_causal_1x8192x2048x4,conv1d_causal,1 8192 2048 4,census,shape,"N, C, L, R",67108864,134348800,67174400,0.5,1.0,DRAM,DRAM,DRAM,DRAM,qwen3-next causal Conv1d @ 실물 seq,
+convtranspose_1x256x20x20x128x2x2,convtranspose,1 256 20 20 128 2 2,census,none,"N, C_in, H, W, C_out, R, stride",52428800,1753088,876544,29.91,59.81,DRAM,DRAM,DRAM,DRAM,yolov6 neck,직접 conv로 재작성됨
+dispatch_2048x8x4096,dispatch,2048 8 4096,census,none,"tokens, k, hidden",0,100663296,50331648,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,MoE 토큰 분배/취합,index_select + index_add
+dwconv_1x384x14x14x3x1,dwconv,1 384 14 14 3 1,census,exact,"N, C, H, W, R, stride",677376,615936,307968,1.1,2.2,DRAM,DRAM,DRAM,DRAM,mobilenet-v2 depthwise,
+dwconv_1x96x112x112x3x2,dwconv,1 96 112 112 3 2,census,exact,"N, C, H, W, R, stride",2709504,6024576,3012288,0.45,0.9,DRAM,DRAM,DRAM,DRAM,mobilenet-v2 depthwise,groups=C
+dwconv_1x144x56x56x3x2,dwconv,1 144 56 56 3 2,added,exact,"N, C, H, W, R, stride",1016064,2263104,1131552,0.45,0.9,DRAM,DRAM,DRAM,DRAM,mobilenet 격자,
+dwconv_1x32x112x112x3x1,dwconv,1 32 112 112 3 1,added,exact,"N, C, H, W, R, stride",3612672,3212416,1606208,1.12,2.25,DRAM,DRAM,DRAM,DRAM,mobilenet 격자,
+dwconv_1x576x14x14x3x1,dwconv,1 576 14 14 3 1,added,exact,"N, C, H, W, R, stride",1016064,923904,461952,1.1,2.2,DRAM,DRAM,DRAM,DRAM,mobilenet 격자,
+embedding_128256x4096x512,embedding,128256 4096 512,census,none,"vocab, hidden, tokens",0,16777216,8388608,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,llama3-8b embed_tokens (실물 vocab),2.1GB 테이블
+embedding_32000x4096x2048,embedding,32000 4096 2048,census,none,"vocab, hidden, tokens",0,67108864,33554432,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,llama3-8b embed_tokens (vocab 축소),
+embedding_262144x4096x2048,embedding,262144 4096 2048,added,none,"vocab, hidden, tokens",0,67108864,33554432,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,vocab 격자,"50257=gpt2, 262144=gemma3"
+embedding_50257x4096x2048,embedding,50257 4096 2048,added,none,"vocab, hidden, tokens",0,67108864,33554432,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,vocab 격자,"50257=gpt2, 262144=gemma3"
+gelu_2048x3072,gelu,2048 3072,census,shape,"rows, interm",0,50331648,25165824,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,gpt2 mlp,
+gelu_512x3072,gelu,512 3072,census,shape,"rows, interm",0,12582912,6291456,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,bert-base intermediate,
+gelu_2048x12288,gelu,2048 12288,added,shape,"rows, interm",0,201326592,100663296,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,interm 격자,
+gelu_2048x4096,gelu,2048 4096,added,shape,"rows, interm",0,67108864,33554432,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,interm 격자,
+gelu_2048x8192,gelu,2048 8192,added,shape,"rows, interm",0,134217728,67108864,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,interm 격자,
+gemm_128x4096x14336,gemm,128 4096 14336,census,shape,"M, K, N",7516192768,244318208,122159104,30.76,61.53,DRAM,DRAM,DRAM,DRAM,llama3-8b gate_proj,SwiGLU를 seq 축으로 스윕
+gemm_16x4096x4096,gemm,16 4096 4096,census,shape,"M, K, N",268435456,67633152,33816576,3.97,7.94,DRAM,DRAM,DRAM,DRAM,llama3-8b q_proj/o_proj,M=seq. 128x128 어레이 높이를 건너는 스윕 — census GEMM의 85%가 M<128
+gemm_197x768x768,gemm,197 768 768,census,exact,"M, K, N",116195328,3569664,1784832,32.55,65.1,DRAM,DRAM,DRAM,DRAM,vit-b/16 @ 224,"M=197, 128 배수가 아니다"
+gemm_2048x14336x4096,gemm,2048 14336 4096,census,shape,"M, K, N",120259084288,385875968,192937984,311.65,623.3,MXU,MXU,MXU,MXU,llama3-8b down_proj,K가 깊다
+gemm_2048x192x2048,gemm,2048 192 2048,census,none,"M, K, N",805306368,19922944,9961472,40.42,80.84,DRAM,MXU,DRAM,DRAM,deepseek-v3 MLA head_dim 192,K가 128 배수가 아니다
+gemm_2048x3072x24576,gemm,2048 3072 24576,census,shape,"M, K, N",154618822656,528482304,264241152,292.57,585.14,MXU,MXU,MXU,MXU,gemma-7b gate_proj,스위트에서 가장 넓은 interm
+gemm_2048x3584x18944,gemm,2048 3584 18944,census,shape,"M, K, N",139049566208,456130560,228065280,304.85,609.69,MXU,MXU,MXU,MXU,qwen2.5-7b gate_proj,실물 7B 폭
+gemm_2048x4096x1024,gemm,2048 4096 1024,census,shape,"M, K, N",8589934592,58720256,29360128,146.29,292.57,MXU,MXU,DRAM,MXU,llama3-8b k_proj/v_proj,GQA 8 kv head — N이 좁다
+gemm_2048x4096x1088,gemm,2048 4096 1088,census,none,"M, K, N",9126805504,60293120,30146560,151.37,302.75,MXU,MXU,DRAM,MXU,deepseek-v2-lite kv_b_proj,N=1088
+gemm_2048x4096x14336,gemm,2048 4096 14336,census,shape,"M, K, N",120259084288,385875968,192937984,311.65,623.3,MXU,MXU,MXU,MXU,llama3-8b gate_proj/up_proj,SwiGLU 확장
+gemm_2048x4096x32000,gemm,2048 4096 32000,census,none,"M, K, N",268435456000,819986432,409993216,327.37,654.73,MXU,MXU,MXU,MXU,llama3-8b lm_head (vocab 축소),N이 크다 — weight 스트리밍
+gemm_2048x5120x8192,gemm,2048 5120 8192,census,shape,"M, K, N",85899345920,276824064,138412032,310.3,620.61,MXU,MXU,MXU,MXU,llama4-scout expert,MoE 전문가 하나
+gemm_256x5120x8192,gemm,256 5120 8192,census,shape,"M, K, N",10737418240,181403648,90701824,59.19,118.38,DRAM,MXU,DRAM,DRAM,llama4-scout expert (top-1 분배 후),전문가당 토큰 수가 M
+gemm_32x4096x4096,gemm,32 4096 4096,census,exact,"M, K, N",536870912,68157440,34078720,7.88,15.75,DRAM,DRAM,DRAM,DRAM,llama3-8b q_proj/o_proj,M=seq. 128x128 어레이 높이를 건너는 스윕 — census GEMM의 85%가 M<128
+gemm_4096x4096x14336,gemm,4096 4096 14336,census,shape,"M, K, N",240518168576,536870912,268435456,448.0,896.0,MXU,MXU,MXU,MXU,llama3-8b gate_proj,SwiGLU를 seq 축으로 스윕
+gemm_512x3072x768,gemm,512 3072 768,census,exact,"M, K, N",1207959552,17301504,8650752,69.82,139.64,MXU,MXU,DRAM,DRAM,bert-base output.dense,
+gemm_512x4096x128256,gemm,512 4096 128256,census,none,"M, K, N",268972326912,2372403200,1186201600,113.38,226.75,MXU,MXU,DRAM,DRAM,llama3-8b lm_head (실물 vocab) / N 스윕,"2.1GB 가중치, DRAM bound. heavy"
+gemm_512x4096x14336,gemm,512 4096 14336,census,shape,"M, K, N",30064771072,272629760,136314880,110.28,220.55,MXU,MXU,DRAM,DRAM,llama3-8b gate_proj / N 스윕,SwiGLU를 seq 축으로 스윕
+gemm_512x768x3072,gemm,512 768 3072,census,exact,"M, K, N",1207959552,17301504,8650752,69.82,139.64,MXU,MXU,DRAM,DRAM,bert-base intermediate.dense,
+gemm_512x768x768,gemm,512 768 768,census,exact,"M, K, N",301989888,5505024,2752512,54.86,109.71,DRAM,MXU,DRAM,DRAM,bert-base q/k/v/o @ seq 512,bert_base 앵커와 같은 폭
+gemm_577x1408x1408,gemm,577 1408 1408,census,exact,"M, K, N",1143881728,14429184,7214592,79.28,158.55,MXU,MXU,DRAM,DRAM,llama4-vision q_proj,M도 K도 128 배수가 아니다
+gemm_577x1408x5632,gemm,577 1408 5632,census,exact,"M, K, N",4575526912,47967744,23983872,95.39,190.78,MXU,MXU,DRAM,DRAM,llama4-vision mlp.fc1,M=577
+gemm_1024x4096x4096,gemm,1024 4096 4096,sweep,shape,"M, K, N",17179869184,100663296,50331648,170.67,341.33,MXU,MXU,DRAM,MXU,llama3-8b q_proj/o_proj,M=seq. 128x128 어레이 높이를 건너는 스윕 — census GEMM의 85%가 M<128
+gemm_128x4096x4096,gemm,128 4096 4096,sweep,shape,"M, K, N",2147483648,71303168,35651584,30.12,60.24,DRAM,DRAM,DRAM,DRAM,llama3-8b q_proj/o_proj,M=seq. 128x128 어레이 높이를 건너는 스윕 — census GEMM의 85%가 M<128
+gemm_1x4096x4096,gemm,1 4096 4096,sweep,shape,"M, K, N",16777216,67141632,33570816,0.25,0.5,DRAM,DRAM,DRAM,DRAM,llama3-8b q_proj/o_proj,M=seq. 128x128 어레이 높이를 건너는 스윕 — census GEMM의 85%가 M<128
+gemm_2048x4096x4096,gemm,2048 4096 4096,sweep,shape,"M, K, N",34359738368,134217728,67108864,256.0,512.0,MXU,MXU,DRAM,MXU,llama3-8b q_proj/o_proj,M=seq. 128x128 어레이 높이를 건너는 스윕 — census GEMM의 85%가 M<128
+gemm_256x4096x4096,gemm,256 4096 4096,sweep,shape,"M, K, N",4294967296,75497472,37748736,56.89,113.78,DRAM,MXU,DRAM,DRAM,llama3-8b q_proj/o_proj,M=seq. 128x128 어레이 높이를 건너는 스윕 — census GEMM의 85%가 M<128
+gemm_4096x4096x4096,gemm,4096 4096 4096,sweep,shape,"M, K, N",68719476736,201326592,100663296,341.33,682.67,MXU,MXU,MXU,MXU,llama3-8b q_proj/o_proj / 2의 거듭제곱 격자,M=seq. 128x128 어레이 높이를 건너는 스윕 — census GEMM의 85%가 M<128
+gemm_512x128x4096,gemm,512 128 4096,sweep,none,"M, K, N",268435456,10747904,5373952,24.98,49.95,DRAM,DRAM,DRAM,DRAM,K 스윕,누적 깊이만 바꾼다
+gemm_512x14336x4096,gemm,512 14336 4096,sweep,shape,"M, K, N",30064771072,272629760,136314880,110.28,220.55,MXU,MXU,DRAM,DRAM,K 스윕,누적 깊이만 바꾼다
+gemm_512x2048x4096,gemm,512 2048 4096,sweep,shape,"M, K, N",4294967296,46137344,23068672,93.09,186.18,MXU,MXU,DRAM,DRAM,K 스윕,누적 깊이만 바꾼다
+gemm_512x24576x4096,gemm,512 24576 4096,sweep,none,"M, K, N",51539607552,461373440,230686720,111.71,223.42,MXU,MXU,DRAM,DRAM,K 스윕,누적 깊이만 바꾼다
+gemm_512x4096x1024,gemm,512 4096 1024,sweep,shape,"M, K, N",2147483648,27262976,13631488,78.77,157.54,MXU,MXU,DRAM,DRAM,N 스윕,가중치 스트리밍만 바꾼다
+gemm_512x4096x128,gemm,512 4096 128,sweep,none,"M, K, N",268435456,10747904,5373952,24.98,49.95,DRAM,DRAM,DRAM,DRAM,N 스윕,가중치 스트리밍만 바꾼다
+gemm_512x4096x32768,gemm,512 4096 32768,sweep,none,"M, K, N",68719476736,612368384,306184192,112.22,224.44,MXU,MXU,DRAM,DRAM,N 스윕,가중치 스트리밍만 바꾼다
+gemm_512x4096x4096,gemm,512 4096 4096,sweep,shape,"M, K, N",8589934592,83886080,41943040,102.4,204.8,MXU,MXU,DRAM,DRAM,llama3-8b q_proj/o_proj / K 스윕 / N 스윕,M=seq. 128x128 어레이 높이를 건너는 스윕 — census GEMM의 85%가 M<128
+gemm_512x512x4096,gemm,512 512 4096,sweep,none,"M, K, N",1073741824,17825792,8912896,60.24,120.47,DRAM,MXU,DRAM,DRAM,K 스윕,누적 깊이만 바꾼다
+gemm_64x4096x4096,gemm,64 4096 4096,sweep,shape,"M, K, N",1073741824,69206016,34603008,15.52,31.03,DRAM,DRAM,DRAM,DRAM,llama3-8b q_proj/o_proj,M=seq. 128x128 어레이 높이를 건너는 스윕 — census GEMM의 85%가 M<128
+gemm_1024x1024x1024,gemm,1024 1024 1024,anchor,shape,"M, K, N",1073741824,12582912,6291456,85.33,170.67,MXU,MXU,DRAM,DRAM,기존 baseline_cycle.csv,이미 TPUv3 수치가 있는 앵커
+gemm_2048x2048x2048,gemm,2048 2048 2048,anchor,shape,"M, K, N",8589934592,50331648,25165824,170.67,341.33,MXU,MXU,DRAM,MXU,기존 baseline_cycle.csv,이미 TPUv3 수치가 있는 앵커
+gemm_256x256x256,gemm,256 256 256,anchor,shape,"M, K, N",16777216,786432,393216,21.33,42.67,DRAM,DRAM,DRAM,DRAM,기존 baseline_cycle.csv,이미 TPUv3 수치가 있는 앵커
+gemm_512x512x512,gemm,512 512 512,anchor,shape,"M, K, N",134217728,3145728,1572864,42.67,85.33,DRAM,MXU,DRAM,DRAM,기존 baseline_cycle.csv / K=N 격자,이미 TPUv3 수치가 있는 앵커
+gemm_128x128x128,gemm,128 128 128,added,shape,"M, K, N",2097152,196608,98304,10.67,21.33,DRAM,DRAM,DRAM,DRAM,2의 거듭제곱 격자,정사각 곡선의 양 끝
+gemm_128x16384x16384,gemm,128 16384 16384,added,none,"M, K, N",34359738368,1090519040,545259520,31.51,63.02,DRAM,DRAM,DRAM,DRAM,short-fat,M만 작다
+gemm_1536x4096x4096,gemm,1536 4096 4096,added,shape,"M, K, N",25769803776,117440512,58720256,219.43,438.86,MXU,MXU,DRAM,MXU,M 스윕 보간,128/256 부근이 v6e에서 꺾이는 곳이라 촘촘히 본다
+gemm_192x4096x4096,gemm,192 4096 4096,added,shape,"M, K, N",3221225472,73400320,36700160,43.89,87.77,DRAM,MXU,DRAM,DRAM,M 스윕 보간,128/256 부근이 v6e에서 꺾이는 곳이라 촘촘히 본다
+gemm_1x8192x8192,gemm,1 8192 8192,added,none,"M, K, N",67108864,268500992,134250496,0.25,0.5,DRAM,DRAM,DRAM,DRAM,GEMV,decode의 행렬-벡터 극단
+gemm_2048x12288x12288,gemm,2048 12288 12288,added,none,"M, K, N",309237645312,805306368,402653184,384.0,768.0,MXU,MXU,MXU,MXU,GPT-3 175B q_proj (캡처 안 된 출하 폭),
+gemm_2048x4096x11008,gemm,2048 4096 11008,added,none,"M, K, N",92341796864,304087040,152043520,303.67,607.34,MXU,MXU,MXU,MXU,llama-7b gate_proj (캡처 안 된 출하 폭),
+gemm_2048x5120x13824,gemm,2048 5120 13824,added,none,"M, K, N",144955146240,438304768,219152384,330.72,661.44,MXU,MXU,MXU,MXU,llama-13b gate_proj (캡처 안 된 출하 폭),
+gemm_2048x5120x5120,gemm,2048 5120 5120,added,shape,"M, K, N",53687091200,188743680,94371840,284.44,568.89,MXU,MXU,MXU,MXU,llama-13b q_proj (캡처 안 된 출하 폭),
+gemm_2048x6656x17920,gemm,2048 6656 17920,added,none,"M, K, N",244276264960,678428672,339214336,360.06,720.12,MXU,MXU,MXU,MXU,llama-33b gate_proj (캡처 안 된 출하 폭),
+gemm_2048x8192x28672,gemm,2048 8192 28672,added,none,"M, K, N",481036337152,1241513984,620756992,387.46,774.92,MXU,MXU,MXU,MXU,llama-70b gate_proj (캡처 안 된 출하 폭),
+gemm_3072x4096x4096,gemm,3072 4096 4096,added,shape,"M, K, N",51539607552,167772160,83886080,307.2,614.4,MXU,MXU,MXU,MXU,M 스윕 보간,128/256 부근이 v6e에서 꺾이는 곳이라 촘촘히 본다
+gemm_384x4096x4096,gemm,384 4096 4096,added,shape,"M, K, N",6442450944,79691776,39845888,80.84,161.68,MXU,MXU,DRAM,DRAM,M 스윕 보간,128/256 부근이 v6e에서 꺾이는 곳이라 촘촘히 본다
+gemm_512x1024x1024,gemm,512 1024 1024,added,shape,"M, K, N",536870912,8388608,4194304,64.0,128.0,DRAM,MXU,DRAM,DRAM,K=N 격자,"M 고정, 문제 크기만"
+gemm_512x1024x4096,gemm,512 1024 4096,added,shape,"M, K, N",2147483648,27262976,13631488,78.77,157.54,MXU,MXU,DRAM,DRAM,K 격자 확장,
+gemm_512x16384x16384,gemm,512 16384 16384,added,none,"M, K, N",137438953472,1140850688,570425344,120.47,240.94,MXU,MXU,DRAM,DRAM,K=N 격자,"M 고정, 문제 크기만"
+gemm_512x16384x4096,gemm,512 16384 4096,added,none,"M, K, N",34359738368,310378496,155189248,110.7,221.41,MXU,MXU,DRAM,DRAM,K 격자 확장,
+gemm_512x2048x2048,gemm,512 2048 2048,added,shape,"M, K, N",2147483648,25165824,12582912,85.33,170.67,MXU,MXU,DRAM,DRAM,K=N 격자,"M 고정, 문제 크기만"
+gemm_512x256x4096,gemm,512 256 4096,added,none,"M, K, N",536870912,13107200,6553600,40.96,81.92,DRAM,MXU,DRAM,DRAM,K 격자 확장,
+gemm_512x32768x4096,gemm,512 32768 4096,added,none,"M, K, N",68719476736,612368384,306184192,112.22,224.44,MXU,MXU,DRAM,DRAM,K 격자 확장,
+gemm_512x4096x16384,gemm,512 4096 16384,added,none,"M, K, N",34359738368,310378496,155189248,110.7,221.41,MXU,MXU,DRAM,DRAM,N 격자 확장,262144는 gemma3 급 vocab
+gemm_512x4096x2048,gemm,512 4096 2048,added,shape,"M, K, N",4294967296,46137344,23068672,93.09,186.18,MXU,MXU,DRAM,DRAM,N 격자 확장,262144는 gemma3 급 vocab
+gemm_512x4096x256,gemm,512 4096 256,added,none,"M, K, N",536870912,13107200,6553600,40.96,81.92,DRAM,MXU,DRAM,DRAM,N 격자 확장,262144는 gemma3 급 vocab
+gemm_512x4096x262144,gemm,512 4096 262144,added,none,"M, K, N",549755813888,4840226816,2420113408,113.58,227.16,MXU,MXU,DRAM,DRAM,N 격자 확장,262144는 gemma3 급 vocab
+gemm_512x4096x512,gemm,512 4096 512,added,none,"M, K, N",1073741824,17825792,8912896,60.24,120.47,DRAM,MXU,DRAM,DRAM,N 격자 확장,262144는 gemma3 급 vocab
+gemm_512x4096x65536,gemm,512 4096 65536,added,none,"M, K, N",137438953472,1216348160,608174080,112.99,225.99,MXU,MXU,DRAM,DRAM,N 격자 확장,262144는 gemma3 급 vocab
+gemm_512x4096x8192,gemm,512 4096 8192,added,shape,"M, K, N",17179869184,159383552,79691776,107.79,215.58,MXU,MXU,DRAM,DRAM,N 격자 확장,262144는 gemma3 급 vocab
+gemm_512x64x4096,gemm,512 64 4096,added,shape,"M, K, N",134217728,9568256,4784128,14.03,28.05,DRAM,DRAM,DRAM,DRAM,K 격자 확장,
+gemm_512x8192x4096,gemm,512 8192 4096,added,none,"M, K, N",17179869184,159383552,79691776,107.79,215.58,MXU,MXU,DRAM,DRAM,K 격자 확장,
+gemm_512x8192x8192,gemm,512 8192 8192,added,none,"M, K, N",34359738368,301989888,150994944,113.78,227.56,MXU,MXU,DRAM,DRAM,K=N 격자,"M 고정, 문제 크기만"
+gemm_768x4096x4096,gemm,768 4096 4096,added,shape,"M, K, N",12884901888,92274688,46137344,139.64,279.27,MXU,MXU,DRAM,DRAM,M 스윕 보간,128/256 부근이 v6e에서 꺾이는 곳이라 촘촘히 본다
+gemm_8192x128x4096,gemm,8192 128 4096,added,none,"M, K, N",4294967296,140509184,70254592,30.57,61.13,DRAM,DRAM,DRAM,DRAM,tall-shallow,K가 얕다
+gemm_8192x4096x128,gemm,8192 4096 128,added,none,"M, K, N",4294967296,140509184,70254592,30.57,61.13,DRAM,DRAM,DRAM,DRAM,tall-skinny,N이 어레이 한 폭
+gemm_8192x4096x4096,gemm,8192 4096 4096,added,shape,"M, K, N",137438953472,335544320,167772160,409.6,819.2,MXU,MXU,MXU,MXU,M 스윕 보간,128/256 부근이 v6e에서 꺾이는 곳이라 촘촘히 본다
+gemm_8192x8192x8192,gemm,8192 8192 8192,added,none,"M, K, N",549755813888,805306368,402653184,682.67,1365.33,MXU,MXU,MXU,MXU,2의 거듭제곱 격자,정사각 곡선의 양 끝
+gemm_8x4096x4096,gemm,8 4096 4096,added,shape,"M, K, N",134217728,67371008,33685504,1.99,3.98,DRAM,DRAM,DRAM,DRAM,M 스윕 보간,128/256 부근이 v6e에서 꺾이는 곳이라 촘촘히 본다
+gemm_96x4096x4096,gemm,96 4096 4096,added,shape,"M, K, N",1610612736,70254592,35127296,22.93,45.85,DRAM,DRAM,DRAM,DRAM,M 스윕 보간,128/256 부근이 v6e에서 꺾이는 곳이라 촘촘히 본다
+gemm_bias_2048x4096x4096,gemm_bias,2048 4096 4096,census,shape,"M, K, N",34359738368,134217728,67108864,256.0,512.0,MXU,MXU,DRAM,MXU,qwen2 q_proj (QKV bias),addmm 경로
+gqa_attn_16x1x2048x256,gqa_attn,16 1 2048 256,census,shape,"H_q, H_kv, S, D",34359738368,306184192,153092096,112.22,224.44,MXU,MXU,DRAM,DRAM,gemma-2b MQA,1개 kv head를 16개로
+gqa_attn_28x4x2048x128,gqa_attn,28 4 2048 128,census,shape,"H_q, H_kv, S, D",30064771072,507510784,253755392,59.24,118.48,DRAM,MXU,DRAM,DRAM,qwen2.5-7b n_rep=7,홀수 복제
+gqa_attn_32x8x2048x128,gqa_attn,32 8 2048 128,census,shape,"H_q, H_kv, S, D",34359738368,587202560,293601280,58.51,117.03,DRAM,MXU,DRAM,DRAM,llama3-8b repeat_kv 포함,GQA 복제 비용
+gqa_attn_32x16x2048x128,gqa_attn,32 16 2048 128,added,shape,"H_q, H_kv, S, D",34359738368,603979776,301989888,56.89,113.78,DRAM,MXU,DRAM,DRAM,n_rep=2,MHA~MQA 사이
+gqa_attn_32x2x2048x128,gqa_attn,32 2 2048 128,added,shape,"H_q, H_kv, S, D",34359738368,574619648,287309824,59.8,119.59,DRAM,MXU,DRAM,DRAM,n_rep=16,MHA~MQA 사이
+gqa_attn_32x32x2048x128,gqa_attn,32 32 2048 128,added,shape,"H_q, H_kv, S, D",34359738368,637534208,318767104,53.89,107.79,DRAM,MXU,DRAM,DRAM,n_rep=1,MHA~MQA 사이
+layernorm_2048x4096,layernorm,2048 4096,census,none,"rows, hidden",0,67108864,33554432,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,bert 폭을 llama 폭으로,
+layernorm_2048x768,layernorm,2048 768,anchor,shape,"rows, hidden",0,12582912,6291456,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,기존 baseline_cycle.csv,앵커
+layernorm_512x768,layernorm,512 768,anchor,exact,"rows, hidden",0,3145728,1572864,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,기존 baseline_cycle.csv,앵커
+layernorm_8192x768,layernorm,8192 768,anchor,shape,"rows, hidden",0,50331648,25165824,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,기존 baseline_cycle.csv,앵커
+layernorm_2048x1024,layernorm,2048 1024,added,none,"rows, hidden",0,16777216,8388608,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,hidden 격자,
+layernorm_2048x2048,layernorm,2048 2048,added,none,"rows, hidden",0,33554432,16777216,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,hidden 격자,
+layernorm_2048x8192,layernorm,2048 8192,added,none,"rows, hidden",0,134217728,67108864,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,hidden 격자,
+maxpool_1x512x20x20x5x1,maxpool,1 512 20 20 5 1,census,none,"N, C, H, W, k, stride",0,1638400,819200,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,yolo SPPF,
+maxpool_1x64x112x112x3x2,maxpool,1 64 112 112 3 2,census,none,"N, C, H, W, k, stride",0,4014080,2007040,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,resnet stem,
+maxpool_1x64x224x224x3x2,maxpool,1 64 224 224 3 2,added,none,"N, C, H, W, k, stride",0,16056320,8028160,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,resnet stem 실물 해상도,
+mlp_swiglu_2048x4096x14336,mlp_swiglu,2048 4096 14336,census,none,"S, hidden, interm",360777252864,973078528,486539264,370.76,741.52,MXU,MXU,MXU,MXU,llama3-8b MLP 블록,GEMM 3개+elementwise
+mlp_swiglu_512x4096x14336,mlp_swiglu,512 4096 14336,census,none,"S, hidden, interm",90194313216,771751936,385875968,116.87,233.74,MXU,MXU,DRAM,DRAM,llama3-8b MLP 블록,
+mlp_swiglu_128x4096x14336,mlp_swiglu,128 4096 14336,added,none,"S, hidden, interm",22548578304,721420288,360710144,31.26,62.51,DRAM,DRAM,DRAM,DRAM,블록 seq 격자,
+mlp_swiglu_4096x4096x14336,mlp_swiglu,4096 4096 14336,added,none,"S, hidden, interm",721554505728,1241513984,620756992,581.19,1162.38,MXU,MXU,MXU,MXU,블록 seq 격자,
+moe_route_2048x128x8,moe_route,2048 128 8,census,none,"tokens, experts, k",0,1179648,589824,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,qwen3-moe gate 전체,softmax+topk+renorm
+moe_route_2048x256x8,moe_route,2048 256 8,census,none,"tokens, experts, k",0,2228224,1114112,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,deepseek-v3 gate 전체,
+moe_route_2048x64x6,moe_route,2048 64 6,added,none,"tokens, experts, k",0,622592,311296,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,전문가 수 격자,
+patch_embed_1x3x224x768x16,patch_embed,1 3 224 768 16,census,exact,"N, C, H, C_out, patch",115605504,3563520,1781760,32.44,64.88,DRAM,DRAM,DRAM,DRAM,vit-b/16 patch embedding,kernel=stride
+patch_embed_1x3x336x1408x14,patch_embed,1 3 336 1408 14,census,none,"N, C, H, C_out, patch",476872704,7910400,3955200,60.28,120.57,DRAM,MXU,DRAM,DRAM,llama4-vision patch embedding,
+pwconv_1x256x56x56x128,pwconv,1 256 56 56 128,census,exact,"N, C_in, H, W, C_out",102760448,4947968,2473984,20.77,41.54,DRAM,DRAM,DRAM,DRAM,yolo/mobilenet 1x1,census 최다 conv 종류
+pwconv_1x512x28x28x256,pwconv,1 512 28 28 256,census,exact,"N, C_in, H, W, C_out",102760448,2932736,1466368,35.04,70.08,DRAM,MXU,DRAM,DRAM,yolo/mobilenet 1x1,
+pwconv_1x1024x14x14x256,pwconv,1 1024 14 14 256,added,exact,"N, C_in, H, W, C_out",51380224,2052096,1026048,25.04,50.08,DRAM,DRAM,DRAM,DRAM,resnet50 1x1,
+pwconv_1x2048x7x7x512,pwconv,1 2048 7 7 512,added,exact,"N, C_in, H, W, C_out",51380224,4696064,2348032,10.94,21.88,DRAM,DRAM,DRAM,DRAM,resnet50 1x1,
+reduce_sum_2048x4096,reduce_sum,2048 4096,census,shape,"rows, cols",0,67108864,33554432,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,norm/softmax의 리덕션 축,
+reduce_sum_512x4096,reduce_sum,512 4096,added,shape,"rows, cols",0,16777216,8388608,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,행 수 격자,
+reduce_sum_8192x4096,reduce_sum,8192 4096,added,shape,"rows, cols",0,268435456,134217728,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,행 수 격자,
+residual_2048x4096,residual,2048 4096,census,shape,"rows, hidden",0,100663296,50331648,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,layer residual add,가장 싼 DRAM bound 모양
+residual_1024x1024,residual,1024 1024,added,shape,"rows, hidden",0,12582912,6291456,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,대역폭 곡선,1K~16M 원소. DRAM 모델을 맞추는 첫 단계
+residual_16384x1024,residual,16384 1024,added,shape,"rows, hidden",0,201326592,100663296,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,대역폭 곡선,1K~16M 원소. DRAM 모델을 맞추는 첫 단계
+residual_16x1024,residual,16 1024,added,shape,"rows, hidden",0,196608,98304,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,대역폭 곡선,1K~16M 원소. DRAM 모델을 맞추는 첫 단계
+residual_1x1024,residual,1 1024,added,shape,"rows, hidden",0,12288,6144,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,대역폭 곡선,1K~16M 원소. DRAM 모델을 맞추는 첫 단계
+residual_256x1024,residual,256 1024,added,shape,"rows, hidden",0,3145728,1572864,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,대역폭 곡선,1K~16M 원소. DRAM 모델을 맞추는 첫 단계
+residual_4096x1024,residual,4096 1024,added,shape,"rows, hidden",0,50331648,25165824,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,대역폭 곡선,1K~16M 원소. DRAM 모델을 맞추는 첫 단계
+residual_4x1024,residual,4 1024,added,shape,"rows, hidden",0,49152,24576,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,대역폭 곡선,1K~16M 원소. DRAM 모델을 맞추는 첫 단계
+residual_64x1024,residual,64 1024,added,shape,"rows, hidden",0,786432,393216,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,대역폭 곡선,1K~16M 원소. DRAM 모델을 맞추는 첫 단계
+rmsnorm_128x4096,rmsnorm,128 4096,census,shape,"rows, hidden",0,4194304,2097152,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,llama3-8b input_layernorm,RMSNorm은 45개 모델에 있는데 검증셋에 없다
+rmsnorm_2048x2048,rmsnorm,2048 2048,census,shape,"rows, hidden",0,33554432,16777216,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,gemma-2b / gemma-7b / 넓은 폭,폭 스윕
+rmsnorm_2048x3072,rmsnorm,2048 3072,census,shape,"rows, hidden",0,50331648,25165824,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,gemma-2b / gemma-7b / 넓은 폭,폭 스윕
+rmsnorm_2048x4096,rmsnorm,2048 4096,census,shape,"rows, hidden",0,67108864,33554432,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,llama3-8b input_layernorm,RMSNorm은 45개 모델에 있는데 검증셋에 없다
+rmsnorm_2048x8192,rmsnorm,2048 8192,census,none,"rows, hidden",0,134217728,67108864,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,gemma-2b / gemma-7b / 넓은 폭,폭 스윕
+rmsnorm_4096x4096,rmsnorm,4096 4096,census,shape,"rows, hidden",0,134217728,67108864,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,llama3-8b input_layernorm,RMSNorm은 45개 모델에 있는데 검증셋에 없다
+rmsnorm_512x4096,rmsnorm,512 4096,census,shape,"rows, hidden",0,16777216,8388608,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,llama3-8b input_layernorm,RMSNorm은 45개 모델에 있는데 검증셋에 없다
+rmsnorm_1024x4096,rmsnorm,1024 4096,added,shape,"rows, hidden",0,33554432,16777216,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,행 수 격자,r=1은 decode 한 토큰
+rmsnorm_16384x4096,rmsnorm,16384 4096,added,shape,"rows, hidden",0,536870912,268435456,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,행 수 격자,r=1은 decode 한 토큰
+rmsnorm_1x4096,rmsnorm,1 4096,added,shape,"rows, hidden",0,32768,16384,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,행 수 격자,r=1은 decode 한 토큰
+rmsnorm_2048x1024,rmsnorm,2048 1024,added,shape,"rows, hidden",0,16777216,8388608,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,hidden 격자,5120/6144/12288은 출하 폭
+rmsnorm_2048x12288,rmsnorm,2048 12288,added,none,"rows, hidden",0,201326592,100663296,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,hidden 격자,5120/6144/12288은 출하 폭
+rmsnorm_2048x16384,rmsnorm,2048 16384,added,none,"rows, hidden",0,268435456,134217728,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,hidden 격자,5120/6144/12288은 출하 폭
+rmsnorm_2048x512,rmsnorm,2048 512,added,shape,"rows, hidden",0,8388608,4194304,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,hidden 격자,5120/6144/12288은 출하 폭
+rmsnorm_2048x5120,rmsnorm,2048 5120,added,shape,"rows, hidden",0,83886080,41943040,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,hidden 격자,5120/6144/12288은 출하 폭
+rmsnorm_2048x6144,rmsnorm,2048 6144,added,none,"rows, hidden",0,100663296,50331648,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,hidden 격자,5120/6144/12288은 출하 폭
+rmsnorm_64x4096,rmsnorm,64 4096,added,shape,"rows, hidden",0,2097152,1048576,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,행 수 격자,r=1은 decode 한 토큰
+rmsnorm_8192x4096,rmsnorm,8192 4096,added,shape,"rows, hidden",0,268435456,134217728,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,행 수 격자,r=1은 decode 한 토큰
+rmsnorm_8x4096,rmsnorm,8 4096,added,shape,"rows, hidden",0,262144,131072,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,행 수 격자,r=1은 decode 한 토큰
+rope_1x32x2048x128,rope,1 32 2048 128,census,none,"B, H, S, D",0,69206016,34603008,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,llama3-8b apply_rotary_pos_emb,rope 전체
+rope_1x32x512x128,rope,1 32 512 128,census,none,"B, H, S, D",0,17301504,8650752,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,llama3-8b apply_rotary_pos_emb,
+rope_outer_2048x64,rope_outer,2048 64,census,none,"S, D",131072,532736,266368,0.25,0.49,DRAM,DRAM,DRAM,DRAM,rotary_emb inv_freq 외적,K=1 GEMM. census 33개 모델에 있다 — 어레이 최악 모양
+rope_outer_512x64,rope_outer,512 64,census,none,"S, D",32768,133376,66688,0.25,0.49,DRAM,DRAM,DRAM,DRAM,rotary_emb inv_freq 외적,
+softmax_2048x2048,softmax,2048 2048,anchor,none,"rows, cols",0,33554432,16777216,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,기존 baseline_cycle.csv,앵커
+softmax_512x512,softmax,512 512,anchor,none,"rows, cols",0,2097152,1048576,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,기존 baseline_cycle.csv,앵커
+softmax_8192x8192,softmax,8192 8192,anchor,none,"rows, cols",0,536870912,268435456,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,기존 baseline_cycle.csv,앵커
+softmax_1024x128256,softmax,1024 128256,added,none,"rows, cols",0,1050673152,525336576,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,vocab softmax,행이 아주 넓은 경우
+softmax_4096x4096,softmax,4096 4096,added,none,"rows, cols",0,134217728,67108864,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,2의 거듭제곱 격자,
+softmax3d_32x2048x2048,softmax3d,32 2048 2048,census,none,"B, S_q, S_kv",0,1073741824,536870912,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,llama3-8b attention score,"실제 softmax는 [head, q, k] 3차원이다"
+softmax3d_32x4096x4096,softmax3d,32 4096 4096,census,none,"B, S_q, S_kv",0,4294967296,2147483648,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,llama3-8b attention score,"실제 softmax는 [head, q, k] 3차원이다"
+softmax3d_32x512x512,softmax3d,32 512 512,census,none,"B, S_q, S_kv",0,67108864,33554432,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,llama3-8b attention score,"실제 softmax는 [head, q, k] 3차원이다"
+softmax3d_32x1024x1024,softmax3d,32 1024 1024,added,none,"B, S_q, S_kv",0,268435456,134217728,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,S 격자 보간,
+softmax3d_32x128x128,softmax3d,32 128 128,added,none,"B, S_q, S_kv",0,4194304,2097152,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,S 격자 보간,
+softmax3d_32x256x256,softmax3d,32 256 256,added,none,"B, S_q, S_kv",0,16777216,8388608,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,S 격자 보간,
+sort1d_2048x128x8,sort1d,2048 128 8,census,shape,"tokens, experts, k",0,1179648,589824,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,qwen3-moe moe_infer argsort,counting sort 재작성이 걸린 자리
+sort1d_2048x256x8,sort1d,2048 256 8,census,shape,"tokens, experts, k",0,2228224,1114112,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,deepseek-v3 moe_infer argsort,
+sort1d_512x64x6,sort1d,512 64 6,added,none,"tokens, experts, k",0,155648,77824,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,전문가 수 격자,
+swiglu_2048x14336,swiglu,2048 14336,census,shape,"rows, interm",0,352321536,176160768,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,llama3-8b act_fn(gate)*up,MLP의 elementwise 절반
+swiglu_2048x24576,swiglu,2048 24576,census,shape,"rows, interm",0,603979776,301989888,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,gemma-7b,
+swiglu_512x14336,swiglu,512 14336,census,shape,"rows, interm",0,88080384,44040192,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,llama3-8b,
+swiglu_2048x11008,swiglu,2048 11008,added,none,"rows, interm",0,270532608,135266304,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,interm 격자,11008/28672은 출하 폭
+swiglu_2048x16384,swiglu,2048 16384,added,shape,"rows, interm",0,402653184,201326592,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,interm 격자,11008/28672은 출하 폭
+swiglu_2048x28672,swiglu,2048 28672,added,none,"rows, interm",0,704643072,352321536,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,interm 격자,11008/28672은 출하 폭
+swiglu_2048x4096,swiglu,2048 4096,added,shape,"rows, interm",0,100663296,50331648,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,interm 격자,11008/28672은 출하 폭
+swiglu_2048x8192,swiglu,2048 8192,added,shape,"rows, interm",0,201326592,100663296,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,interm 격자,11008/28672은 출하 폭
+topk_2048x128x8,topk,2048 128 8,census,none,"tokens, experts, k",0,1179648,589824,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,qwen3-moe router (실물 전문가 수),
+topk_2048x256x8,topk,2048 256 8,census,none,"tokens, experts, k",0,2228224,1114112,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,deepseek-v3 router (실물),
+topk_2048x8x2,topk,2048 8 2,census,none,"tokens, experts, k",0,98304,49152,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,qwen1.5-moe router,
+topk_2048x16x8,topk,2048 16 8,added,none,"tokens, experts, k",0,262144,131072,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,전문가 수 격자,384는 kimi-k2 급
+topk_2048x32x8,topk,2048 32 8,added,none,"tokens, experts, k",0,393216,196608,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,전문가 수 격자,384는 kimi-k2 급
+topk_2048x384x8,topk,2048 384 8,added,none,"tokens, experts, k",0,3276800,1638400,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,전문가 수 격자,384는 kimi-k2 급
+topk_2048x64x8,topk,2048 64 8,added,none,"tokens, experts, k",0,655360,327680,0.0,0.0,VPU/DRAM,VPU/DRAM,VPU/DRAM,VPU/DRAM,전문가 수 격자,384는 kimi-k2 급

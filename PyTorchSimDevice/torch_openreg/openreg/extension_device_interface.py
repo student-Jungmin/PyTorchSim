@@ -61,3 +61,13 @@ class ExtensionDeviceInterface(DeviceInterface):
     @staticmethod
     def get_compute_capability(device: torch.types.Device = None):
         return 36
+
+    @staticmethod
+    def is_bf16_supported(including_emulation: bool = False) -> bool:
+        """Answer Inductor's bf16 gate, which the base class only raises on.
+
+        True on purpose even though tnpu refuses bf16 today: False makes
+        _check_triton_bf16_support skip the frame to eager, which on this device
+        is a silent CPU fallback that simulates nothing.
+        """
+        return True
