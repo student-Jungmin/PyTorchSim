@@ -47,7 +47,7 @@ def measure_tile_cycles(workdir, meta):
         return None
 
     with breakdown.span(breakdown.GEM5_BUILD, kernel_name):
-        rc, output = compiler_bridge.run_module(f"{compiler_bridge.COMPILER_PKG}.cycle", spec, workdir)
+        rc, output = compiler_bridge.run_module(f"{compiler_bridge.COMPILER_PKG}.emit_sample_binary", spec, workdir)
     breakdown.ingest_psto(workdir, kernel_name, kind="cycle",
                           name="timing-cycle.json")
     if rc != 0:
@@ -126,7 +126,7 @@ def emit_trace(workdir, meta):
 
     with breakdown.span(breakdown.GEM5_BUILD, kernel):
         rc, output = compiler_bridge.run_module(
-            f"{compiler_bridge.COMPILER_PKG}.trace", spec, workdir)
+            f"{compiler_bridge.COMPILER_PKG}.emit_trace_producer", spec, workdir)
     if rc != 0:
         raise RuntimeError(f"the compiler could not emit a trace producer for "
                            f"{kernel}:\n{output[-2000:]}")
