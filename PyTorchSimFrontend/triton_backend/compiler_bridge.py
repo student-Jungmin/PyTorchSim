@@ -51,31 +51,50 @@ def tnpu_dir():
 
 
 def machine():
-    """The machine the kernel is compiled for, FROM THE TOGSIM YAML.
+    """The machine the kernel is compiled for, from the TOGSim YAML.
 
-    The YAML is the hardware description and therefore the authority; the compiler's
-    config.py holds defaults for the same numbers, and the two have drifted.
+    The YAML is the hardware description and therefore the authority.
     """
-    spad = extension_config.CONFIG_SPAD_INFO["spad_size"]
-    return {"lanes": int(extension_config.vpu_num_lanes),
-            "vlen_bits": int(extension_config.vpu_vector_length_bits),
-            "spad_size": int(spad)}
+    return dict(extension_config.CONFIG_MACHINE)
+
+
+def target_path():
+    """Write this machine as a target description and return its path.
+
+    Named for the config it came from, so two configs in one dump path do not
+    overwrite each other. Written whole and renamed into place, since several
+    processes may reach this at once.
+    """
+    import json
+
+    m = machine()
+    name = os.path.splitext(os.path.basename(
+        os.environ.get("TOGSIM_CONFIG", "togsim")))[0]
+    out = os.path.join(extension_config.get_dump_path(), f"target-{name}.json")
+    doc = dict(m, name=name,
+               provenance={"togsim_config": os.environ.get("TOGSIM_CONFIG", ""),
+                           "address_map": "PyTorchSimFrontend/extension_config.py"})
+    body = json.dumps(doc, indent=2) + "\n"
+    if not os.path.isfile(out) or open(out).read() != body:
+        tmp = f"{out}.{os.getpid()}"
+        with open(tmp, "w") as fh:
+            fh.write(body)
+        os.replace(tmp, out)
+    return out
 
 
 def tnpu_env():
     """The environment for a the compiler subprocess: this machine, no PYTHONPATH, and
     no device backend autoload.
 
-    The three PSTO_* names are what the compiler's config reads, so this tells it
-    rather than overrides it; anything already in the environment wins.
+    PSTO_TARGET NAMES THE WHOLE MACHINE, and used to name three of its seven
+    fields while the compiler supplied the rest from a shipped default. One
+    description, written from the YAML this process is running.
     """
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     env["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
-    m = machine()
-    env.setdefault("PSTO_VECTORLANE_SIZE", str(m["lanes"]))
-    env.setdefault("PSTO_VLEN_BITS", str(m["vlen_bits"]))
-    env.setdefault("PSTO_SPAD_SIZE", str(m["spad_size"]))
+    env.setdefault("PSTO_TARGET", target_path())
     return env
 
 

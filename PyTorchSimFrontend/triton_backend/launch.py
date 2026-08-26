@@ -213,7 +213,7 @@ def fixed_config_for(kernel, numels, args):
     """
     from . import compiler_bridge
     machine = compiler_bridge.machine()
-    lanes = machine["lanes"]
+    lanes = machine["vector_lanes"]
     per_vector = max(1, machine["vlen_bits"] // _element_bits(args))
 
     axes = parallel_axes(numels)

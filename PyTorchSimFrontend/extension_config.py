@@ -63,6 +63,17 @@ def __getattr__(name):
           "spad_size" : config_yaml["vpu_spad_size_kb_per_lane"] << 10 # Note: spad size per lane
         }
 
+    if name == "CONFIG_MACHINE":
+        return {
+          "vector_lanes" : config_yaml["vpu_num_lanes"],
+          "vlen_bits" : config_yaml["vpu_vector_length_bits"],
+          "spad_size" : config_yaml["vpu_spad_size_kb_per_lane"] << 10,
+          "spad_vaddr" : 0xD0000000,
+          "spad_paddr" : 0x2000000000,
+          "dram_base" : 0x80000000,
+          "dram_size" : 100 << 30,
+        }
+
     if name == "CONFIG_NUM_CORES":
         return config_yaml["num_cores"]
     if name == "vpu_vector_length_bits":
