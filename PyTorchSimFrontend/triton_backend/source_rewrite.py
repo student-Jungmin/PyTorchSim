@@ -55,7 +55,7 @@ def strip_for_tnpu(src):
     if re.search(r"\btl_math\.", body):
         prefix += "from triton.language import math as tl_math\n"
     if re.search(r"\blibdevice\.", body):
-        prefix += "from triton.language.extra.cuda import libdevice\n"
+        prefix += "from triton.language.extra import libdevice\n"
     if used:
         prefix += triton_helpers_src.SRC
     return prefix + body
