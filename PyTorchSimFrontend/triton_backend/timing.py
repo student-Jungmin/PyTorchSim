@@ -62,7 +62,7 @@ def measure_tile_cycles(workdir, meta):
         logger.warning("[Gem5] cycle binary build failed:\n%s", output[-2000:])
         return None
 
-    from Simulator.simulator import CycleSimulator
+    from .gem5 import CycleSimulator
     try:
         with breakdown.span(breakdown.GEM5_RUN, kernel_name):
             return CycleSimulator().compile_and_simulate(

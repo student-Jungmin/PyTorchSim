@@ -9,7 +9,7 @@ keyed by `tile_id`. Two numbers per tile, mirroring the legacy TOG:
   * `cycle`            -- full compute latency, sampled by gem5 sample-mode
                           (the existing measurement: `_rewrite_loop_steps` +
                           `_insert_compute_markers` in build_tog, run through
-                          CycleSimulator -> the per-tile `cycle_list`).
+                          triton_backend.gem5.CycleSimulator -> the per-tile `cycle_list`).
   * `overlapping_cycle` -- the portion that overlaps the previous instruction in
                           the systolic pipeline; the timing core uses it as
                           `finish = prev.finish + cycle - overlapped` (Core.cc).
