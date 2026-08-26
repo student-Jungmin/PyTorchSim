@@ -10,7 +10,7 @@ import os
 
 from PyTorchSimFrontend import extension_config
 
-from . import breakdown, layout, session
+from . import layout, session
 
 logger = extension_config.setup_logger()
 
@@ -196,11 +196,7 @@ def run(workdir, meta, args):
     Replay is OFF by default -- a result out of a file is not one the simulator
     produced today; it is for the inner loop, not for reporting.
     """
-    from . import compiler_bridge
-
-    spec = os.path.join(workdir, f"{meta['kernel_name']}_spec.py")
-    if not os.path.isfile(spec):
-        raise FileNotFoundError(f"{spec} not found -- compile the kernel first")
+    from . import compiler_bridge, spike_run
 
     runtime = write_inputs(workdir, meta, args)
 
@@ -212,13 +208,16 @@ def run(workdir, meta, args):
                         meta["kernel_name"], key)
             return read_outputs(workdir, meta, args)
 
-    rc, output = compiler_bridge.run_module(f"{compiler_bridge.COMPILER_PKG}.spike", spec, workdir,
-                                        "--runtime", runtime)
-    breakdown.ingest_psto(runtime, meta["kernel_name"], kind="spike",
-                          name="timing-spike.json")
-    if rc != 0:
-        raise RuntimeError(
-            f"[Spike] {meta['kernel_name']} failed:\n" + output[-2000:])
+    manifest = compiler_bridge.kernel_object(workdir)
+    if manifest is None:
+        raise FileNotFoundError(
+            f"{workdir} has no kernel.json -- compile the kernel first")
+    raw_paths = {a["name"]: os.path.join(runtime, f"{a['name']}.raw")
+                 for a in manifest["args"]}
+    try:
+        spike_run.launch(workdir, manifest, runtime, raw_paths, logger.debug)
+    except spike_run.SpikeError as e:
+        raise RuntimeError(f"[Spike] {meta['kernel_name']} failed:\n{e}") from None
 
     if key:
         _save_replay(workdir, meta, runtime, key)
