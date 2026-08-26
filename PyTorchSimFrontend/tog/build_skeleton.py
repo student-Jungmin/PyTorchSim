@@ -146,7 +146,7 @@ def _flatten_add(expr):
 
 def _neg_coeff_dim(summand):
     """If `summand` is `dim * c` with a negative constant `c`, return that dim's
-    position; else None. triton-npu tags each accumulation (reduction) loop var
+    position; else None. pytorchsim-triton-opt tags each accumulation (reduction) loop var
     with coefficient -1 in the togsim.wait tag index -- a SENTINEL marking the
     reduction axis, not an arithmetic offset (legacy TileGraphParser skips stride
     -1 for the same reason)."""
@@ -166,7 +166,7 @@ def _strip_accum_terms(ctx, tag_index, anchor_op):
     dropped, so a memory_barrier waits on the SAME subtile slot its async load
     wrote.
 
-    The wait tag index triton-npu builds carries `-acc_iv` for each reduction
+    The wait tag index pytorchsim-triton-opt builds carries `-acc_iv` for each reduction
     loop var; the matching load index is subtile-only. Without
     this, at reduction iteration > 0 the producer EVALUATES `-acc_iv` to a negative
     slot, so the recorded barrier slot diverges from the load slot and the runtime
@@ -439,7 +439,7 @@ def _emit_computes(ctx, builder, bufs):
 def _transfer_fields(op):
     """Decode a `togsim.transfer`'s fixed operands by position.
 
-    Layout (as triton-npu's transfer lowering emits it):
+    Layout (as pytorchsim-triton-opt's transfer lowering emits it):
         operands: dram, dram_idx, sram, sram_idx, tag, tag_idx[, dma_type], vst
                   [, offset_spad][, mask clamps]
     Unlike the old `memref.dma_start`, dram/sram are FIXED (not direction-swapped):
@@ -447,13 +447,13 @@ def _transfer_fields(op):
     runtime tag slot always operand[4] (tag memref) + operand[5] (tag_idx).
 
     ONLY THE FIRST SIX SLOTS ARE FIXED. Past the tag the two producers of this op
-    disagree -- the MLIR route emits a `dma_type` operand and triton-npu does not
+    disagree -- the MLIR route emits a `dma_type` operand and pytorchsim-triton-opt does not
     -- so the indirect offset is read off the operand TYPES by
     build_tog.transfer_index_operand rather than counted to. `dma_type` and `vst`
-    were decoded here too; nothing read either, and under tnpu's layout
+    were decoded here too; nothing read either, and under the compiler's layout
     operands[7] does not exist on a plain transfer, so they are gone rather than
     wrong. The offset's owning `memref.get_global` carries the offset symbol name
-    in its "name" attribute (matching triton-npu's offset_sym
+    in its "name" attribute (matching pytorchsim-triton-opt's offset_sym
     derivation)."""
     from .build_tog import transfer_index_operand
     operands = list(op.operands)
@@ -483,7 +483,7 @@ def _emit_one_dma(ctx, op, node, builder, bufs, tags):
     write_bufs = [] if node.is_write else [spad_id]
     if f["offset"] is not None:  # gather/scatter reads the offset spad -> dep on its build
         # the offset symbol name lives on the offset operand's owning get_global
-        # ("name" attr), the same place triton-npu reads it.
+        # ("name" attr), the same place pytorchsim-triton-opt reads it.
         off_owner = f["offset"].owner
         off_sym = str(off_owner.attributes["name"]).strip('@" ')
         off_id = bufs.of(off_sym)

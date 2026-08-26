@@ -35,7 +35,7 @@ class TritonNPUScheduling(TritonScheduling):
         """Name the kernel, capture its metadata, and emit our compile call.
 
         The placeholders upstream substitutes inside define_kernel are resolved
-        here first, because the tnpu side parses the source.
+        here first, because the the compiler side parses the source.
         """
         wrapper = V.graph.wrapper_code
         if src_code in wrapper.src_to_kernel:

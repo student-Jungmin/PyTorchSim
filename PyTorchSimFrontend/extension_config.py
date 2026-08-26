@@ -12,11 +12,11 @@ CONFIG_TORCHSIM_LLVM_PATH = os.environ.get(
         'PSTO_LLVM_PATH', "/workspace/LLVM_DIR/llvm-project/build/install/bin"))
 
 # --- Triton codegen route ----------------------------------------------------
-# The triton-npu checkout that owns stages 1-5 (ttir -> ttshared -> tnpu passes
+# The pytorchsim-triton-opt checkout that owns stages 1-5 (ttir -> ttshared -> the compiler passes
 # -> RISC-V ELF). It is a SEPARATE repository, deliberately not vendored.
 CONFIG_PSTO_DIR = os.environ.get(
-    "PSTO_DIR", default=os.path.join(CONFIG_TORCHSIM_DIR, "triton-npu"))
-# tnpu runs in its own process. Both sides now hold the same LLVM 23 bindings,
+    "PSTO_DIR", default=os.path.join(CONFIG_TORCHSIM_DIR, "pytorchsim-triton-opt"))
+# the compiler runs in its own process. Both sides now hold the same LLVM 23 bindings,
 # so the seam is a process boundary rather than a version one; `mlir` is a
 # namespace package, and each side still selects its own root explicitly.
 CONFIG_PSTO_PYTHON = os.environ.get("PSTO_PYTHON", default=sys.executable)

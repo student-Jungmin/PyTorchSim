@@ -3,7 +3,7 @@
     define_kernel   ->  triton_npu_compile(src, meta, kernel_name)  ->  launcher
     call site       ->  launcher(arg0, arg1, ..., xnumel)
 
-One directory per source hash, holding the tnpu kernel file and every artifact.
+One directory per source hash, holding the the compiler kernel file and every artifact.
 """
 
 import os
@@ -20,7 +20,7 @@ logger = extension_config.setup_logger()
 
 LOCK_TIMEOUT = 600
 
-_SPAD_OVERFLOW_RE = re.compile(r"tnpu-spad-overflow: usage=(\d+) budget=(\d+)")
+_SPAD_OVERFLOW_RE = re.compile(r"the compiler-spad-overflow: usage=(\d+) budget=(\d+)")
 
 
 def _write_path(src_code):
@@ -103,7 +103,7 @@ def _shrink_tile(meta, usage, budget):
 
 
 def triton_npu_compile(src_code, meta, kernel_name):
-    """Compile one Inductor-generated Triton kernel through tnpu.
+    """Compile one Inductor-generated Triton kernel through the compiler.
 
     Called from the generated wrapper at module import time. Synchronous, on
     purpose: a thread pool buys nothing until the pipeline itself is proven.
@@ -117,7 +117,7 @@ def triton_npu_compile(src_code, meta, kernel_name):
         elf = compiler_bridge.artifact(write_path, "elf")
         if elf is not None and not provenance.matches(write_path):
             logger.info(
-                "[triton-npu] %s: cached artifacts carry a different toolchain "
+                "[psto] %s: cached artifacts carry a different toolchain "
                 "or machine identity, rebuilding", kernel_name)
             provenance.clear_stale(write_path)
             elf = None
@@ -130,10 +130,10 @@ def triton_npu_compile(src_code, meta, kernel_name):
                 kernel_spec.write_spec_file(src_code, meta, spec_path,
                                             compiler_bridge.tnpu_dir())
                 try:
-                    with breakdown.span(breakdown.TNPU, kernel_name):
+                    with breakdown.span(breakdown.PSTO, kernel_name):
                         compiler_bridge.run_pipeline(spec_path, write_path,
                                                  to_stage="binary")
-                    breakdown.ingest_tnpu(write_path, kernel_name)
+                    breakdown.ingest_psto(write_path, kernel_name)
                     break
                 except compiler_bridge.CompilerError as exc:
                     over = _spad_overflow(exc)
@@ -162,7 +162,7 @@ def triton_npu_compile(src_code, meta, kernel_name):
                     # number names nothing.
                     if last_usage is not None and over[0] >= last_usage:
                         logger.warning(
-                            "[triton-npu] %s: %d bytes/lane, unchanged from the "
+                            "[psto] %s: %d bytes/lane, unchanged from the "
                             "previous tile -- shrinking further frees nothing "
                             "and only risks a unit axis, so stopping here",
                             kernel_name, over[0])
@@ -181,11 +181,11 @@ def triton_npu_compile(src_code, meta, kernel_name):
                     # reads as a loop that shrinks nothing, which is the opposite
                     # of what was happening. Measured on Qwen2-MoE's sort kernel.
                     logger.info(
-                        "[triton-npu] %s: %d bytes/lane over a budget of %d, "
+                        "[psto] %s: %d bytes/lane over a budget of %d, "
                         "retrying with %s", kernel_name, over[0], over[1],
                         {k: v for k, v in meta["fixed_config"].items()
                          if k.endswith("BLOCK")})
             timing.store_meta(write_path, meta)
             provenance.store(write_path)
-        logger.info("[triton-npu] %s -> %s", kernel_name, write_path)
+        logger.info("[psto] %s -> %s", kernel_name, write_path)
         return TritonNPULauncher(kernel_name, write_path, meta)

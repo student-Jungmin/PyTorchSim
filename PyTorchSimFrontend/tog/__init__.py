@@ -1,4 +1,4 @@
-"""Tile-Operation-Graph generation from the MLIR that triton-npu emits.
+"""Tile-Operation-Graph generation from the MLIR that pytorchsim-triton-opt emits.
 
     build_tog        post-vcix MLIR -> TogBuilder nodes (and the sample rewrite)
     build_skeleton   those nodes -> a per-tile skeleton with dependencies
@@ -64,9 +64,9 @@ def check_bindings():
     if stray:
         raise RuntimeError(
             f"the MLIR python bindings loaded from {stray}, not the configured "
-            f"{bindings_dir()}. tnpu prints this IR with its own LLVM and a "
+            f"{bindings_dir()}. the compiler prints this IR with its own LLVM and a "
             f"different one reading it back is the seam that stopped being "
-            f"papered over; point TORCHSIM_LLVM_PATH at the LLVM tnpu uses.")
+            f"papered over; point TORCHSIM_LLVM_PATH at the LLVM the compiler uses.")
 
 
 activate_bindings()

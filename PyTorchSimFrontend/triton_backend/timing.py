@@ -1,4 +1,4 @@
-"""The timing half of the Triton route: tnpu IR -> trace.so -> TOGSim.
+"""The timing half of the Triton route: the compiler IR -> trace.so -> TOGSim.
 
     run(workdir, meta, args)    emit if needed, then simulate, under the lock
     emit_trace(workdir, meta)   *-custom.mlir -> trace.so + trace_cycles.tsv
@@ -35,7 +35,7 @@ _PID_SLOT = {"x": 0, "y": 1, "z": 2}
 def measure_tile_cycles(workdir, meta):
     """Per-compute-node cycle counts for ONE tile, measured under gem5.
 
-    build_tog's sample mode makes every loop a single trip, tnpu lowers it and
+    build_tog's sample mode makes every loop a single trip, the compiler lowers it and
     gem5 runs it. None on any failure; the caller uses the placeholder table.
     """
     from PyTorchSimFrontend.tog.build_tog import run_tog
@@ -56,7 +56,7 @@ def measure_tile_cycles(workdir, meta):
 
     with breakdown.span(breakdown.GEM5_BUILD, kernel_name):
         rc, output = compiler_bridge.run_module(f"{compiler_bridge.COMPILER_PKG}.cycle", spec, workdir)
-    breakdown.ingest_tnpu(workdir, kernel_name, kind="cycle",
+    breakdown.ingest_psto(workdir, kernel_name, kind="cycle",
                           name="timing-cycle.json")
     if rc != 0:
         logger.warning("[Gem5] cycle binary build failed:\n%s", output[-2000:])
@@ -146,7 +146,7 @@ def _write_extents(workdir, ext, what):
 
 
 def emit_trace(workdir, meta):
-    """Build `trace.so` + `trace_cycles.tsv` from tnpu's post-vcix IR.
+    """Build `trace.so` + `trace_cycles.tsv` from the compiler's post-vcix IR.
 
     Returns the number of compute tiles the cycle table covers.
     """
@@ -159,7 +159,7 @@ def emit_trace(workdir, meta):
     postvcix = artifact(workdir, "post_vcix_ir")
     if postvcix is None:
         raise FileNotFoundError(
-            f"{workdir} has no post-vcix IR -- tnpu must run far enough to emit "
+            f"{workdir} has no post-vcix IR -- the compiler must run far enough to emit "
             f"it, which is what the trace is built from")
 
     kernel = meta["kernel_name"]

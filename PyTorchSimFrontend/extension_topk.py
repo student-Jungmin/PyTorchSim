@@ -2,7 +2,7 @@
 
 A post-grad pass rather than a decomposition, and what decides that is now only
 the ops it emits: `max(dim)` reaches `triton_helpers` inside torch, which the
-tnpu venv has no copy of, and scatter is itself an extern here.
+the compiler venv has no copy of, and scatter is itself an extern here.
 """
 
 import torch

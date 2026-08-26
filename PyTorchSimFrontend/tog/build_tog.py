@@ -9,7 +9,7 @@ mlir/include/mlir/Analysis/TileOperationGraph.h).
 Usage:
     python3 build_tog.py <postvcix.mlir>
 
-Requires the MLIR Python bindings of the LLVM triton-npu prints this IR with;
+Requires the MLIR Python bindings of the LLVM pytorchsim-triton-opt prints this IR with;
 the package `__init__` selects them from TORCHSIM_LLVM_PATH.
 """
 
@@ -819,7 +819,7 @@ class TogBuilder:
             raise RuntimeError(
                 "togsim.transfer carries no dma_kind, so its direction is "
                 "unknown. The producer puts it on every transfer "
-                "(triton-npu passes/lib_transfer.py PLAIN_ATTRS); a transfer "
+                "(pytorchsim-triton-opt passes/lib_transfer.py PLAIN_ATTRS); a transfer "
                 "without one did not come from there.")
         try:
             kind = ir.StringAttr(oper.attributes["dma_kind"]).value
@@ -1157,7 +1157,7 @@ def _insert_compute_markers(builder):
 # ---------------------------------------------------------------------------
 def _find_kernel(module):
     """The kernel function: named `kernel` in PyTorchSim's codegen, else the
-    module's only func.func (triton-npu carries the Triton kernel's own name).
+    module's only func.func (pytorchsim-triton-opt carries the Triton kernel's own name).
     Declines when there is more than one -- the intent would be a guess."""
     funcs = [op for op in module.body.operations
              if op.operation.name == "func.func"]
@@ -1199,7 +1199,7 @@ def _is_address_plumbing(op):
     """Scalar index/integer math (DMA offsets, mask extents) and the terminator.
 
     Only consulted on the no-top-level-loop path. PyTorchSim's codegen puts this
-    math in `affine.apply`, which SKIP_OPS drops; triton-npu emits an
+    math in `affine.apply`, which SKIP_OPS drops; pytorchsim-triton-opt emits an
     arith/index_cast chain that would otherwise count as vector compute.
 
     Keyed on result type: tile data here is always vector- or float-typed. A

@@ -125,7 +125,7 @@ def _register_template_heuristics():
                 mapped = _gemm_tiles(*mnk, kwargs.get("dtype_size", 4))
                 if not mapped:
                     logger.warning(
-                        "[triton-npu] no mapped tile for %sx%sx%s is a legal "
+                        "[psto] no mapped tile for %sx%sx%s is a legal "
                         "Triton block; falling back to the generic set", *mnk)
                 yield from self._finalize_mm_configs(mapped)
                 yield from generic(m, n, k, **kwargs)
@@ -458,7 +458,7 @@ def _npu_choices_class():
                     device, reduction_numel_hint, numel_hint, inner_reduction)
                 if would != 1:
                     logger.info(
-                        "[triton-npu] declined a %s-way split of %s elements "
+                        "[psto] declined a %s-way split of %s elements "
                         "into %s outputs (inner=%s)",
                         would, reduction_numel_hint, numel_hint, inner_reduction)
             return 1
@@ -564,7 +564,7 @@ def _install_selection():
 def install():
     """On by default; TORCHSIM_TRITON_TEMPLATES=0 opts out.
 
-    Sending mm to aten simulates nothing, so a test that stops inside tnpu says
+    Sending mm to aten simulates nothing, so a test that stops inside the compiler says
     more than one that passes without running the op.
     """
     global _installed

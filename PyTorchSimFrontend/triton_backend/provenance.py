@@ -31,7 +31,7 @@ def _run(cmd, cwd):
 
 
 def _tnpu_git(tnpu_dir):
-    """The tnpu checkout's commit, with a digest of any uncommitted change."""
+    """The the compiler checkout's commit, with a digest of any uncommitted change."""
     rc, head = _run(["git", "rev-parse", "HEAD"], tnpu_dir)
     if rc != 0:
         return None
@@ -41,7 +41,7 @@ def _tnpu_git(tnpu_dir):
 
 
 def _tool_paths(tnpu_dir):
-    """The tool paths tnpu itself would resolve, asked in its own interpreter."""
+    """The tool paths the compiler itself would resolve, asked in its own interpreter."""
     code = (f"import json; from {compiler_bridge.COMPILER_PKG} import config as c; "
             "print(json.dumps({n: p for n, p, _ in c.CHECKS}))")
     proc = subprocess.run(
@@ -93,10 +93,10 @@ def current():
         paths = _tool_paths(tnpu_dir)
         if paths is None:
             logger.warning(
-                "[provenance] tnpu's toolchain could not be introspected; "
-                "cached kernels are guarded by the tnpu commit only")
+                "[provenance] the compiler's toolchain could not be introspected; "
+                "cached kernels are guarded by the the compiler commit only")
         _current = {
-            "tnpu": _tnpu_git(tnpu_dir),
+            "the compiler": _tnpu_git(tnpu_dir),
             "tools": _stat_tools(paths) if paths else None,
             "machine": compiler_bridge.machine(),
             "trace_abi": _trace_abi(),

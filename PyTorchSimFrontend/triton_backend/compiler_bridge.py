@@ -16,7 +16,7 @@ logger = extension_config.setup_logger()
 
 
 class CompilerError(RuntimeError):
-    """A tnpu stage failed. Inductor reports only str(exc), so the stage's own
+    """A the compiler stage failed. Inductor reports only str(exc), so the stage's own
     diagnostic has to travel in the message."""
     _SIGNAL = re.compile(
         r"^(?!\s|Traceback|During handling|The above)"
@@ -37,7 +37,7 @@ class CompilerError(RuntimeError):
         super().__init__(message)
 
 
-#: The compiler's package. One name since triton-npu fe0ee08.
+#: The compiler's package. One name since pytorchsim-triton-opt fe0ee08.
 COMPILER_PKG = "pytorchsim_triton_opt"
 
 
@@ -45,7 +45,7 @@ def tnpu_dir():
     d = extension_config.CONFIG_PSTO_DIR
     if not os.path.isdir(d):
         raise CompilerError(
-            f"triton-npu checkout not found at {d}. It is a separate repository "
+            f"pytorchsim-triton-opt checkout not found at {d}. It is a separate repository "
             f"and is not vendored; clone it there or set PSTO_DIR.")
     return d
 
@@ -53,7 +53,7 @@ def tnpu_dir():
 def machine():
     """The machine the kernel is compiled for, FROM THE TOGSIM YAML.
 
-    The YAML is the hardware description and therefore the authority; tnpu's
+    The YAML is the hardware description and therefore the authority; the compiler's
     config.py holds defaults for the same numbers, and the two have drifted.
     """
     spad = extension_config.CONFIG_SPAD_INFO["spad_size"]
@@ -63,7 +63,7 @@ def machine():
 
 
 def tnpu_env():
-    """The environment for a tnpu subprocess: this machine, no PYTHONPATH, and
+    """The environment for a the compiler subprocess: this machine, no PYTHONPATH, and
     no device backend autoload.
 
     The three PSTO_* names are what the compiler's config reads, so this tells it
@@ -80,7 +80,7 @@ def tnpu_env():
 
 
 def doctor():
-    """Return (ok, output) for tnpu's own toolchain check."""
+    """Return (ok, output) for the compiler's own toolchain check."""
     proc = subprocess.run(
         [extension_config.CONFIG_PSTO_PYTHON,
          os.path.join(tnpu_dir(), "run.py"), "doctor"],
@@ -89,9 +89,9 @@ def doctor():
 
 
 def run_module(module, *args, timeout=None):
-    """Run `python -m <module> <args>` inside tnpu's checkout. (rc, output).
+    """Run `python -m <module> <args>` inside the compiler's checkout. (rc, output).
 
-    Reaching tnpu means tnpu's interpreter, tnpu's cwd and `tnpu_env` -- one
+    Reaching the compiler means the compiler's interpreter, the compiler's cwd and `tnpu_env` -- one
     fact. What to do when it fails differs per caller and stays with them.
     """
     proc = subprocess.run(
@@ -102,7 +102,7 @@ def run_module(module, *args, timeout=None):
 
 
 def run_pipeline(spec_path, workdir, to_stage="binary", timeout=1800):
-    """Drive tnpu's stages over `spec_path`, writing artifacts into `workdir`.
+    """Drive the compiler's stages over `spec_path`, writing artifacts into `workdir`.
 
     Stops at `to_stage`, by default `binary`: stages 6 and 7 want tensors and a
     per-kernel reference this route has no graph-level answer for.
@@ -119,21 +119,21 @@ def run_pipeline(spec_path, workdir, to_stage="binary", timeout=1800):
         if os.path.isfile(log):
             with open(log, errors="replace") as fh:
                 output += "\n" + fh.read()
-        raise CompilerError(f"tnpu pipeline failed (exit {proc.returncode})",
+        raise CompilerError(f"the compiler pipeline failed (exit {proc.returncode})",
                         cmd=" ".join(cmd), output=output)
-    logger.debug("[triton-npu] %s", output)
+    logger.debug("[psto] %s", output)
     return workdir
 
 
 #: The compiler's manifest. Its schema is declared in the compiler
-#: (tnpu/kernel_object.py); this is a reader, and the format field is what stops
+#: (the compiler/kernel_object.py); this is a reader, and the format field is what stops
 #: the two from drifting silently.
 KERNEL_MANIFEST = "kernel.json"
 KERNEL_FORMAT = 1
 
 
 def kernel_object(workdir):
-    """The manifest tnpu left in `workdir`, or None if it did not get that far."""
+    """The manifest the compiler left in `workdir`, or None if it did not get that far."""
     path = os.path.join(workdir, KERNEL_MANIFEST)
     try:
         with open(path) as fh:
@@ -152,7 +152,7 @@ def artifact(workdir, kind):
     """One compiler output by the name the manifest gives it, or None.
 
     THE STAGE NUMBERS ARE NOT AN INTERFACE and this is what replaced globbing
-    for them: tnpu renumbers when a stage is added, and the post-vcix IR has
+    for them: the compiler renumbers when a stage is added, and the post-vcix IR has
     already moved from 04- to 05- once.
     """
     got = kernel_object(workdir)

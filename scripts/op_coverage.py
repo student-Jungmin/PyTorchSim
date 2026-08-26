@@ -489,7 +489,7 @@ def _extern_hint(tb_text):
 def _last_exception_line(tb_text):
     """Last resort: the traceback's final line, which is the exception itself.
 
-    Not every stop is an op. RecurrentGemma's is a stage of the tnpu pipeline
+    Not every stop is an op. RecurrentGemma's is a stage of the the compiler pipeline
     refusing a command ("args must not exceed 2048 bytes") -- no aten token, no
     extern kernel, no NotImplementedError -- and a summary that shrugs at that
     is a summary you have to go around.

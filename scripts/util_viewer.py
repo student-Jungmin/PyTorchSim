@@ -5,7 +5,7 @@ Reads `togsim_results/*.log` -- no re-run and no `--log_level trace` needed, sin
 the periodic `Core stat` blocks every `core_stats_print_period_cycles` already carry
 the whole time series. For per-instruction Gantt detail use `trace_timeline.py`.
 
-Compile wall clock comes from the tnpu `timing.json` each kernel workdir holds,
+Compile wall clock comes from the the compiler `timing.json` each kernel workdir holds,
 joined to a run by the `triton_<hash>` beside its `trace_so`. A PyTorchSim
 `breakdown.json` (TORCHSIM_BREAKDOWN=1) adds Spike, gem5 and TOGSim on top.
 
@@ -195,7 +195,7 @@ def series(run):
 
 
 def read_timing(path):
-    """Load one tnpu timing.json, or None if it is unreadable or mid-write."""
+    """Load one the compiler timing.json, or None if it is unreadable or mid-write."""
     try:
         with open(path) as fh:
             rec = json.load(fh)
@@ -205,7 +205,7 @@ def read_timing(path):
 
 
 def find_timing(roots):
-    """Map each workdir holding a tnpu timing.json to its record."""
+    """Map each workdir holding a the compiler timing.json to its record."""
     out = {}
     for root in roots:
         if os.path.isdir(root):
@@ -249,7 +249,7 @@ def find_breakdowns(roots):
 
 
 def breakdown_groups(rec):
-    """Fold a breakdown's components into tnpu/spike/gem5/togsim plus elsewhere."""
+    """Fold a breakdown's components into the compiler/spike/gem5/togsim plus elsewhere."""
     groups = {}
     for comp, e in (rec.get("components") or {}).items():
         g = comp.split("/")[0]
@@ -259,7 +259,7 @@ def breakdown_groups(rec):
         cur["parts"].append({"name": comp, "calls": e["calls"], "seconds": e["seconds"]})
     wall = rec.get("wall") or 0.0
     elsewhere = wall - (rec.get("measured") or 0.0)
-    order = [g for g in ("tnpu", "spike", "gem5", "togsim") if g in groups]
+    order = [g for g in ("the compiler", "spike", "gem5", "togsim") if g in groups]
     order += [g for g in sorted(groups) if g not in order]
     out = [dict(groups[g], name=g) for g in order]
     if elsewhere > 0:
@@ -268,10 +268,10 @@ def breakdown_groups(rec):
 
 
 def timing_from_breakdowns(breakdowns):
-    """Pull the tnpu compile records a breakdown embeds, keyed by kernel label."""
+    """Pull the the compiler compile records a breakdown embeds, keyed by kernel label."""
     out = {}
     for bd in breakdowns:
-        for e in bd.get("tnpu") or []:
+        for e in bd.get("the compiler") or []:
             if e.get("kind", "compile") != "compile":
                 continue
             rec = e.get("timing")
@@ -281,7 +281,7 @@ def timing_from_breakdowns(breakdowns):
 
 
 def merge_timing(records):
-    """Sum per-kernel tnpu records into one of the same shape, in stage order."""
+    """Sum per-kernel the compiler records into one of the same shape, in stage order."""
     stages, passes, tools, order = {}, {}, {}, []
     for rec in records:
         for s in rec.get("stages", []):
@@ -1137,11 +1137,11 @@ function drawCompile() {
   hLeft.textContent = 'Pipeline stages';
 
   const rec = ctRecord();
-  if (!rec) { note.textContent = 'No tnpu timing.json for this kernel.'; return; }
+  if (!rec) { note.textContent = 'No the compiler timing.json for this kernel.'; return; }
 
   const total = rec.total || 0;
   note.innerHTML = ctScope === 'kernel'
-    ? `Wall clock of the tnpu compile for <b>${rec.label || rec.kernel}</b>: ` +
+    ? `Wall clock of the the compiler compile for <b>${rec.label || rec.kernel}</b>: ` +
       `${secs(total)} across ${rec.stages.length} stages. This is compile time, not ` +
       `simulated cycles.`
     : `Wall clock summed over ${TIMING.records.length} compiles: ${secs(total)}. ` +
@@ -1225,7 +1225,7 @@ def main(argv=None):
                     help="log files, globs, or directories (default: togsim_results)")
     ap.add_argument("-o", "--out", default="util.html", help="output HTML path")
     ap.add_argument("--timing", nargs="*", default=None, metavar="ROOT",
-                    help="extra roots to scan for tnpu timing.json; the workdir beside "
+                    help="extra roots to scan for the compiler timing.json; the workdir beside "
                          "each log's trace_so is always checked")
     ap.add_argument("--breakdown", nargs="*", default=None, metavar="ROOT",
                     help="roots to scan for PyTorchSim breakdown.json (TORCHSIM_BREAKDOWN=1), "

@@ -59,7 +59,7 @@ def _check(meta, pairs):
                 f"{meta['kernel_name']}: '{m['name']}' spans "
                 f"{_storage_numel(t)} element(s) of storage, but the binary was "
                 f"compiled for {m['numel']}. "
-                f"tnpu bakes the extents, the grid and the scalar values into "
+                f"the compiler bakes the extents, the grid and the scalar values into "
                 f"the kernel, so a dynamic-shape graph reuses an ELF that does "
                 f"not fit. The timing path does handle this (it takes the grid "
                 f"at run time); set pytorchsim_functional_mode: False to study "
@@ -131,7 +131,7 @@ def read_outputs(workdir, meta, args):
 def _replay_root(workdir):
     """Beside the workdirs, not inside one.
 
-    A tnpu-side fix is picked up by DELETING `outputs/triton_*`, and a cache
+    A the compiler-side fix is picked up by DELETING `outputs/triton_*`, and a cache
     kept inside a workdir would go with it every time it was most wanted.
     """
     return os.path.join(os.path.dirname(os.path.abspath(workdir)), REPLAY_DIR)
@@ -140,7 +140,7 @@ def _replay_root(workdir):
 def _replay_key(workdir, meta, runtime):
     """What this launch's outputs are a function of.
 
-    The ELF's own bytes, so a fix anywhere in tnpu misses, and the bytes of
+    The ELF's own bytes, so a fix anywhere in the compiler misses, and the bytes of
     every input. The Triton source is already in the workdir path.
     """
     import hashlib
@@ -214,7 +214,7 @@ def run(workdir, meta, args):
 
     rc, output = compiler_bridge.run_module(f"{compiler_bridge.COMPILER_PKG}.spike", spec, workdir,
                                         "--runtime", runtime)
-    breakdown.ingest_tnpu(runtime, meta["kernel_name"], kind="spike",
+    breakdown.ingest_psto(runtime, meta["kernel_name"], kind="spike",
                           name="timing-spike.json")
     if rc != 0:
         raise RuntimeError(

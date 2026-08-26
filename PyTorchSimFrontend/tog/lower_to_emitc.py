@@ -699,7 +699,7 @@ def _expand_int_minmax(module):
 
     WHERE IT COMES FROM. Inductor's mm and conv Triton templates bound the last
     tile with `min(M - pid * BLOCK_M, BLOCK_M)`. The kernel itself compiles and
-    runs -- tnpu lowers the op fine and Spike writes the right values -- so this
+    runs -- the compiler lowers the op fine and Spike writes the right values -- so this
     is the TIMING path only, which is why it surfaced as a working kernel whose
     trace producer would not build.
     """

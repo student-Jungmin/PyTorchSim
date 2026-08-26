@@ -28,8 +28,8 @@ PASSING = os.path.join(HERE, "triton_route_passing.txt")
 STAGES = [
     ("01-ttir.mlir",     "1 triton -> ttir"),
     ("02-ttshared.mlir", "2 ttir -> tts/linalg (triton-shared)"),
-    ("03-adapted.mlir",  "3 tnpu adapt"),
-    ("04-custom.mlir",   "4 tnpu lower (DMA, lanes, spad)"),
+    ("03-adapted.mlir",  "3 the compiler adapt"),
+    ("04-custom.mlir",   "4 the compiler lower (DMA, lanes, spad)"),
     ("trace.so",         "5 trace producer"),
 ]
 
@@ -40,7 +40,7 @@ BUCKETS = [
     ("triton_helpers", r"triton_helpers"),
     ("wrapper_gap",    r"'TritonNPUWrapperCodegen' object has no attribute"),
     ("spec_incomplete", r"SpecIncomplete"),
-    ("tnpu_stage",     r"CompilerError|tnpu pipeline failed|triton-shared-opt|"
+    ("tnpu_stage",     r"CompilerError|the compiler pipeline failed|triton-shared-opt|"
                        r"\[stage\d\]|failed to legalize"),
     ("reduction",      r"lane-aware|linalg\.reduce|no reduction path"),
     ("dynamic_shape",  r"ShapeMismatch|dynamic shape|size_hint returned None"),
@@ -98,7 +98,7 @@ def first_error(output):
 
 
 def reached_stage(dump_dir):
-    """(label, workdir) of the furthest tnpu stage any kernel produced.
+    """(label, workdir) of the furthest the compiler stage any kernel produced.
 
     kernel.py alone still counts: a kernel was generated and rejected pre-stage-1.
     """
@@ -202,8 +202,8 @@ def write_markdown(results, path):
             "triton_helpers": "triton_backend -- needs a vendored copy",
             "wrapper_gap": "triton_backend -- TritonNPUWrapperCodegen incomplete",
             "spec_incomplete": "triton_backend -- kernel_spec cannot describe it",
-            "tnpu_stage": "tnpu lowering passes",
-            "reduction": "tnpu -- no lane-aware reduction",
+            "tnpu_stage": "the compiler lowering passes",
+            "reduction": "the compiler -- no lane-aware reduction",
             "dynamic_shape": "triton_backend -- shape-specialised launch",
             "matmul_timing": "build_tog -- compute node lookup",
             "togsim": "TOGSim / trace producer",

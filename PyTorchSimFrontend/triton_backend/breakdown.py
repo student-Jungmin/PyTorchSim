@@ -1,4 +1,4 @@
-"""Where a run's wall clock went: tnpu compile, Spike, gem5, TOGSim.
+"""Where a run's wall clock went: psto compile, Spike, gem5, TOGSim.
 
 Off unless TORCHSIM_BREAKDOWN=1; one table at process exit and a
 breakdown_<run-id>.json beside it, stamped so parallel runs do not share a file.
@@ -21,7 +21,7 @@ logger = extension_config.setup_logger()
 ENV = "TORCHSIM_BREAKDOWN"
 PREFIX = "breakdown"
 
-TNPU = "tnpu"
+PSTO = "psto"
 SPIKE = "spike"
 GEM5_SAMPLE = "gem5/sample"
 GEM5_BUILD = "gem5/build"
@@ -29,7 +29,7 @@ GEM5_RUN = "gem5/run"
 TOGSIM_TRACE = "togsim/trace"
 TOGSIM_RUN = "togsim/run"
 
-ORDER = [TNPU, SPIKE, GEM5_SAMPLE, GEM5_BUILD, GEM5_RUN, TOGSIM_TRACE, TOGSIM_RUN]
+ORDER = [PSTO, SPIKE, GEM5_SAMPLE, GEM5_BUILD, GEM5_RUN, TOGSIM_TRACE, TOGSIM_RUN]
 
 
 def enabled():
@@ -47,12 +47,12 @@ def new_run_id():
 
 
 class Record:
-    """One process's spans, per component and per kernel, plus tnpu's own JSON."""
+    """One process's spans, per component and per kernel, plus psto's own JSON."""
 
     def __init__(self):
         self.totals = {}
         self.kernels = {}
-        self.tnpu = []
+        self.psto = []
         self.started = time.perf_counter()
         self.run_id = new_run_id()
         self._local = threading.local()
@@ -73,10 +73,10 @@ class Record:
             k = self.kernels.setdefault(kernel or "?", {})
             k[component] = k.get(component, 0.0) + seconds
 
-    def add_tnpu(self, kernel, kind, rec):
-        """Keep one tnpu record -- a compile or a launch -- for the sub-tables."""
+    def add_psto(self, kernel, kind, rec):
+        """Keep one psto record -- a compile or a launch -- for the sub-tables."""
         with self._lock:
-            self.tnpu.append((kernel, kind, rec))
+            self.psto.append((kernel, kind, rec))
 
     @property
     def measured(self):
@@ -91,8 +91,8 @@ class Record:
             "components": {c: {"calls": n, "seconds": dt}
                            for c, (n, dt) in self.totals.items()},
             "kernels": self.kernels,
-            "tnpu": [{"kernel": k, "kind": kind, "timing": r}
-                     for k, kind, r in self.tnpu],
+            "psto": [{"kernel": k, "kind": kind, "timing": r}
+                     for k, kind, r in self.psto],
         }
 
 
@@ -124,14 +124,14 @@ def span(component, kernel=None):
         REC.add(component, kernel, wall - frame[0])
 
 
-def ingest_tnpu(workdir, kernel, kind="compile", name="timing.json"):
-    """Read the per-stage/per-pass record tnpu left in `workdir`, if any."""
+def ingest_psto(workdir, kernel, kind="compile", name="timing.json"):
+    """Read the per-stage/per-pass record psto left in `workdir`, if any."""
     if not enabled():
         return
     path = os.path.join(workdir, name)
     try:
         with open(path) as f:
-            REC.add_tnpu(kernel, kind, json.load(f))
+            REC.add_psto(kernel, kind, json.load(f))
     except (OSError, ValueError):
         logger.debug("[breakdown] no readable %s", path)
 
@@ -159,8 +159,8 @@ def _at_exit():
         pass
 
 
-def _sum_tnpu(records, key):
-    """Sum every kernel's tnpu `stages` or a stage's `passes` into one dict."""
+def _sum_psto(records, key):
+    """Sum every kernel's psto `stages` or a stage's `passes` into one dict."""
     out = {}
     order = []
     for rec in records:
@@ -172,8 +172,8 @@ def _sum_tnpu(records, key):
     return [(n, out[n]) for n in order]
 
 
-def _tnpu_passes(records, stage):
-    """Sum one tnpu stage's per-pass times across every compiled kernel."""
+def _psto_passes(records, stage):
+    """Sum one psto stage's per-pass times across every compiled kernel."""
     out = {}
     for rec in records:
         for e in (rec.get("passes") or {}).get(stage, []):
@@ -181,7 +181,7 @@ def _tnpu_passes(records, stage):
     return sorted(out.items(), key=lambda kv: -kv[1])
 
 
-def _tnpu_tools(records):
+def _psto_tools(records):
     """Sum every record's external-tool time, keyed `stage/binary`."""
     out = {}
     for rec in records:
@@ -208,8 +208,8 @@ def render(rec):
     wall = rec.get("wall") or 0.0
     comps = rec.get("components") or {}
     kernels = rec.get("kernels") or {}
-    entries = rec.get("tnpu") or []
-    tnpu = [e["timing"] for e in entries if e.get("kind", "compile") == "compile"]
+    entries = rec.get("psto") or []
+    psto = [e["timing"] for e in entries if e.get("kind", "compile") == "compile"]
     launch = [e["timing"] for e in entries
               if e.get("kind") in ("spike", "cycle")]
 
@@ -221,7 +221,7 @@ def render(rec):
         groups.setdefault(c.split("/")[0], [0, 0.0])
         groups[c.split("/")[0]][0] += e["calls"]
         groups[c.split("/")[0]][1] += e["seconds"]
-    for g in [x for x in ("tnpu", "spike", "gem5", "togsim") if x in groups]:
+    for g in [x for x in ("psto", "spike", "gem5", "togsim") if x in groups]:
         calls, dt = groups[g]
         pct = 100.0 * dt / wall if wall else 0.0
         out.append(f"  {g:<14} {dt:9.2f}s {pct:5.1f}%  x{calls:<5} {_bar(pct / 100)}")
@@ -234,18 +234,18 @@ def render(rec):
     out.append(f"  {'elsewhere':<14} {other:9.2f}s {pct:5.1f}%  "
                f"{'':<6} {_bar(pct / 100)}   torch, inductor, python")
 
-    if tnpu:
-        stages = _sum_tnpu(tnpu, "stages")
+    if psto:
+        stages = _sum_psto(psto, "stages")
         if stages:
-            out += ["", "  tnpu compile, by stage"]
+            out += ["", "  psto compile, by stage"]
             for name, dt in stages:
                 out.append(_line(name, dt, wall, indent=4))
-    for records, stage in ((tnpu, "ttclean"), (tnpu, "adapt"), (tnpu, "lower"),
+    for records, stage in ((psto, "ttclean"), (psto, "adapt"), (psto, "lower"),
                            (launch, "spike")):
-        passes = _tnpu_passes(records, stage)
+        passes = _psto_passes(records, stage)
         if not passes:
             continue
-        out += ["", f"  inside tnpu's {stage}"]
+        out += ["", f"  inside psto's {stage}"]
         shown = [p for p in passes if p[1] >= 0.05][:15]
         for name, dt in shown:
             out.append(_line(name, dt, wall, indent=4))
@@ -254,7 +254,7 @@ def render(rec):
             out.append(_line(f"({len(rest)} smaller)",
                              sum(d for _, d in rest), wall, indent=4))
 
-    tools = _tnpu_tools(tnpu + launch)
+    tools = _psto_tools(psto + launch)
     if tools:
         out += ["", "  external tools, summed over calls -- Spike splits one "
                     "grid over several processes,", "  so its sum can exceed "
@@ -264,7 +264,7 @@ def render(rec):
 
     if kernels:
         out += ["", "  per kernel (self time, seconds)"]
-        cols = [g for g in ("tnpu", "spike", "gem5", "togsim") if g in groups]
+        cols = [g for g in ("psto", "spike", "gem5", "togsim") if g in groups]
         head = "".join(f"{c:>10}" for c in cols)
         out.append(f"    {'kernel':<46}{head}{'total':>10}")
         rows = []

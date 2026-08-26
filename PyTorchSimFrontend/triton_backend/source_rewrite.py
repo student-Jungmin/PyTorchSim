@@ -1,4 +1,4 @@
-"""Inductor's Triton source -> source the tnpu venv can compile.
+"""Inductor's Triton source -> source the the compiler venv can compile.
 
 Two rewrites: drop what a torch-free venv cannot import, and replace the mm/bmm
 templates' modulo wrap with a load mask so the operand stays a descriptor.
@@ -21,7 +21,7 @@ _HELPER_USE_RE = re.compile(r"\btriton_helpers\.(\w+)")
 
 
 def strip_for_tnpu(src):
-    """Remove everything the torch-free tnpu venv cannot import.
+    """Remove everything the torch-free the compiler venv cannot import.
 
     Drops torch/inductor imports and the @triton_heuristics decorator, then
     re-adds the imports and vendored helpers the stripped body still needs.
@@ -46,7 +46,7 @@ def strip_for_tnpu(src):
     if unvendored:
         raise SpecIncomplete(
             f"kernel uses triton_helpers.{{{','.join(unvendored)}}}, which lives "
-            f"in torch and the tnpu venv has no torch. Add it to "
+            f"in torch and the the compiler venv has no torch. Add it to "
             f"triton_helpers_src if it is pure triton, or lower it another way.")
 
     prefix = ""
@@ -131,7 +131,7 @@ def clamp_instead_of_wrap(body, kernel_name=""):
                                                 "rk = tl.arange("))), None)
         if anchor is None or not any(_load_re(p).search(text) for p in _MASK_FOR):
             logger.warning(
-                "[triton-npu] %s: a block does not divide its dimension and "
+                "[psto] %s: a block does not divide its dimension and "
                 "this does not recognise the loads to bound; leaving the wrap",
                 kernel_name or "kernel")
             return body
@@ -150,7 +150,7 @@ def clamp_instead_of_wrap(body, kernel_name=""):
                 applied[ptr] = _add_mask_to_loads(lines, ptr, name)
         if any(v == 0 for v in applied.values()):
             logger.warning(
-                "[triton-npu] %s: could not attach a bound to every load; "
+                "[psto] %s: could not attach a bound to every load; "
                 "leaving the wrap in place", kernel_name or "kernel")
             return body
 
@@ -161,7 +161,7 @@ def clamp_instead_of_wrap(body, kernel_name=""):
         body, n = re.subn(rf"\b{idx}\s*%\s*{dim}\b", idx, body)
         if n:
             logger.info(
-                "[triton-npu] %s: replaced %d `%s %% %s` with %s, so the "
+                "[psto] %s: replaced %d `%s %% %s` with %s, so the "
                 "operand stays a descriptor instead of becoming a gather",
                 kernel_name or "kernel", n, idx, dim,
                 "a load bound" if needs[idx] else "nothing (the block divides)")

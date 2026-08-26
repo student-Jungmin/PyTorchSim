@@ -1,6 +1,6 @@
 """What shape the launch is: which axes, how many programs, how big a block.
 
-tnpu compiles one binary per kernel and the C wrapper walks the grid as a plain
+the compiler compiles one binary per kernel and the C wrapper walks the grid as a plain
 loop, so there is no autotuner to choose any of this later. Every consumer that
 pairs an axis with an extent reads it from here, or two of them disagree.
 """
@@ -156,9 +156,9 @@ def grid_of(meta):
 
 
 def grid_xyz(meta):
-    """The same grid in tnpu's order: (gridX, gridY, gridZ).
+    """The same grid in the compiler's order: (gridX, gridY, gridZ).
 
-    tnpu's spec.grid is X-FIRST while grid_of is outermost-first, and the wrong
+    the compiler's spec.grid is X-FIRST while grid_of is outermost-first, and the wrong
     order writes only the first XBLOCK columns silently. Built by axis NAME.
     """
     extents = dict(zip(launch_axes(meta), launch_extents(meta)))
@@ -209,7 +209,7 @@ def fixed_config_for(kernel, numels, args):
     """Block sizes pinned at codegen time, from the machine and the numels.
 
     `numels` is the <prefix>numel-keyed dict, NOT kernel.numels. THESE ARE SIZES,
-    NOT A LAYOUT -- the lane axis is tnpu's select_lane_axis, passes later.
+    NOT A LAYOUT -- the lane axis is the compiler's select_lane_axis, passes later.
     """
     from . import compiler_bridge
     machine = compiler_bridge.machine()

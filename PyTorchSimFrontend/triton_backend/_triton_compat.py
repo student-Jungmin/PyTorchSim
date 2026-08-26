@@ -15,10 +15,10 @@ _installed = False
 
 
 def triton_src_dir():
-    """Where tnpu's triton checkout lives (its editable install points here).
+    """Where the compiler's triton checkout lives (its editable install points here).
 
-    Read out of tnpu's setup/versions.env, where TRITON_ROOT is the checkout
-    and HEXAGON_MLIR_ROOT was its parent (an older tnpu has only that key).
+    Read out of the compiler's setup/versions.env, where TRITON_ROOT is the checkout
+    and HEXAGON_MLIR_ROOT was its parent (an older the compiler has only that key).
     """
     from PyTorchSimFrontend import extension_config
     override = os.environ.get("PSTO_TRITON_SRC")
@@ -40,7 +40,7 @@ def triton_src_dir():
 
 
 def ensure_triton_importable():
-    """`import triton` in THIS interpreter, borrowing tnpu's checkout if needed.
+    """`import triton` in THIS interpreter, borrowing the compiler's checkout if needed.
 
     Inductor's Triton codegen imports triton at codegen time for metadata and
     hashing, so the driver needs it even though it never compiles with it.
@@ -67,7 +67,7 @@ def _stable_backend_hash():
         version = triton.__version__
     except Exception:
         version = "unknown"
-    key = f"pytorchsim-tnpu-{version}"
+    key = f"pytorchsim-the compiler-{version}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest().upper()
 
 

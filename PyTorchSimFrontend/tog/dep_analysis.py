@@ -118,7 +118,7 @@ def _rw_buffers_of_compute(cn):
         elif name == "togsim.transfer":
             # THE DIRECTION IS IN THE ATTRIBUTE, not in the operand order. The
             # contract is fixed -- operands[0] is the DRAM side and operands[2]
-            # the SRAM side, always, both ways round (see tnpu's
+            # the SRAM side, always, both ways round (see the compiler's
             # lower_tts_to_transfer docstring, "THE TRANSFER CONTRACT") -- so
             # reading the position alone would call every DMA a read of DRAM and
             # a write of SRAM, and MVOUT is exactly the other way.
