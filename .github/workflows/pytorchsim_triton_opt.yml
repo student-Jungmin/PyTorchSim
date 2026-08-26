@@ -180,9 +180,9 @@ jobs:
           docker run --rm -e PSTO_VCIX_MATMUL=1 \
             ${{ needs.build-app.outputs.app_image }} bash -lc '
               cd /workspace/pytorchsim-triton-opt &&
-              python3 run.py doctor &&
+              python3 pytorchsim-triton-opt doctor &&
               for k in add mul relu gemm bmm; do
-                echo "=== $k ===" && python3 run.py kernels/$k.py || exit 1
+                echo "=== $k ===" && python3 pytorchsim-triton-opt kernels/$k.py || exit 1
               done'
 
   triton-route:

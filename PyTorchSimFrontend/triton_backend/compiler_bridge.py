@@ -83,7 +83,7 @@ def doctor():
     """Return (ok, output) for the compiler's own toolchain check."""
     proc = subprocess.run(
         [extension_config.CONFIG_PSTO_PYTHON,
-         os.path.join(tnpu_dir(), "run.py"), "doctor"],
+         os.path.join(tnpu_dir(), "pytorchsim-triton-opt"), "doctor"],
         capture_output=True, text=True, cwd=tnpu_dir())
     return proc.returncode == 0, proc.stdout + proc.stderr
 
@@ -108,7 +108,7 @@ def run_pipeline(spec_path, workdir, to_stage="binary", timeout=1800):
     per-kernel reference this route has no graph-level answer for.
     """
     cmd = [extension_config.CONFIG_PSTO_PYTHON,
-           os.path.join(tnpu_dir(), "run.py"), spec_path,
+           os.path.join(tnpu_dir(), "pytorchsim-triton-opt"), spec_path,
            "--from", "ttir", "--to", to_stage, "--workdir", workdir]
 
     proc = subprocess.run(cmd, capture_output=True, text=True,
