@@ -199,13 +199,9 @@ RUN curl -L -H "Accept: application/octet-stream" https://api.github.com/repos/P
     tar -xzf /tmp/riscv-llvm-release.tar.gz -C / && \
     rm /tmp/riscv-llvm-release.tar.gz
 
-# Store RISC-V LLVM for TorchSim
-ENV TORCHSIM_LLVM_PATH=/riscv-llvm/bin
-# MLIR Python bindings shipped inside the LLVM release artifact (built by the
-# llvm-project CI with -DMLIR_ENABLE_BINDINGS_PYTHON=ON). Lets PyTorchSim load
-# mlir.ir / dialects for Python-side MLIR passes. The artifact must be built
-# against this image's Python (3.11) or `import mlir` fails on ABI mismatch.
-ENV PYTHONPATH=/riscv-llvm/python_packages/mlir_core:$PYTHONPATH
+# The RISC-V target LLVM, and ONLY that. It is not TORCHSIM_LLVM_PATH and its
+# MLIR bindings are not on PYTHONPATH: tog/ parses the IR the compiler prints,
+# so it links the compiler's LLVM 23, which Dockerfile.psto names.
 ENV TORCHSIM_DIR=/workspace/PyTorchSim
 
 # Download Spike simulator

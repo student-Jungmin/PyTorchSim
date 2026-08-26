@@ -35,8 +35,8 @@ RUN --mount=type=secret,id=psto_token \
 
 ENV PSTO_DIR=/workspace/pytorchsim-triton-opt
 # The TOG builder parses the IR psto prints, so it has to link the SAME LLVM.
-# torchsim_base sets this to /riscv-llvm (LLVM 20) because that is all it has;
-# LLVM 23 arrives with restore.sh above, so the pointer is corrected here.
+# This is the only place TORCHSIM_LLVM_PATH is set: torchsim_base ships a
+# RISC-V LLVM but no longer names it, and LLVM 23 arrives with restore.sh above.
 ENV TORCHSIM_LLVM_PATH=/workspace/LLVM_DIR/llvm-project/build/install/bin
 # psto defaults to a separate fp8 spike and asks for zvfp8; the released spike
 # has neither, and an unknown extension stops spike at startup. Drop once
