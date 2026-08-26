@@ -37,6 +37,17 @@ class TnpuError(RuntimeError):
         super().__init__(message)
 
 
+def module_prefix():
+    """Which package name this checkout spells the compiler with.
+
+    It was renamed from `tnpu` to `pytorchsim.triton_opt` and both are in flight,
+    so the checkout is asked rather than guessed. Delete once the rename lands.
+    """
+    if os.path.isdir(os.path.join(tnpu_dir(), "pytorchsim", "triton_opt")):
+        return "pytorchsim.triton_opt"
+    return "tnpu"
+
+
 def tnpu_dir():
     d = extension_config.CONFIG_TNPU_DIR
     if not os.path.isdir(d):

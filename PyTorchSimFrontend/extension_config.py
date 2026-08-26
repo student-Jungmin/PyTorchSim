@@ -14,12 +14,15 @@ CONFIG_TORCHSIM_LLVM_PATH = os.environ.get(
 # --- Triton codegen route ----------------------------------------------------
 # The triton-npu checkout that owns stages 1-5 (ttir -> ttshared -> tnpu passes
 # -> RISC-V ELF). It is a SEPARATE repository, deliberately not vendored.
-CONFIG_TNPU_DIR = os.environ.get(
-    "TNPU_DIR", default=os.path.join(CONFIG_TORCHSIM_DIR, "triton-npu"))
+# PSTO_ is the compiler's own prefix since the rename; TNPU_ is still honoured
+# so a shell pointed at the pre-rename checkout keeps working.
+CONFIG_TNPU_DIR = os.environ.get("PSTO_DIR") or os.environ.get(
+    "TNPU_DIR", os.path.join(CONFIG_TORCHSIM_DIR, "triton-npu"))
 # tnpu runs in its own process. Both sides now hold the same LLVM 23 bindings,
 # so the seam is a process boundary rather than a version one; `mlir` is a
 # namespace package, and each side still selects its own root explicitly.
-CONFIG_TNPU_PYTHON = os.environ.get("TNPU_PYTHON", default=sys.executable)
+CONFIG_TNPU_PYTHON = (os.environ.get("PSTO_PYTHON")
+                      or os.environ.get("TNPU_PYTHON", sys.executable))
 
 
 def get_dump_path():
