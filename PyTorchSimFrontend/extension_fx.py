@@ -1,7 +1,8 @@
-"""Which graphs Inductor is allowed to run this backend's post-grad passes on.
+"""Where this backend's post-grad passes may run, and the chain that holds them.
 
-One process compiles for both devices, so the answer is read off the graph, and
-it is asked where a pass is installed rather than inside the pass itself.
+One process compiles for both devices, so the device is read off the graph. And
+Inductor's post-grad hook is one slot per process, so passes join it through
+install_once rather than each wrapping whatever it happened to find there.
 """
 
 import torch
@@ -27,15 +28,49 @@ def npu_only(fn):
     return _gated
 
 
-class NpuOnlyPass(CustomGraphPass):
-    """npu_only for a pass Inductor keys its cache on, whose uuid is kept."""
+def _identity(fn):
+    """A name for a foreign callable that is the same in every process."""
+    uuid = getattr(fn, "uuid", None)
+    if callable(uuid):
+        return uuid()
+    module = getattr(fn, "__module__", "?")
+    name = getattr(fn, "__qualname__", None)
+    return f"{module}.{name}" if name else f"{module}.<unnamed>"
 
-    def __init__(self, inner):
-        self._inner = inner
+
+class _Chain(CustomGraphPass):
+    """Inductor's single post-grad slot, as a chain that knows what is in it."""
+
+    def __init__(self, foreign):
+        self._foreign = foreign     # someone else's pass, kept and called first
+        self._keys = []
+        self._passes = []
+
+    def add(self, key, fn) -> bool:
+        """Append fn under key, or report that key is already chained."""
+        if key in self._keys:
+            return False
+        self._keys.append(key)
+        self._passes.append(fn)
+        return True
 
     def uuid(self):
-        return (self._inner.uuid(), "npu-only")
+        head = () if self._foreign is None else (_identity(self._foreign),)
+        return head + tuple(self._keys)
 
     def __call__(self, graph):
-        if is_npu_graph(graph):
-            self._inner(graph)
+        if self._foreign is not None:
+            self._foreign(graph)
+        for fn in self._passes:
+            fn(graph)
+
+
+def install_once(key, fn):
+    """Chain fn onto Inductor's post-grad hook, at most once per key."""
+    from torch._inductor import config
+
+    chain = config.post_grad_custom_post_pass
+    if not isinstance(chain, _Chain):
+        chain = _Chain(chain)
+        config.post_grad_custom_post_pass = chain
+    return chain.add(key, fn)

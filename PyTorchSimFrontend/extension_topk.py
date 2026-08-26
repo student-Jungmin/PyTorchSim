@@ -86,15 +86,5 @@ def rewrite_topk(g) -> None:
 
 
 def install():
-    """Register the pass on Inductor's documented post-grad hook, chained last."""
-    import torch._inductor.config as icfg
-    prev = icfg.post_grad_custom_post_pass
-
-    gated = extension_fx.npu_only(rewrite_topk)
-
-    def _chained(g):
-        if prev is not None:
-            prev(g)
-        gated(g)
-
-    icfg.post_grad_custom_post_pass = _chained
+    """Register the pass on Inductor's documented post-grad hook, once."""
+    extension_fx.install_once("pytorchsim-topk", extension_fx.npu_only(rewrite_topk))

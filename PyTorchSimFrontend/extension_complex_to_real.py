@@ -191,28 +191,9 @@ def install():
     The hook holds one callable, so a second consumer of the same standard
     extension point would silently replace this one (or be replaced by it).
     Chaining is the only version of "install" that is safe to call from an
-    import.
+    import, and install_once is what makes calling it twice harmless.
     """
-    from torch._inductor import config
-
-    gated = extension_fx.NpuOnlyPass(_PASS)
-    existing = config.post_grad_custom_post_pass
-    if isinstance(existing, extension_fx.NpuOnlyPass) or isinstance(existing, ComplexToRealPairs):
-        return
-    if existing is None:
-        config.post_grad_custom_post_pass = gated
-        return
-
-    class _Chain(CustomGraphPass):
-        def uuid(self):
-            return (getattr(existing, "uuid", lambda: repr(existing))(),
-                    gated.uuid())
-
-        def __call__(self, graph):
-            existing(graph)
-            gated(graph)
-
-    config.post_grad_custom_post_pass = _Chain()
+    extension_fx.install_once(_PASS.uuid(), extension_fx.npu_only(_PASS))
 
 
 install()
