@@ -349,7 +349,7 @@ def write_spec_file(src_code, meta, path, tnpu_dir):
     text = SPEC_TEMPLATE.format(
         kernel_name=meta["kernel_name"],
         tnpu_dir=tnpu_dir,
-        spec_module=f"{compiler_bridge.COMPILER_PKG}.spec",
+        spec_module=f"{compiler_bridge.COMPILER_PKG}.contract.kernel_spec",
         triton_module=triton_module,
         signature=signature,
         constexprs=constexprs,
