@@ -95,9 +95,9 @@ python tests/system/test_eager.py      # eager-fallback registration
 
 Run a model from `tests/models/Llama/`, `tests/models/DeepSeek/`, etc. similarly.
 
-**CI coverage:** `.github/workflows/docker-image.yml` is the PR gate. It builds the base image, then the triton-npu toolchain layer (`Dockerfile.tnpu`, pinned by `thirdparty/triton-npu.json`), then the app image, and calls `.github/workflows/pytorchsim_test.yml` once per hardware config. That workflow is a **matrix over `scripts/ci/triton_route_passing.txt`**, one Docker container per test — so adding a test file gates PRs only once it is in that allowlist. Regenerate the allowlist with `python scripts/ci/triton_route_sweep.py --all --update-allowlist` and mirror it into the workflow.
+**CI coverage:** `.github/workflows/docker-image.yml` is the PR gate. It builds the base image, then the triton-npu toolchain layer (`Dockerfile.psto`, pinned by `thirdparty/pytorchsim-triton-opt.json`), then the app image, and calls `.github/workflows/pytorchsim_test.yml` once per hardware config. That workflow is a **matrix over `scripts/ci/triton_route_passing.txt`**, one Docker container per test — so adding a test file gates PRs only once it is in that allowlist. Regenerate the allowlist with `python scripts/ci/triton_route_sweep.py --all --update-allowlist` and mirror it into the workflow.
 
-`.github/workflows/triton_npu.yml` runs when the toolchain pin itself moves: triton-npu's own kernels end to end, plus the full coverage sweep (allowlist *and* the rest, reported not gated). Both workflows need `secrets.TNPU_TOKEN` — `PSAL-POSTECH/triton-npu` is private. See `PyTorchSimFrontend/triton_backend/README.md`.
+`.github/workflows/triton_npu.yml` runs when the toolchain pin itself moves: triton-npu's own kernels end to end, plus the full coverage sweep (allowlist *and* the rest, reported not gated). Both workflows need `secrets.PSTO_TOKEN` — `PSAL-POSTECH/pytorchsim-triton-opt` is private. See `PyTorchSimFrontend/triton_backend/README.md`.
 
 **For fast iteration** (skip functional check):
 ```bash

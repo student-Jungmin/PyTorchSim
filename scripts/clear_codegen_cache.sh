@@ -2,7 +2,7 @@
 # Clear PyTorchSim's codegen caches so the next torch.compile run regenerates
 # the wrapper Python and the per-kernel artifacts. Run this whenever you edit
 # anything that affects codegen (PyTorchSimFrontend/triton_backend/*,
-# PyTorchSimFrontend/tog/*, or triton-npu) -- otherwise the previous compile is
+# PyTorchSimFrontend/tog/*, or pytorchsim-triton-opt) -- otherwise the previous compile is
 # replayed byte-for-byte from $TORCHSIM_DUMP_PATH and your change appears not
 # to take.
 #
@@ -17,7 +17,7 @@
 #                                            staged IR, ELF, trace.so)
 #
 # WHY THE TRITON ONES MATTER MORE THAN THEY LOOK. That hash is of the INDUCTOR
-# SOURCE, so a fix anywhere BELOW it -- a tnpu pass, triton-shared -- leaves the
+# SOURCE, so a fix anywhere BELOW it -- a psto pass, triton-shared -- leaves the
 # hash alone and the launcher reuses the ELF it already has. Measured: two runs
 # of test_transformer.py reported the same divergence while the kernel, given
 # the model's own recorded inputs, passed standalone at 2.7e-07; the artifacts

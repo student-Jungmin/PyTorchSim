@@ -179,8 +179,8 @@ far it got, so the two together route it.
 and its toolchain layer is ~1.8 GiB that no other job needs.
 
 ```
-preflight              TNPU_TOKEN set? repo readable? release present?
-ensure-tnpu-base       torchsim_base + tnpu toolchain -> torchsim_tnpu_base:<pins>
+preflight              PSTO_TOKEN set? repo readable? release present?
+ensure-tnpu-base       torchsim_base + tnpu toolchain -> torchsim_psto_base:<pins>
 build-app              ./Dockerfile on that base
 tnpu-baselines         run.py doctor + add/mul/relu/gemm/bmm through Spike   (gates)
 triton-route           tests/system/test_triton_codegen.py    (reports, does not gate)
@@ -198,20 +198,20 @@ Do not add `docker/setup-buildx-action` — the runner registers its own builder
 and that action's driver cannot start under its podman.
 
 The toolchain image is pinned the same way `torchsim_base` is — the tag carries
-`sha256(thirdparty/triton-npu.json + Dockerfile.tnpu)`, so it is rebuilt only when
+`sha256(thirdparty/pytorchsim-triton-opt.json + Dockerfile.psto)`, so it is rebuilt only when
 one of those moves, and its tag also carries the base pin it was built on.
 `mlir-route-regression` is there because this layer adds a *second* LLVM and a
 *second* triton to the image; it checks the production path did not notice.
 
-**Needs `secrets.TNPU_TOKEN`** — a PAT that can read `PSAL-POSTECH/triton-npu`
+**Needs `secrets.PSTO_TOKEN`** — a PAT that can read `PSAL-POSTECH/pytorchsim-triton-opt`
 and its `toolchain-llvm23` release. That repo is private and the default Actions
 token is scoped to this repository. `preflight` checks it before the build.
 
-`Dockerfile.tnpu` clones the harness and runs its own `setup/restore.sh
+`Dockerfile.psto` clones the harness and runs its own `setup/restore.sh
 --prebuilt`; the pins all live in that repo's `setup/versions.env`. `ref` in the
 manifest is a commit, so an upstream change there moves this image's tag too.
 
-`Dockerfile.tnpu` sets `TNPU_SPIKE` and `TNPU_SPIKE_ISA=rv64gcv_zfh`: tnpu asks
+`Dockerfile.psto` sets `TNPU_SPIKE` and `TNPU_SPIKE_ISA=rv64gcv_zfh`: tnpu asks
 for `zvfp8`, which the released spike lacks, and an unknown extension stops
 spike at startup — including the doctor run inside the image build. Costs only
 `ops_fp8_roundtrip.py`, which CI does not run. Drop once

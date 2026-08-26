@@ -108,8 +108,8 @@ export PYTHONPATH="$_self/PyTorchSimDevice:$_self:${PYTHONPATH:-}"
 
 # Container-dedicated shared binaries.
 export GEM5_PATH="/gem5/release/gem5.opt"
-# The LLVM the TOG builder links, and it has to be the one triton-npu prints
-# its IR with. Dockerfile.tnpu sets this image-wide; repeated here because a
+# The LLVM the TOG builder links, and it has to be the one pytorchsim-triton-opt prints
+# its IR with. Dockerfile.psto sets this image-wide; repeated here because a
 # worktree shell may be started from an environment that predates it.
 export TORCHSIM_LLVM_PATH="/workspace/LLVM_DIR/llvm-project/build/install/bin"
 export RISCV="/workspace/riscv"
