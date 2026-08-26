@@ -7,6 +7,7 @@
 
 import json
 import os
+import shutil
 
 from PyTorchSimFrontend import extension_config
 
@@ -130,12 +131,12 @@ def emit_trace(workdir, meta):
         raise RuntimeError(f"the compiler could not emit a trace producer for "
                            f"{kernel}:\n{output[-2000:]}")
 
-    cpp_path = artifact(workdir, "trace_cpp")
+    so_path = artifact(workdir, "trace_so")
     types_path = artifact(workdir, "tile_types")
-    if cpp_path is None or types_path is None:
+    if so_path is None or types_path is None:
         raise FileNotFoundError(
-            f"{workdir} has no trace_cpp/tile_types -- the compiler must reach "
-            f"the trace step, which is what the producer is built from")
+            f"{workdir} has no trace_so/tile_types -- the compiler must reach "
+            f"the trace step, which is what builds the producer")
     with open(types_path) as fh:
         tiles = json.load(fh)
     compute_types = tiles["compute_types"]
@@ -151,9 +152,8 @@ def emit_trace(workdir, meta):
     table = trace_build.cycle_table(compute_types, list(cycles),
                                     x_offset=lanes, w_offset=0)
 
-    inc = trace_build.default_include_dir()
-    trace_build.compile_so(trace_build.trace_banner(inc) + open(cpp_path).read(),
-                           os.path.join(workdir, TRACE_SO), inc)
+    if os.path.abspath(so_path) != os.path.abspath(os.path.join(workdir, TRACE_SO)):
+        shutil.copyfile(so_path, os.path.join(workdir, TRACE_SO))
     with open(os.path.join(workdir, AXES_TXT), "w") as f:
         f.write(f"{len(axes)}\n")
 
