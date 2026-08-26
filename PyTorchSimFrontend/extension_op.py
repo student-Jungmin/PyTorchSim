@@ -13,7 +13,20 @@ from AsmParser.tog_generator import tog_generator
 from torch._inductor.codecache import write
 from PyTorchSimFrontend.extension_config import get_write_path
 from PyTorchSimFrontend import extension_config
-from Simulator.simulator import TOGSimulator, TORCH_TO_NUMPY
+from Simulator.simulator import TOGSimulator
+
+TORCH_TO_NUMPY = {
+    torch.float32: np.float32,
+    torch.float64: np.float64,
+    torch.int64: np.int64,
+    torch.int32: np.int32,
+    torch.int16: np.int16,
+    torch.int8: np.int8,
+    torch.uint8: np.uint8,
+    torch.bool: np.uint8,
+    torch.bfloat16: np.float16,
+    torch.float16: np.float16,
+}
 
 graph_template = {
     0: {

@@ -10,9 +10,6 @@ import threading
 from pathlib import Path
 import uuid
 
-import torch
-import numpy as np
-
 from PyTorchSimFrontend import extension_config
 
 # Configure logger for Simulator module
@@ -55,19 +52,6 @@ class ProgressBar:
             self.pbar.close()
         return False
 
-
-TORCH_TO_NUMPY = {
-    torch.float32: np.float32,
-    torch.float64: np.float64,
-    torch.int64: np.int64,
-    torch.int32: np.int32,
-    torch.int16: np.int16,
-    torch.int8: np.int8,
-    torch.uint8: np.uint8,
-    torch.bool: np.uint8,
-    torch.bfloat16: np.float16,
-    torch.float16: np.float16,
-}
 
 #: What gem5 says when it dies, as opposed to the libc backtrace that follows it.
 _GEM5_SIGNAL = re.compile(
@@ -129,7 +113,6 @@ class TOGSimulator():
     TOGSIM_RESULT_PATH_KEY = "TOGSIM_RESULT_PATH"
     FINISH_STR = "Simulation finished"
     ALLOC_POOL = dict() # For eagermode buffer plan
-    _TOGSIM_CONFIG_ENV_UNSET = object()
     def __init__(self, config_path=None, togsim_path=None) -> None:
         if config_path is None:
             config_path = extension_config.CONFIG_TOGSIM_CONFIG
@@ -163,33 +146,6 @@ class TOGSimulator():
         except IOError as e:
             logger.error(f"[TOGSim] Failed to open trace file: {e}")
             raise RuntimeError(f"Failed to open trace file: {e}")
-
-    def __enter__(self):
-        """Context manager entry.
-
-        Sets ``TOGSIM_CONFIG`` to this instance's config path so that compilation
-        (``extension_config`` / codegen) uses the same YAML as TOGSim. Previous
-        value is restored in ``__exit__``.
-        """
-        if "TOGSIM_CONFIG" in os.environ:
-            self._old_togsim_config_env = os.environ["TOGSIM_CONFIG"]
-        else:
-            self._old_togsim_config_env = self._TOGSIM_CONFIG_ENV_UNSET
-        os.environ["TOGSIM_CONFIG"] = os.path.abspath(self.config_path)
-
-        self.old_tog_simulator = torch.npu.get_tog_simulator()
-        torch.npu.set_tog_simulator(self)
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - automatically cleanup."""
-        self.until()
-        torch.npu.set_tog_simulator(self.old_tog_simulator)
-
-        if self._old_togsim_config_env is self._TOGSIM_CONFIG_ENV_UNSET:
-            os.environ.pop("TOGSIM_CONFIG", None)
-        else:
-            os.environ["TOGSIM_CONFIG"] = self._old_togsim_config_env
 
     def _start_process(self):
         cmd = f"{self.get_togsim_command(self.config_path, self.base_dir)} --models_list {self.trace_file_path}"
@@ -259,10 +215,12 @@ class TOGSimulator():
                 raise RuntimeError(f"Failed to send command to TOGSim: {e}")
         return kernel_id
 
-    def until(self):
-        # Make sure that all kernels in the stream are finished
-        torch.npu.synchronize()
+    def shutdown(self):
+        """Close the FIFO, wait for TOGSim to exit, and write its log and trace.
 
+        Assumes every queued kernel has already been sent; draining the stream
+        belongs to whoever owns it.
+        """
         # Close trace file handle if open
         if self._trace_file_handle is not None:
             try:
@@ -578,24 +536,19 @@ class TOGSimulator():
         return core_metrics, dram_channel_bw, avg_dram_bw, simulation_time, total_cycle
 
 if __name__ == "__main__":
-    # Example paths (adjust these to your actual test files)
-    test_tog_path = "/workspace/PyTorchSim/outputs/6vxl6mwzhfl/tile_graph.onnx"
-    test_attribute_path = "/workspace/PyTorchSim/outputs/6vxl6mwzhfl/runtime_0001/attribute/0"
+    """Drive the backend with no PyTorch in the process, which is the point of it."""
+    import argparse
 
-    # Test: Launch multiple kernels
-    sim = TOGSimulator(config_path="/workspace/PyTorchSim/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml")
-    with sim:
-        try:
-            id1 = torch.npu.launch_kernel(tog_path=test_tog_path, attribute_path=test_attribute_path)
-            id2 = torch.npu.launch_kernel(tog_path=test_tog_path, attribute_path=test_attribute_path)
-            id3 = torch.npu.launch_kernel(tog_path=test_tog_path, attribute_path=test_attribute_path)
-        except Exception as e:
-            print(f"Error during kernel launch: {e}")
+    ap = argparse.ArgumentParser(description="Send kernels to TOGSim directly.")
+    ap.add_argument("kernel_dir", help="directory holding trace.so and trace_cycles.tsv")
+    ap.add_argument("attribute", help="kernel attribute file")
+    ap.add_argument("--config", default=None, help="TOGSim hardware YAML")
+    ap.add_argument("--repeat", type=int, default=1)
+    args = ap.parse_args()
 
-        try:
-            id2 = torch.npu.launch_kernel(tog_path=test_tog_path, attribute_path=test_attribute_path)
-            id1 = torch.npu.launch_kernel(tog_path=test_tog_path, attribute_path=test_attribute_path)
-            id3 = torch.npu.launch_kernel(tog_path=test_tog_path, attribute_path=test_attribute_path)
-        except Exception as e:
-            print(f"Error during kernel launch: {e}")
+    sim = TOGSimulator(config_path=args.config)
+    for _ in range(args.repeat):
+        sim.launch_kernel(0, 0, args.kernel_dir, args.attribute)
+    sim.device_synchronize(0)
+    sim.shutdown()
     print(sim.trace_log)
