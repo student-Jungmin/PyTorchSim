@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Emit GEM5_ASSET_ID, LLVM_ASSET_ID, SPIKE_ASSET_ID lines for appending to GITHUB_ENV.
+# Emit GEM5_ASSET_ID and SPIKE_ASSET_ID lines for appending to GITHUB_ENV.
 # Requires: jq, curl, GITHUB_TOKEN, repo root as cwd or GITHUB_WORKSPACE.
 set -euo pipefail
 ROOT="${GITHUB_WORKSPACE:-$(cd "$(dirname "$0")/../.." && pwd)}"
@@ -50,5 +50,4 @@ thirdparty_asset_id() {
 }
 
 thirdparty_asset_id gem5 GEM5_ASSET_ID
-thirdparty_asset_id llvm_project LLVM_ASSET_ID
 thirdparty_asset_id spike SPIKE_ASSET_ID

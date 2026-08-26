@@ -75,9 +75,9 @@ def _trace_abi():
     not check; making the header part of the artifact's identity gets the same
     protection as a cache miss rather than a load-time refusal.
     """
-    from PyTorchSimFrontend.tog.lower_to_emitc import _default_include_dir
+    from .trace_build import default_include_dir
 
-    path = os.path.join(_default_include_dir(), "togsim_runtime.h")
+    path = os.path.join(default_include_dir(), "togsim_runtime.h")
     try:
         with open(path, "rb") as fh:
             return hashlib.sha256(fh.read()).hexdigest()[:16]

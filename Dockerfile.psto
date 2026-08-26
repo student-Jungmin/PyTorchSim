@@ -34,10 +34,9 @@ RUN --mount=type=secret,id=psto_token \
       /workspace/pytorchsim-triton-opt/setup/restore.sh --prebuilt
 
 ENV PSTO_DIR=/workspace/pytorchsim-triton-opt
-# The TOG builder parses the IR psto prints, so it has to link the SAME LLVM.
-# torchsim_base sets this to /riscv-llvm (LLVM 20) because that is all it has;
-# LLVM 23 arrives with restore.sh above, so the pointer is corrected here.
-ENV TORCHSIM_LLVM_PATH=/workspace/LLVM_DIR/llvm-project/build/install/bin
+# NO TORCHSIM_LLVM_PATH. It existed because the TOG builder parsed the IR the
+# compiler printed and so had to link the same LLVM; the builder moved to the
+# compiler and this repository no longer reads an LLVM at all.
 # psto defaults to a separate fp8 spike and asks for zvfp8; the released spike
 # has neither, and an unknown extension stops spike at startup. Drop once
 # PSAL-POSTECH/riscv-isa-sim#7 is in the release.
@@ -45,4 +44,4 @@ ENV PSTO_SPIKE=/workspace/riscv-isa-sim/install/bin/spike
 ENV PSTO_SPIKE_ISA=rv64gcv_zfh
 
 # Fail the build, not the first CI job.
-RUN python3 /workspace/pytorchsim-triton-opt/run.py doctor
+RUN python3 /workspace/pytorchsim-triton-opt/pytorchsim-triton-opt doctor
