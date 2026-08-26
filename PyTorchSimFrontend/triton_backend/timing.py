@@ -29,30 +29,26 @@ AXES_TXT = "trace_axes.txt"
 LOCK_NAME = ".timing.lock"
 LOCK_TIMEOUT = 1800
 
-_PID_SLOT = {"x": 0, "y": 1, "z": 2}
 
 
 def measure_tile_cycles(workdir, meta):
     """Per-compute-node cycle counts for ONE tile, measured under gem5.
 
-    build_tog's sample mode makes every loop a single trip, the compiler lowers it and
-    gem5 runs it. None on any failure; the caller uses the placeholder table.
-    """
-    from PyTorchSimFrontend.tog.build_tog import run_tog
+    The compiler makes the sample IR -- every loop a single trip, a marker
+    around each compute node -- and lowers it to a binary; gem5 runs that. None
+    on any failure; the caller uses the placeholder table.
 
+    THE MARKERS USED TO BE INSERTED HERE, by run_tog, one repository over from
+    the file that consumed the result. They read IR the compiler printed, so
+    they moved to it: see the compiler's cycle.py.
+    """
     from . import compiler_bridge
-    from .compiler_bridge import artifact
 
     kernel_name = meta["kernel_name"]
     spec = os.path.join(workdir, f"{kernel_name}_spec.py")
     if not os.path.isfile(spec):
         logger.warning("[Gem5] %s not found; cannot sample cycles", spec)
         return None
-
-    with breakdown.span(breakdown.GEM5_SAMPLE, kernel_name):
-        run_tog(artifact(workdir, "post_vcix_ir"),
-                os.path.join(workdir, "tog_sample.py"),
-                os.path.join(workdir, SAMPLE_MLIR), sample_mode=True)
 
     with breakdown.span(breakdown.GEM5_BUILD, kernel_name):
         rc, output = compiler_bridge.run_module(f"{compiler_bridge.COMPILER_PKG}.cycle", spec, workdir)
@@ -71,34 +67,6 @@ def measure_tile_cycles(workdir, meta):
     except Exception as e:
         logger.warning("[Gem5] sampling failed: %s", e)
         return None
-
-
-def _runtime_arg_layout(meta):
-    """(n_tensor_args, n_scalar_args) of the lowered signature.
-
-    triton-shared lays it out as pointers, user scalars, then its own six
-    (gridX,Y,Z / pidX,Y,Z). constexpr params never become arguments.
-    """
-    sig = meta["signature"]
-    tensors = [k for k, v in sig.items() if v.startswith("*")]
-    scalars = [k for k, v in sig.items()
-               if not v.startswith("*") and v != "constexpr"]
-    return len(tensors), len(scalars)
-
-
-def work_item_for(meta):
-    """The WorkItem describing this kernel's program-id args and grid extents.
-
-    A TEMPLATE'S AXIS COUNT IS NOT IN ITS NUMELS: counting from them gives 1 and
-    leaves a pid argument unaccounted. Only the COUNT is compiled in.
-    """
-    from PyTorchSimFrontend.tog.lower_to_emitc import WorkItem
-
-    n_tensor, n_scalar = _runtime_arg_layout(meta)
-    pid_base = n_tensor + n_scalar + 3
-    axes = launch.launch_axes(meta)
-    return WorkItem(parallel_args=[pid_base + _PID_SLOT[p] for p in axes],
-                    grid=[None] * len(axes))
 
 
 def write_shape(workdir, meta, args=()):
@@ -146,55 +114,63 @@ def _write_extents(workdir, ext, what):
 
 
 def emit_trace(workdir, meta):
-    """Build `trace.so` + `trace_cycles.tsv` from the compiler's post-vcix IR.
+    """Build `trace.so` + `trace_cycles.tsv` out of what the compiler emitted.
+
+    THE COMPILER MAKES THE TRACE PRODUCER NOW. It reads the post-vcix IR it
+    printed itself and hands back `trace_cpp` and `tile_types`; this side
+    measures a tile under gem5, compiles the C++, and folds the two together.
+    Neither the skeleton nor the EmitC lowering is here any more, and neither is
+    an `import mlir` -- which is the whole point: the contract between the two
+    repositories was MLIR TEXT, and text is not stable across LLVM revisions.
 
     Returns the number of compute tiles the cycle table covers.
     """
-    from PyTorchSimFrontend.tog import build_skeleton as bs
-    from PyTorchSimFrontend.tog import cycle_table as ct
-    from PyTorchSimFrontend.tog import lower_to_emitc as l2e
-    from PyTorchSimFrontend.tog.build_tog import ir
+    import json
 
+    from . import compiler_bridge, trace_build
     from .compiler_bridge import artifact
-    postvcix = artifact(workdir, "post_vcix_ir")
-    if postvcix is None:
-        raise FileNotFoundError(
-            f"{workdir} has no post-vcix IR -- the compiler must run far enough to emit "
-            f"it, which is what the trace is built from")
 
     kernel = meta["kernel_name"]
+    spec = os.path.join(workdir, f"{kernel}_spec.py")
+    if not os.path.isfile(spec):
+        raise FileNotFoundError(f"{spec} not found; cannot build the trace")
+
+    with breakdown.span(breakdown.GEM5_BUILD, kernel):
+        rc, output = compiler_bridge.run_module(
+            f"{compiler_bridge.COMPILER_PKG}.trace", spec, workdir)
+    if rc != 0:
+        raise RuntimeError(f"the compiler could not emit a trace producer for "
+                           f"{kernel}:\n{output[-2000:]}")
+
+    cpp_path = artifact(workdir, "trace_cpp")
+    types_path = artifact(workdir, "tile_types")
+    if cpp_path is None or types_path is None:
+        raise FileNotFoundError(
+            f"{workdir} has no trace_cpp/tile_types -- the compiler must reach "
+            f"the trace step, which is what the producer is built from")
+    with open(types_path) as fh:
+        tiles = json.load(fh)
+    compute_types = tiles["compute_types"]
+    axes = tiles["parallel_axes"]
+    n_tiles = len(compute_types)
+
     cycles = measure_tile_cycles(workdir, meta)
+    if cycles is None:
+        raise RuntimeError(
+            f"[Gem5] sampling failed for {kernel}, so compute latency would "
+            f"not be modelled at all")
+    lanes = int(extension_config.vpu_num_lanes)
+    table = trace_build.cycle_table(compute_types, list(cycles),
+                                    x_offset=lanes, w_offset=0)
 
-    ctx = ir.Context()
-    ctx.allow_unregistered_dialects = True
-    with ctx:
-        module = ir.Module.parse(open(postvcix).read(), ctx)
-        bs.build_skeleton(module)
-        compute_types = ct._compute_types(module)
-        n_tiles = len(compute_types)
-
-        if cycles is None:
-            raise RuntimeError(
-                f"[Gem5] sampling failed for {kernel}, so compute latency "
-                f"would not be modelled at all")
-        cl = list(cycles)
-        if len(cl) != n_tiles:
-            raise RuntimeError(
-                f"[Gem5] returned {len(cl)} cycle sample(s) for {n_tiles} "
-                f"compute node(s) in {kernel}: a marker fired a different "
-                f"number of times than there are tiles, so the table would be "
-                f"keyed by the wrong samples")
-        lanes = int(extension_config.vpu_num_lanes)
-        table = ct.build_cycle_table(module, cl, x_offset=lanes, w_offset=0)
-
-        wi = work_item_for(meta)
-        l2e.skeleton_to_so(module, os.path.join(workdir, TRACE_SO), work_item=wi)
+    inc = trace_build.default_include_dir()
+    trace_build.compile_so(trace_build.trace_banner(inc) + open(cpp_path).read(),
+                           os.path.join(workdir, TRACE_SO), inc)
     with open(os.path.join(workdir, AXES_TXT), "w") as f:
-        f.write(f"{len(wi.parallel_args)}\n")
+        f.write(f"{len(axes)}\n")
 
-    ct.dump_cycle_table_tsv(table, os.path.join(workdir, CYCLE_TSV))
-    if cycles:
-        logger.info("[Gem5] tile cycles: %s", table)
+    trace_build.dump_cycle_table_tsv(table, os.path.join(workdir, CYCLE_TSV))
+    logger.info("[Gem5] tile cycles: %s", table)
     return n_tiles
 
 

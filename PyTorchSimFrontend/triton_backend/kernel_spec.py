@@ -298,6 +298,13 @@ SPEC = KernelSpec(
 {args_body}
     ],
     grid={grid!r},
+    # OUTERMOST FIRST, and not recoverable from `grid`: grid is X-first with
+    # absent axes padded to 1, so (64, 1, 1) cannot say whether this kernel
+    # spreads over one axis or three. The trace producer pairs the extents
+    # write_shape() emits with pid arguments in THIS order, and the wrong order
+    # writes only the first XBLOCK columns silently -- see launch.grid_xyz,
+    # which carries the same warning for the other half of the pair.
+    parallel_axes={parallel_axes!r},
     reference=reference,
     make_inputs=make_inputs,
     extra={{"scalar_args": {scalar_decls!r},
@@ -355,6 +362,7 @@ def write_spec_file(src_code, meta, path, tnpu_dir):
         args_body=args_body,
         make_inputs_body=make_inputs_body,
         grid=launch.grid_xyz(meta),
+        parallel_axes=tuple(launch.launch_axes(meta)),
         scalar_decls=[(n, c) for n, c, _ in scalars],
         scalar_values={n: v for n, _, v in scalars},
     )

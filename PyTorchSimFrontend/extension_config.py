@@ -6,11 +6,6 @@ import logging
 
 CONFIG_TORCHSIM_DIR = os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim')
 CONFIG_GEM5_PATH = os.environ.get('GEM5_PATH', default="/workspace/gem5/build/RISCV/gem5.opt")
-CONFIG_TORCHSIM_LLVM_PATH = os.environ.get(
-    'TORCHSIM_LLVM_PATH',
-    default=os.environ.get(
-        'PSTO_LLVM_PATH', "/workspace/LLVM_DIR/llvm-project/build/install/bin"))
-
 # --- Triton codegen route ----------------------------------------------------
 # The pytorchsim-triton-opt checkout that owns stages 1-5 (ttir -> ttshared -> the compiler passes
 # -> RISC-V ELF). It is a SEPARATE repository, deliberately not vendored.

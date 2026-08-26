@@ -182,7 +182,6 @@ ENV RISCV=/workspace/riscv
 ENV PATH=$RISCV/bin:$PATH
 
 ARG GEM5_ASSET_ID
-ARG LLVM_ASSET_ID
 ARG SPIKE_ASSET_ID
 ENV PATH=$PATH:/root/.local/bin
 ENV LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
@@ -194,18 +193,10 @@ RUN curl -L -H "Accept: application/octet-stream" https://api.github.com/repos/P
     rm /tmp/gem5-release.tar.gz
 ENV GEM5_PATH=/gem5/release/gem5.opt
 
-# Download LLVM RISC-V for torchsim
-RUN curl -L -H "Accept: application/octet-stream" https://api.github.com/repos/PSAL-POSTECH/llvm-project/releases/assets/${LLVM_ASSET_ID} -o /tmp/riscv-llvm-release.tar.gz && \
-    tar -xzf /tmp/riscv-llvm-release.tar.gz -C / && \
-    rm /tmp/riscv-llvm-release.tar.gz
-
-# Store RISC-V LLVM for TorchSim
-ENV TORCHSIM_LLVM_PATH=/riscv-llvm/bin
-# MLIR Python bindings shipped inside the LLVM release artifact (built by the
-# llvm-project CI with -DMLIR_ENABLE_BINDINGS_PYTHON=ON). Lets PyTorchSim load
-# mlir.ir / dialects for Python-side MLIR passes. The artifact must be built
-# against this image's Python (3.11) or `import mlir` fails on ABI mismatch.
-ENV PYTHONPATH=/riscv-llvm/python_packages/mlir_core:$PYTHONPATH
+# NO LLVM HERE. This image used to carry a 2.4 GB RISC-V LLVM and put its MLIR
+# python bindings on PYTHONPATH, because PyTorchSimFrontend/tog parsed the MLIR
+# the compiler printed. That package moved to the compiler, which is the side
+# that printed the IR, and `import mlir` now appears nowhere in this repository.
 ENV TORCHSIM_DIR=/workspace/PyTorchSim
 
 # Download Spike simulator

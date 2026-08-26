@@ -110,7 +110,6 @@ jobs:
           build-args: |
             PYTORCH_IMAGE=${{ env.PYTORCH_IMAGE }}
             GEM5_ASSET_ID=${{ env.GEM5_ASSET_ID }}
-            LLVM_ASSET_ID=${{ env.LLVM_ASSET_ID }}
             SPIKE_ASSET_ID=${{ env.SPIKE_ASSET_ID }}
           tags: ${{ env.BASE_IMAGE }}
 
