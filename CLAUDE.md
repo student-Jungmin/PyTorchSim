@@ -124,13 +124,13 @@ Read in `PyTorchSimFrontend/extension_config.py`:
 | `TORCHSIM_DIR` | `/workspace/PyTorchSim` | repo root |
 | `TOGSIM_CONFIG` | `configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml` | TOGSim hardware YAML |
 | `GEM5_PATH` | `/workspace/gem5/build/RISCV/gem5.opt` | gem5 binary |
-| `TORCHSIM_LLVM_PATH` | `$TNPU_LLVM_PATH`, else `/workspace/LLVM_DIR/llvm-project/build/install/bin` | LLVM tool dir **and** the MLIR python bindings `tog/` links. Must be the LLVM triton-npu prints its IR with (23) -- `tog/__init__.py` selects it and drops every other LLVM's bindings; `run.py doctor` reports MISMATCH if the two drift |
+| `TORCHSIM_LLVM_PATH` | `$PSTO_LLVM_PATH`, else `/workspace/LLVM_DIR/llvm-project/build/install/bin` | LLVM tool dir **and** the MLIR python bindings `tog/` links. Must be the LLVM triton-npu prints its IR with (23) -- `tog/__init__.py` selects it and drops every other LLVM's bindings; `run.py doctor` reports MISMATCH if the two drift |
 | `TORCHSIM_LOG_PATH` | `$TORCHSIM_DIR/togsim_results` | where TOGSim logs go |
 | `TORCHSIM_DUMP_PATH` | `$TORCHSIM_DIR` | misc dumps |
 | `TORCHSIM_DEBUG_MODE` | `0` | extra debug |
 | `TORCHSIM_BREAKDOWN` | `0` | `1` prints where the run's wall clock went (tnpu compile per stage/pass, Spike, gem5, TOGSim) at exit, and writes `breakdown_<YYYYMMDD_HHMMSS>_<hash>.json` into the dump path — stamped like `togsim_results/`, so parallel runs sharing a dump path each keep their own |
-| `TNPU_DIR` | `$TORCHSIM_DIR/triton-npu` | triton-npu checkout (stages 1-5) |
-| `TNPU_PYTHON` | `sys.executable` | interpreter tnpu runs under. Both sides hold LLVM 23 now, so the seam is a process boundary, not a version one |
+| `PSTO_DIR` | `$TORCHSIM_DIR/triton-npu` | triton-npu checkout (stages 1-5) |
+| `PSTO_PYTHON` | `sys.executable` | interpreter tnpu runs under. Both sides hold LLVM 23 now, so the seam is a process boundary, not a version one |
 | `SRAM_BUFFER_PLAN_PATH` | unset | L2/CMEM persistent-cache tensor plan (Python file with `plan = {...}`) |
 | `TOGSIM_DEBUG_LEVEL` | unset | passed to TOGSim `--log_level` |
 
@@ -257,10 +257,10 @@ artifact replays and a fix appears to change nothing. That has already caused on
 wrong conclusion. A push whose verification was skipped is a push of an unknown
 state.
 
-**PIN `TNPU_DIR` WHEN THE ROUTE IS INVOLVED.** Stages 1-5 live in a separate repo
+**PIN `PSTO_DIR` WHEN THE ROUTE IS INVOLVED.** Stages 1-5 live in a separate repo
 that someone else may be editing right now, and a pass mid-refactor produces
 failures that look like ours (`no lane axis`, bare `NameError`s that vanish on
-re-run). Point `TNPU_DIR` at a worktree pinned to a known-good commit so a result
+re-run). Point `PSTO_DIR` at a worktree pinned to a known-good commit so a result
 means something.
 
 **WHAT DOES NOT COUNT.** Exploration, scratch files, a half-finished edit, or a

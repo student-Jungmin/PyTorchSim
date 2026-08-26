@@ -13,7 +13,7 @@ from torch._inductor.virtualized import V
 
 from PyTorchSimFrontend import extension_config
 
-from . import tnpu_bridge  # noqa: F401
+from . import compiler_bridge  # noqa: F401
 from . import layout, launch, source_rewrite
 from .errors import SpecIncomplete
 
@@ -348,7 +348,7 @@ def write_spec_file(src_code, meta, path, tnpu_dir):
     text = SPEC_TEMPLATE.format(
         kernel_name=meta["kernel_name"],
         tnpu_dir=tnpu_dir,
-        spec_module=f"{tnpu_bridge.module_prefix()}.spec",
+        spec_module=f"{compiler_bridge.COMPILER_PKG}.spec",
         triton_module=triton_module,
         signature=signature,
         constexprs=constexprs,

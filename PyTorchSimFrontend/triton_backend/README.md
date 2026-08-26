@@ -41,7 +41,7 @@ torch.compile
     triton_npu_compile(src, meta, name)          codecache.py
         │  a tnpu kernel file (KernelSpec)       kernel_spec.py
         ▼
-    run.py <spec> --to binary   (subprocess)     tnpu_bridge.py
+    run.py <spec> --to binary   (subprocess)     compiler_bridge.py
         │  01-ttir → 02-ttshared → 03-adapted → 04-custom → 05-*.elf
         ▼
     TritonNPULauncher.__call__                   codecache.py
@@ -128,7 +128,7 @@ describable — the premise of this route, not a shortcut. (`kernel_spec.fixed_c
 this process holds LLVM 20's, and `mlir` is a namespace package, so two LLVMs in
 one interpreter silently merge. The seam between them is a file, and that is
 measured to work: LLVM 23 prints IR that LLVM 20's bindings parse without
-complaint. (`tnpu_bridge`)
+complaint. (`compiler_bridge`)
 
 **The torch pin is what makes triton 3.6 work.** triton-npu pins triton 3.6
 because 3.6 pins LLVM 23, and both sides of its textual IR seam must be the same

@@ -313,7 +313,7 @@ code 255`만 보고하고 spike 자신의 stderr는 살아남지 못합니다. �
 명령을 같은 workdir에서 손으로 돌리면 exit 0이 나오는데, `write_inputs`가 매
 launch마다 `runtime/*.raw`를 새로 쓰기 때문에 손으로 돌린 실행은 **옛 입력을
 재생**하기 때문입니다. 따라서 실패하는 입력은 현재 파이프라인 밖에서 재현할 수
-없습니다. `TnpuError`에 적용한 것과 같은 방식으로 spike의 stderr를 노출시키는
+없습니다. `CompilerError`에 적용한 것과 같은 방식으로 spike의 stderr를 노출시키는
 것이 이 두 건 진단의 선결 조건이고, 아직 하지 않았습니다.
 
 ### `missing_dep` — 17개 · 경로 문제 아님
@@ -383,13 +383,13 @@ small 버킷입니다. `docker/setup-buildx-action`은 추가하면 안 됩니�
 진단은 `stage.log`에만 씁니다. 이전:
 
 ```
-torch._inductor.exc.InductorError: TnpuError: tnpu pipeline failed (exit 1)
+torch._inductor.exc.InductorError: CompilerError: tnpu pipeline failed (exit 1)
 ```
 
-이후 (`TnpuError`가 `stage.log`를 읽음):
+이후 (`CompilerError`가 `stage.log`를 읽음):
 
 ```
-torch._inductor.exc.InductorError: TnpuError: tnpu pipeline failed (exit 1)
+torch._inductor.exc.InductorError: CompilerError: tnpu pipeline failed (exit 1)
   triton.compiler.errors.CompilationError: at 8:11:
   NameError('tl_math is not defined')
 ```
@@ -445,7 +445,7 @@ torch._inductor.exc.InductorError: TnpuError: tnpu pipeline failed (exit 1)
 
 **6번은 선결 조건이 있습니다.** 스위트에서 유일하게 "답이 틀리는" 실패이고 진짜
 lowering 버그일 가능성이 가장 높지만, spike의 stderr가 서브프로세스를 넘어오기
-전에는 진단할 수 없습니다 — 6절에서 `TnpuError`에 이미 적용한 것과 같은
+전에는 진단할 수 없습니다 — 6절에서 `CompilerError`에 이미 적용한 것과 같은
 수정입니다.
 
 ---

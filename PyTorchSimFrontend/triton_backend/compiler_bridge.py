@@ -1,6 +1,6 @@
-"""Run the triton-npu pipeline, out of process.
+"""Run pytorchsim-triton-opt, out of process.
 
-tnpu's passes run on LLVM 23's MLIR python bindings and this process holds LLVM
+the compiler's passes run on LLVM 23's MLIR python bindings and this process holds LLVM
 20's. `mlir` is a NAMESPACE package, so two LLVMs in one interpreter merge
 silently; the seam between them is a file, which is measured to work.
 """
@@ -15,7 +15,7 @@ from PyTorchSimFrontend import extension_config
 logger = extension_config.setup_logger()
 
 
-class TnpuError(RuntimeError):
+class CompilerError(RuntimeError):
     """A tnpu stage failed. Inductor reports only str(exc), so the stage's own
     diagnostic has to travel in the message."""
     _SIGNAL = re.compile(
@@ -37,23 +37,16 @@ class TnpuError(RuntimeError):
         super().__init__(message)
 
 
-def module_prefix():
-    """Which package name this checkout spells the compiler with.
-
-    It was renamed from `tnpu` to `pytorchsim_triton_opt` and both are in flight,
-    so the checkout is asked rather than guessed. Delete once the rename lands.
-    """
-    if os.path.isdir(os.path.join(tnpu_dir(), "pytorchsim_triton_opt")):
-        return "pytorchsim_triton_opt"
-    return "tnpu"
+#: The compiler's package. One name since triton-npu fe0ee08.
+COMPILER_PKG = "pytorchsim_triton_opt"
 
 
 def tnpu_dir():
-    d = extension_config.CONFIG_TNPU_DIR
+    d = extension_config.CONFIG_PSTO_DIR
     if not os.path.isdir(d):
-        raise TnpuError(
+        raise CompilerError(
             f"triton-npu checkout not found at {d}. It is a separate repository "
-            f"and is not vendored; clone it there or set TNPU_DIR.")
+            f"and is not vendored; clone it there or set PSTO_DIR.")
     return d
 
 
@@ -73,23 +66,23 @@ def tnpu_env():
     """The environment for a tnpu subprocess: this machine, no PYTHONPATH, and
     no device backend autoload.
 
-    The three TNPU_* names are what tnpu/config.py reads, so this tells it rather
-    than overrides it; anything already in the environment wins.
+    The three PSTO_* names are what the compiler's config reads, so this tells it
+    rather than overrides it; anything already in the environment wins.
     """
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     env["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
     m = machine()
-    env.setdefault("TNPU_VECTORLANE_SIZE", str(m["lanes"]))
-    env.setdefault("TNPU_VLEN_BITS", str(m["vlen_bits"]))
-    env.setdefault("TNPU_SPAD_SIZE", str(m["spad_size"]))
+    env.setdefault("PSTO_VECTORLANE_SIZE", str(m["lanes"]))
+    env.setdefault("PSTO_VLEN_BITS", str(m["vlen_bits"]))
+    env.setdefault("PSTO_SPAD_SIZE", str(m["spad_size"]))
     return env
 
 
 def doctor():
     """Return (ok, output) for tnpu's own toolchain check."""
     proc = subprocess.run(
-        [extension_config.CONFIG_TNPU_PYTHON,
+        [extension_config.CONFIG_PSTO_PYTHON,
          os.path.join(tnpu_dir(), "run.py"), "doctor"],
         capture_output=True, text=True, cwd=tnpu_dir())
     return proc.returncode == 0, proc.stdout + proc.stderr
@@ -102,7 +95,7 @@ def run_module(module, *args, timeout=None):
     fact. What to do when it fails differs per caller and stays with them.
     """
     proc = subprocess.run(
-        [extension_config.CONFIG_TNPU_PYTHON, "-m", module, *args],
+        [extension_config.CONFIG_PSTO_PYTHON, "-m", module, *args],
         capture_output=True, text=True, cwd=tnpu_dir(), env=tnpu_env(),
         timeout=timeout)
     return proc.returncode, proc.stdout + proc.stderr
@@ -114,7 +107,7 @@ def run_pipeline(spec_path, workdir, to_stage="binary", timeout=1800):
     Stops at `to_stage`, by default `binary`: stages 6 and 7 want tensors and a
     per-kernel reference this route has no graph-level answer for.
     """
-    cmd = [extension_config.CONFIG_TNPU_PYTHON,
+    cmd = [extension_config.CONFIG_PSTO_PYTHON,
            os.path.join(tnpu_dir(), "run.py"), spec_path,
            "--from", "ttir", "--to", to_stage, "--workdir", workdir]
 
@@ -126,7 +119,7 @@ def run_pipeline(spec_path, workdir, to_stage="binary", timeout=1800):
         if os.path.isfile(log):
             with open(log, errors="replace") as fh:
                 output += "\n" + fh.read()
-        raise TnpuError(f"tnpu pipeline failed (exit {proc.returncode})",
+        raise CompilerError(f"tnpu pipeline failed (exit {proc.returncode})",
                         cmd=" ".join(cmd), output=output)
     logger.debug("[triton-npu] %s", output)
     return workdir
@@ -148,7 +141,7 @@ def kernel_object(workdir):
     except (OSError, ValueError):
         return None
     if got.get("format") != KERNEL_FORMAT:
-        raise TnpuError(
+        raise CompilerError(
             f"{path}: kernel object format {got.get('format')!r}, this reader "
             f"knows {KERNEL_FORMAT}. The compiler and this frontend disagree "
             f"about the contract; rebuild the kernel cache.")

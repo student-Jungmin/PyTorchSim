@@ -40,7 +40,7 @@ BUCKETS = [
     ("triton_helpers", r"triton_helpers"),
     ("wrapper_gap",    r"'TritonNPUWrapperCodegen' object has no attribute"),
     ("spec_incomplete", r"SpecIncomplete"),
-    ("tnpu_stage",     r"TnpuError|tnpu pipeline failed|triton-shared-opt|"
+    ("tnpu_stage",     r"CompilerError|tnpu pipeline failed|triton-shared-opt|"
                        r"\[stage\d\]|failed to legalize"),
     ("reduction",      r"lane-aware|linalg\.reduce|no reduction path"),
     ("dynamic_shape",  r"ShapeMismatch|dynamic shape|size_hint returned None"),

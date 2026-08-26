@@ -20,7 +20,7 @@
 
 lowering pass 자체는 만들지 않았습니다. **이미 있는 것을 PyTorchSim이 쓸 수 있는 형태로 이식하고, 기존 TOGSim / gem5 / Spike 스택에 물린 것**이 여기서 한 일입니다.
 
-용어: 이 lowering 계층을 문서 전체에서 **NPU lowering pass**로 부릅니다. 다만 코드가 `triton-npu` 저장소에 있어서 **실제 식별자는 `tnpu`로 남아 있고**(`tnpu_bridge.py`, `tnpu/passes/`, `tnpu.spike`, `strip_for_tnpu`), 문서에서 코드를 찾아갈 수 있도록 그 이름들은 그대로 인용합니다.
+용어: 이 lowering 계층을 문서 전체에서 **NPU lowering pass**로 부릅니다. 다만 코드가 `triton-npu` 저장소에 있어서 **실제 식별자는 `tnpu`로 남아 있고**(`compiler_bridge.py`, `tnpu/passes/`, `tnpu.spike`, `strip_for_tnpu`), 문서에서 코드를 찾아갈 수 있도록 그 이름들은 그대로 인용합니다.
 
 ## 현재 도달점
 
@@ -105,7 +105,7 @@ torch.compile
        │    - 인자 역할(in/out/inout) · dtype · numel
        │    - grid, 사용자 스칼라 값
        ▼
-    NPU lowering pass   (subprocess)                      tnpu_bridge.py
+    NPU lowering pass   (subprocess)                      compiler_bridge.py
        │   담당 이정민 — 범위 밖. 여기서 한 일은 이 단계를
        │   호출하고 그 결과를 아래 스택에 물린 부분.
        │

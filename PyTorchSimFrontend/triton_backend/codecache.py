@@ -14,7 +14,7 @@ from torch._inductor.codecache import get_hash
 
 from PyTorchSimFrontend import extension_config
 
-from . import breakdown, functional, kernel_spec, provenance, timing, tnpu_bridge
+from . import breakdown, functional, kernel_spec, provenance, timing, compiler_bridge
 
 logger = extension_config.setup_logger()
 
@@ -68,7 +68,7 @@ class TritonNPULauncher:
 def _spad_overflow(exc):
     """(usage, budget) if this failure was the scratchpad, else None.
 
-    Read off `exc.output`, NOT `str(exc)`: TnpuError's message keeps only lines
+    Read off `exc.output`, NOT `str(exc)`: CompilerError's message keeps only lines
     that look like a diagnostic, and this marker is addressed to this function.
     """
     m = _SPAD_OVERFLOW_RE.search(getattr(exc, "output", None) or str(exc))
@@ -114,7 +114,7 @@ def triton_npu_compile(src_code, meta, kernel_name):
     lock = FileLock(os.path.join(write_path, ".compile.lock"), timeout=LOCK_TIMEOUT)
     with lock:
         spec_path = os.path.join(write_path, f"{kernel_name}_spec.py")
-        elf = tnpu_bridge.artifact(write_path, "elf")
+        elf = compiler_bridge.artifact(write_path, "elf")
         if elf is not None and not provenance.matches(write_path):
             logger.info(
                 "[triton-npu] %s: cached artifacts carry a different toolchain "
@@ -128,14 +128,14 @@ def triton_npu_compile(src_code, meta, kernel_name):
             last_usage = None
             while True:
                 kernel_spec.write_spec_file(src_code, meta, spec_path,
-                                            tnpu_bridge.tnpu_dir())
+                                            compiler_bridge.tnpu_dir())
                 try:
                     with breakdown.span(breakdown.TNPU, kernel_name):
-                        tnpu_bridge.run_pipeline(spec_path, write_path,
+                        compiler_bridge.run_pipeline(spec_path, write_path,
                                                  to_stage="binary")
                     breakdown.ingest_tnpu(write_path, kernel_name)
                     break
-                except tnpu_bridge.TnpuError as exc:
+                except compiler_bridge.CompilerError as exc:
                     over = _spad_overflow(exc)
                     if over is None:
                         raise

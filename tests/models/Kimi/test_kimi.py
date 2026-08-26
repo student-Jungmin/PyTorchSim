@@ -60,7 +60,7 @@ compiler is gone is a number about nothing.
 
 The two kernels and 22 goldens tiny gained across that move are not attributed:
 both the compiler and transformers changed between the runs, and one run cannot
-tell them apart. Pin TNPU_DIR at a pre-merge worktree to split them if it ever
+tell them apart. Pin PSTO_DIR at a pre-merge worktree to split them if it ever
 matters.
 
 `goldens` is with `pytorchsim_functional_verify_per_kernel` on, so it is every

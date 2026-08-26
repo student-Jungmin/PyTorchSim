@@ -40,8 +40,8 @@ def measure_tile_cycles(workdir, meta):
     """
     from PyTorchSimFrontend.tog.build_tog import run_tog
 
-    from . import tnpu_bridge
-    from .tnpu_bridge import artifact
+    from . import compiler_bridge
+    from .compiler_bridge import artifact
 
     kernel_name = meta["kernel_name"]
     spec = os.path.join(workdir, f"{kernel_name}_spec.py")
@@ -55,7 +55,7 @@ def measure_tile_cycles(workdir, meta):
                 os.path.join(workdir, SAMPLE_MLIR), sample_mode=True)
 
     with breakdown.span(breakdown.GEM5_BUILD, kernel_name):
-        rc, output = tnpu_bridge.run_module(f"{tnpu_bridge.module_prefix()}.cycle", spec, workdir)
+        rc, output = compiler_bridge.run_module(f"{compiler_bridge.COMPILER_PKG}.cycle", spec, workdir)
     breakdown.ingest_tnpu(workdir, kernel_name, kind="cycle",
                           name="timing-cycle.json")
     if rc != 0:
@@ -155,7 +155,7 @@ def emit_trace(workdir, meta):
     from PyTorchSimFrontend.tog import lower_to_emitc as l2e
     from PyTorchSimFrontend.tog.build_tog import ir
 
-    from .tnpu_bridge import artifact
+    from .compiler_bridge import artifact
     postvcix = artifact(workdir, "post_vcix_ir")
     if postvcix is None:
         raise FileNotFoundError(

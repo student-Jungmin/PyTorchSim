@@ -131,14 +131,14 @@ def check_reduction_is_right():
 
 def main():
     from PyTorchSimFrontend import extension_config
-    from PyTorchSimFrontend.triton_backend import tnpu_bridge
+    from PyTorchSimFrontend.triton_backend import compiler_bridge
 
     print(f"multi-axis grid          = "
           f"{'ok' if check_multi_axis_grid() else 'FAILED'}")
     print(f"reduction is right       = "
           f"{'ok' if check_reduction_is_right() else 'FAILED'}")
-    print(f"TNPU_DIR                = {extension_config.CONFIG_TNPU_DIR}")
-    ok, _out = tnpu_bridge.doctor()
+    print(f"PSTO_DIR                = {extension_config.CONFIG_PSTO_DIR}")
+    ok, _out = compiler_bridge.doctor()
     print(f"tnpu doctor             = {'ok' if ok else 'FAILED (see run.py doctor)'}")
     print()
 

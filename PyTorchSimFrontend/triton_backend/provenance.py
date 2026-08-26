@@ -13,7 +13,7 @@ import subprocess
 
 from PyTorchSimFrontend import extension_config
 
-from . import tnpu_bridge
+from . import compiler_bridge
 
 logger = extension_config.setup_logger()
 
@@ -42,11 +42,11 @@ def _tnpu_git(tnpu_dir):
 
 def _tool_paths(tnpu_dir):
     """The tool paths tnpu itself would resolve, asked in its own interpreter."""
-    code = (f"import json; from {tnpu_bridge.module_prefix()} import config as c; "
+    code = (f"import json; from {compiler_bridge.COMPILER_PKG} import config as c; "
             "print(json.dumps({n: p for n, p, _ in c.CHECKS}))")
     proc = subprocess.run(
-        [extension_config.CONFIG_TNPU_PYTHON, "-c", code],
-        capture_output=True, text=True, cwd=tnpu_dir, env=tnpu_bridge.tnpu_env())
+        [extension_config.CONFIG_PSTO_PYTHON, "-c", code],
+        capture_output=True, text=True, cwd=tnpu_dir, env=compiler_bridge.tnpu_env())
     if proc.returncode != 0:
         return None
     try:
@@ -89,7 +89,7 @@ def current():
     """This process's build identity, computed once and reused."""
     global _current
     if _current is None:
-        tnpu_dir = tnpu_bridge.tnpu_dir()
+        tnpu_dir = compiler_bridge.tnpu_dir()
         paths = _tool_paths(tnpu_dir)
         if paths is None:
             logger.warning(
@@ -98,7 +98,7 @@ def current():
         _current = {
             "tnpu": _tnpu_git(tnpu_dir),
             "tools": _stat_tools(paths) if paths else None,
-            "machine": tnpu_bridge.machine(),
+            "machine": compiler_bridge.machine(),
             "trace_abi": _trace_abi(),
         }
     return _current

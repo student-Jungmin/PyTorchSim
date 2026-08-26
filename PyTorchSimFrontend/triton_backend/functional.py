@@ -196,7 +196,7 @@ def run(workdir, meta, args):
     Replay is OFF by default -- a result out of a file is not one the simulator
     produced today; it is for the inner loop, not for reporting.
     """
-    from . import tnpu_bridge
+    from . import compiler_bridge
 
     spec = os.path.join(workdir, f"{meta['kernel_name']}_spec.py")
     if not os.path.isfile(spec):
@@ -212,7 +212,7 @@ def run(workdir, meta, args):
                         meta["kernel_name"], key)
             return read_outputs(workdir, meta, args)
 
-    rc, output = tnpu_bridge.run_module(f"{tnpu_bridge.module_prefix()}.spike", spec, workdir,
+    rc, output = compiler_bridge.run_module(f"{compiler_bridge.COMPILER_PKG}.spike", spec, workdir,
                                         "--runtime", runtime)
     breakdown.ingest_tnpu(runtime, meta["kernel_name"], kind="spike",
                           name="timing-spike.json")

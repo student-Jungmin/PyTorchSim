@@ -21,11 +21,11 @@ def triton_src_dir():
     and HEXAGON_MLIR_ROOT was its parent (an older tnpu has only that key).
     """
     from PyTorchSimFrontend import extension_config
-    override = os.environ.get("TNPU_TRITON_SRC")
+    override = os.environ.get("PSTO_TRITON_SRC")
     if override:
         return override
 
-    versions = os.path.join(extension_config.CONFIG_TNPU_DIR, "setup", "versions.env")
+    versions = os.path.join(extension_config.CONFIG_PSTO_DIR, "setup", "versions.env")
     try:
         with open(versions) as f:
             for line in f:
@@ -100,7 +100,7 @@ def install():
         raise ModuleNotFoundError(
             f"the Triton codegen route needs `triton` importable in this "
             f"interpreter (Inductor imports it during codegen). Not found, and "
-            f"no checkout at {triton_src_dir()}. Set TNPU_TRITON_SRC, or install "
+            f"no checkout at {triton_src_dir()}. Set PSTO_TRITON_SRC, or install "
             f"triton into this environment.")
     if _installed:
         return

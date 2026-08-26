@@ -315,7 +315,7 @@ with exit code 255`; spike's own stderr does not survive. Running the recorded
 spike command by hand on the same workdir exits 0, because `write_inputs`
 rewrites `runtime/*.raw` per launch and a by-hand run replays stale inputs. So
 the failing input is not currently reproducible outside the pipeline. Surfacing
-spike's stderr the way `TnpuError` now surfaces tnpu's is the prerequisite for
+spike's stderr the way `CompilerError` now surfaces tnpu's is the prerequisite for
 diagnosing these, and is not yet done.
 
 ### `missing_dep` — 17 · not a route problem
@@ -384,13 +384,13 @@ sources were the ones being thrown away. Reordered; the dump now exists for all
 stdout and the real diagnostic only to `stage.log`. Before:
 
 ```
-torch._inductor.exc.InductorError: TnpuError: tnpu pipeline failed (exit 1)
+torch._inductor.exc.InductorError: CompilerError: tnpu pipeline failed (exit 1)
 ```
 
-After (`TnpuError` now reads `stage.log`):
+After (`CompilerError` now reads `stage.log`):
 
 ```
-torch._inductor.exc.InductorError: TnpuError: tnpu pipeline failed (exit 1)
+torch._inductor.exc.InductorError: CompilerError: tnpu pipeline failed (exit 1)
   triton.compiler.errors.CompilationError: at 8:11:
   NameError('tl_math is not defined')
 ```
@@ -448,7 +448,7 @@ cheap and would unblock measurement sooner.
 **6 has a prerequisite.** These are the only wrong-answer failures in the suite
 and the most likely to be a real lowering bug, but they cannot be diagnosed
 until spike's stderr survives the subprocess — the same fix already applied to
-`TnpuError` in section 6.
+`CompilerError` in section 6.
 
 ---
 
