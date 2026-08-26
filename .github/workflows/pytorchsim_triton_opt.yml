@@ -182,7 +182,7 @@ jobs:
               cd /workspace/pytorchsim-triton-opt &&
               python3 pytorchsim-triton-opt doctor &&
               for k in add mul relu gemm bmm; do
-                echo "=== $k ===" && python3 pytorchsim-triton-opt kernels/$k.py || exit 1
+                echo "=== $k ===" && python3 pytorchsim-triton-opt tests/cases/smoke/$k.py || exit 1
               done'
 
   triton-route:
