@@ -7,13 +7,13 @@ on:
 
 env:
   BASE_IMAGE_REPO: ghcr.io/psal-postech/torchsim_base
-  TNPU_IMAGE_REPO: ghcr.io/psal-postech/torchsim_tnpu_base
+  PSTO_IMAGE_REPO: ghcr.io/psal-postech/torchsim_psto_base
   # PR: head commit; otherwise workflow_dispatch uses the branch SHA
   SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   preflight:
-    name: Check tnpu access
+    name: Check psto access
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,26 +21,26 @@ jobs:
           ref: ${{ env.SOURCE_SHA }}
           persist-credentials: false
 
-      # The only codegen route lowers through triton-npu, so the toolchain is
+      # The only codegen route lowers through pytorchsim-triton-opt, so the toolchain is
       # not optional and neither is the token. Fail here, not in the image build.
       - name: Token and release present
         env:
-          TNPU_TOKEN: ${{ secrets.TNPU_TOKEN }}
+          PSTO_TOKEN: ${{ secrets.PSTO_TOKEN }}
         run: |
-          if [ -z "${TNPU_TOKEN}" ]; then
-            echo "::error::secrets.TNPU_TOKEN is not set. PSAL-POSTECH/triton-npu is private and the default Actions token cannot read it."
+          if [ -z "${PSTO_TOKEN}" ]; then
+            echo "::error::secrets.PSTO_TOKEN is not set. PSAL-POSTECH/pytorchsim-triton-opt is private and the default Actions token cannot read it."
             exit 1
           fi
-          REPO=$(jq -r '.triton_npu.repository' thirdparty/triton-npu.json)
-          TAG=$(jq -r '.triton_npu.release_tag' thirdparty/triton-npu.json)
-          if ! curl -fsS -H "Authorization: Bearer ${TNPU_TOKEN}" \
+          REPO=$(jq -r '.pytorchsim_triton_opt.repository' thirdparty/pytorchsim-triton-opt.json)
+          TAG=$(jq -r '.pytorchsim_triton_opt.release_tag' thirdparty/pytorchsim-triton-opt.json)
+          if ! curl -fsS -H "Authorization: Bearer ${PSTO_TOKEN}" \
                "https://api.github.com/repos/${REPO}" -o /dev/null; then
-            echo "::error::TNPU_TOKEN cannot read ${REPO}."
+            echo "::error::PSTO_TOKEN cannot read ${REPO}."
             exit 1
           fi
-          if ! curl -fsS -H "Authorization: Bearer ${TNPU_TOKEN}" \
+          if ! curl -fsS -H "Authorization: Bearer ${PSTO_TOKEN}" \
                "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" -o /dev/null; then
-            echo "::error::${REPO} has no release tagged '${TAG}'. Mirror the toolchain assets there (see thirdparty/triton-npu.json)."
+            echo "::error::${REPO} has no release tagged '${TAG}'. Mirror the toolchain assets there (see thirdparty/pytorchsim-triton-opt.json)."
             exit 1
           fi
 
@@ -111,14 +111,14 @@ jobs:
             SPIKE_ASSET_ID=${{ env.SPIKE_ASSET_ID }}
           tags: ${{ env.BASE_IMAGE }}
 
-  ensure-tnpu-base:
-    # The triton-npu toolchain layer the codegen route lowers through. Kept a
+  ensure-psto-base:
+    # The pytorchsim-triton-opt toolchain layer the codegen route lowers through. Kept a
     # separate image because it is ~1.8 GiB and moves on its own pin.
-    name: Build tnpu toolchain image
+    name: Build psto toolchain image
     needs: ensure-base
     runs-on: [self-hosted, slurm, big, x86_64]
     outputs:
-      tnpu_image: ${{ steps.pin.outputs.tnpu_image }}
+      psto_image: ${{ steps.pin.outputs.psto_image }}
     permissions:
       contents: read
       packages: write
@@ -142,38 +142,38 @@ jobs:
         id: pin
         run: |
           BASE_PIN="$(bash scripts/ci/thirdparty_base_pin.sh)"
-          TNPU_PIN="$(bash scripts/ci/tnpu_base_pin.sh)"
-          # The tnpu layer sits on a specific base, so its tag carries both pins.
-          echo "TNPU_IMAGE=${TNPU_IMAGE_REPO}:tnpu-${TNPU_PIN}-base-${BASE_PIN}" >> "$GITHUB_ENV"
-          echo "tnpu_image=${TNPU_IMAGE_REPO}:tnpu-${TNPU_PIN}-base-${BASE_PIN}" >> "$GITHUB_OUTPUT"
-          echo "TNPU_REF=$(jq -r '.triton_npu.ref' thirdparty/triton-npu.json)" >> "$GITHUB_ENV"
+          PSTO_PIN="$(bash scripts/ci/psto_base_pin.sh)"
+          # The psto layer sits on a specific base, so its tag carries both pins.
+          echo "PSTO_IMAGE=${PSTO_IMAGE_REPO}:psto-${PSTO_PIN}-base-${BASE_PIN}" >> "$GITHUB_ENV"
+          echo "psto_image=${PSTO_IMAGE_REPO}:psto-${PSTO_PIN}-base-${BASE_PIN}" >> "$GITHUB_OUTPUT"
+          echo "PSTO_REF=$(jq -r '.pytorchsim_triton_opt.ref' thirdparty/pytorchsim-triton-opt.json)" >> "$GITHUB_ENV"
 
-      - name: Check tnpu image exists
+      - name: Check psto image exists
         id: exists
         run: |
-          if docker manifest inspect "${TNPU_IMAGE}" > /dev/null 2>&1; then
+          if docker manifest inspect "${PSTO_IMAGE}" > /dev/null 2>&1; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build and push tnpu toolchain image
+      - name: Build and push psto toolchain image
         if: steps.exists.outputs.ok != 'true'
         uses: docker/build-push-action@v4
         with:
           context: .
-          file: ./Dockerfile.tnpu
+          file: ./Dockerfile.psto
           push: true
           build-args: |
             BASE_IMAGE=${{ needs.ensure-base.outputs.base_image }}
-            TNPU_REF=${{ env.TNPU_REF }}
+            PSTO_REF=${{ env.PSTO_REF }}
           secrets: |
-            tnpu_token=${{ secrets.TNPU_TOKEN }}
-          tags: ${{ env.TNPU_IMAGE }}
+            psto_token=${{ secrets.PSTO_TOKEN }}
+          tags: ${{ env.PSTO_IMAGE }}
 
   build-and-test:
-    needs: ensure-tnpu-base
-    # Self-hosted: the app image now carries the tnpu toolchain layer.
+    needs: ensure-psto-base
+    # Self-hosted: the app image now carries the psto toolchain layer.
     runs-on: [self-hosted, slurm, big, x86_64]
 
     permissions:
@@ -203,7 +203,7 @@ jobs:
           push: true
           no-cache: true
           build-args: |
-            BASE_IMAGE=${{ needs.ensure-tnpu-base.outputs.tnpu_image }}
+            BASE_IMAGE=${{ needs.ensure-psto-base.outputs.psto_image }}
           tags: ghcr.io/psal-postech/torchsim-test:${{ env.SOURCE_SHA }}
 
       # Do not use GITHUB_SHA here: on pull_request it is the merge commit, while the image tag uses SOURCE_SHA (PR head).

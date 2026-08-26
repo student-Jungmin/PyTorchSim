@@ -128,7 +128,7 @@ torch.compile
 
 **LLVM 이음매.** lowering pass는 stock LLVM 23을, PyTorchSim은 PSAL LLVM 20을 씁니다. `mlir`이 namespace 패키지라 한 인터프리터에 공존할 수 없어, 두 쪽은 **텍스트 MLIR을 주고받는 subprocess**로 갈라져 있습니다.
 
-**lowering pass에 필요했던 진입점 3개.** 패스 로직을 고치는 것이 아니라 바깥에서 호출할 수 있게 여는 변경입니다 ([triton-npu#1](https://github.com/PSAL-POSTECH/triton-npu/pull/1)).
+**lowering pass에 필요했던 진입점 3개.** 패스 로직을 고치는 것이 아니라 바깥에서 호출할 수 있게 여는 변경입니다 ([triton-npu#1](https://github.com/PSAL-POSTECH/pytorchsim-triton-opt/pull/1)).
 
 | 훅 | 왜 필요했나 |
 |---|---|

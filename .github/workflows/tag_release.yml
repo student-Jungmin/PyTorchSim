@@ -7,7 +7,7 @@ on:
 
 env:
   BASE_IMAGE_REPO: ghcr.io/psal-postech/torchsim_base
-  TNPU_IMAGE_REPO: ghcr.io/psal-postech/torchsim_tnpu_base
+  PSTO_IMAGE_REPO: ghcr.io/psal-postech/torchsim_psto_base
 
 jobs:
   ensure-base:
@@ -79,14 +79,14 @@ jobs:
             ${{ env.BASE_IMAGE }}
             ${{ env.BASE_IMAGE_REPO }}:latest
 
-  ensure-tnpu-base:
-    # The triton-npu toolchain layer. The released image cannot compile a kernel
-    # without it: `npu` has exactly one codegen route and it lowers through tnpu.
-    name: Build tnpu toolchain image
+  ensure-psto-base:
+    # The pytorchsim-triton-opt toolchain layer. The released image cannot compile a kernel
+    # without it: `npu` has exactly one codegen route and it lowers through psto.
+    name: Build psto toolchain image
     needs: ensure-base
     runs-on: [self-hosted, slurm, big, x86_64]
     outputs:
-      tnpu_image: ${{ steps.pin.outputs.tnpu_image }}
+      psto_image: ${{ steps.pin.outputs.psto_image }}
     permissions:
       contents: read
       packages: write
@@ -111,36 +111,36 @@ jobs:
         id: pin
         run: |
           BASE_PIN="$(bash scripts/ci/thirdparty_base_pin.sh)"
-          TNPU_PIN="$(bash scripts/ci/tnpu_base_pin.sh)"
-          echo "TNPU_IMAGE=${TNPU_IMAGE_REPO}:tnpu-${TNPU_PIN}-base-${BASE_PIN}" >> "$GITHUB_ENV"
-          echo "tnpu_image=${TNPU_IMAGE_REPO}:tnpu-${TNPU_PIN}-base-${BASE_PIN}" >> "$GITHUB_OUTPUT"
-          echo "TNPU_REF=$(jq -r '.triton_npu.ref' thirdparty/triton-npu.json)" >> "$GITHUB_ENV"
+          PSTO_PIN="$(bash scripts/ci/psto_base_pin.sh)"
+          echo "PSTO_IMAGE=${PSTO_IMAGE_REPO}:psto-${PSTO_PIN}-base-${BASE_PIN}" >> "$GITHUB_ENV"
+          echo "psto_image=${PSTO_IMAGE_REPO}:psto-${PSTO_PIN}-base-${BASE_PIN}" >> "$GITHUB_OUTPUT"
+          echo "PSTO_REF=$(jq -r '.pytorchsim_triton_opt.ref' thirdparty/pytorchsim-triton-opt.json)" >> "$GITHUB_ENV"
 
-      - name: Check tnpu image exists
+      - name: Check psto image exists
         id: exists
         run: |
-          if docker manifest inspect "${TNPU_IMAGE}" > /dev/null 2>&1; then
+          if docker manifest inspect "${PSTO_IMAGE}" > /dev/null 2>&1; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build and push tnpu toolchain image
+      - name: Build and push psto toolchain image
         if: steps.exists.outputs.ok != 'true'
         uses: docker/build-push-action@v4
         with:
           context: .
-          file: ./Dockerfile.tnpu
+          file: ./Dockerfile.psto
           push: true
           build-args: |
             BASE_IMAGE=${{ needs.ensure-base.outputs.base_image }}
-            TNPU_REF=${{ env.TNPU_REF }}
+            PSTO_REF=${{ env.PSTO_REF }}
           secrets: |
-            tnpu_token=${{ secrets.TNPU_TOKEN }}
-          tags: ${{ env.TNPU_IMAGE }}
+            psto_token=${{ secrets.PSTO_TOKEN }}
+          tags: ${{ env.PSTO_IMAGE }}
 
   build:
-    needs: ensure-tnpu-base
+    needs: ensure-psto-base
     runs-on: self-hosted
 
     permissions:
@@ -178,5 +178,5 @@ jobs:
           secrets: |
             GIT_ACCESS_TOKEN=${{ secrets.GIT_ACCESS_TOKEN }}
           build-args: |
-            BASE_IMAGE=${{ needs.ensure-tnpu-base.outputs.tnpu_image }}
+            BASE_IMAGE=${{ needs.ensure-psto-base.outputs.psto_image }}
           tags: ghcr.io/psal-postech/${{ env.IMAGE_TAG }}

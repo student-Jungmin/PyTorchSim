@@ -3,7 +3,7 @@
 > **SUPERSEDED for `tog/`.** The TOG builder now links the SAME LLVM triton-npu
 > prints its IR with -- LLVM 23, unpacked by `triton-npu/setup/restore.sh` into
 > `/workspace/LLVM_DIR/llvm-project/build/install`, and named by
-> `TORCHSIM_LLVM_PATH` (set in `Dockerfile.tnpu`). `PyTorchSimFrontend/tog/__init__.py`
+> `TORCHSIM_LLVM_PATH` (set in `Dockerfile.psto`). `PyTorchSimFrontend/tog/__init__.py`
 > selects those bindings and removes every other LLVM's from `sys.path`.
 >
 > The `/riscv-llvm` (LLVM 20) bindings this document describes are no longer read
