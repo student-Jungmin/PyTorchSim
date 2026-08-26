@@ -114,7 +114,7 @@ def triton_npu_compile(src_code, meta, kernel_name):
     lock = FileLock(os.path.join(write_path, ".compile.lock"), timeout=LOCK_TIMEOUT)
     with lock:
         spec_path = os.path.join(write_path, f"{kernel_name}_spec.py")
-        elf = tnpu_bridge.stage_artifact(write_path, f"{kernel_name}.elf")
+        elf = tnpu_bridge.artifact(write_path, "elf")
         if elf is not None and not provenance.matches(write_path):
             logger.info(
                 "[triton-npu] %s: cached artifacts carry a different toolchain "

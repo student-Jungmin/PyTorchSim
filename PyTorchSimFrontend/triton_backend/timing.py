@@ -41,7 +41,7 @@ def measure_tile_cycles(workdir, meta):
     from PyTorchSimFrontend.tog.build_tog import run_tog
 
     from . import tnpu_bridge
-    from .tnpu_bridge import stage_artifact
+    from .tnpu_bridge import artifact
 
     kernel_name = meta["kernel_name"]
     spec = os.path.join(workdir, f"{kernel_name}_spec.py")
@@ -50,7 +50,7 @@ def measure_tile_cycles(workdir, meta):
         return None
 
     with breakdown.span(breakdown.GEM5_SAMPLE, kernel_name):
-        run_tog(stage_artifact(workdir, "custom.mlir"),
+        run_tog(artifact(workdir, "post_vcix_ir"),
                 os.path.join(workdir, "tog_sample.py"),
                 os.path.join(workdir, SAMPLE_MLIR), sample_mode=True)
 
@@ -155,12 +155,12 @@ def emit_trace(workdir, meta):
     from PyTorchSimFrontend.tog import lower_to_emitc as l2e
     from PyTorchSimFrontend.tog.build_tog import ir
 
-    from .tnpu_bridge import stage_artifact
-    postvcix = stage_artifact(workdir, "custom.mlir")
+    from .tnpu_bridge import artifact
+    postvcix = artifact(workdir, "post_vcix_ir")
     if postvcix is None:
         raise FileNotFoundError(
-            f"no *-custom.mlir in {workdir} -- tnpu must run far enough to emit "
-            f"the post-vcix IR, which is what the trace is built from")
+            f"{workdir} has no post-vcix IR -- tnpu must run far enough to emit "
+            f"it, which is what the trace is built from")
 
     kernel = meta["kernel_name"]
     cycles = measure_tile_cycles(workdir, meta)

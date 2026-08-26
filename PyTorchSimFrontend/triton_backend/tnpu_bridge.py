@@ -5,6 +5,7 @@ tnpu's passes run on LLVM 23's MLIR python bindings and this process holds LLVM
 silently; the seam between them is a file, which is measured to work.
 """
 
+import json
 import os
 import re
 import subprocess
@@ -120,12 +121,41 @@ def run_pipeline(spec_path, workdir, to_stage="binary", timeout=1800):
     return workdir
 
 
-def stage_artifact(workdir, suffix):
-    """The stage file ending in `suffix`, whatever number tnpu gave it.
+#: The compiler's manifest. Its schema is declared in the compiler
+#: (tnpu/kernel_object.py); this is a reader, and the format field is what stops
+#: the two from drifting silently.
+KERNEL_MANIFEST = "kernel.json"
+KERNEL_FORMAT = 1
 
-    THE NUMBERS ARE NOT AN INTERFACE -- tnpu renumbers when a stage is added,
-    and the post-vcix IR has already moved from 04- to 05-. None if no match.
+
+def kernel_object(workdir):
+    """The manifest tnpu left in `workdir`, or None if it did not get that far."""
+    path = os.path.join(workdir, KERNEL_MANIFEST)
+    try:
+        with open(path) as fh:
+            got = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if got.get("format") != KERNEL_FORMAT:
+        raise TnpuError(
+            f"{path}: kernel object format {got.get('format')!r}, this reader "
+            f"knows {KERNEL_FORMAT}. The compiler and this frontend disagree "
+            f"about the contract; rebuild the kernel cache.")
+    return got
+
+
+def artifact(workdir, kind):
+    """One compiler output by the name the manifest gives it, or None.
+
+    THE STAGE NUMBERS ARE NOT AN INTERFACE and this is what replaced globbing
+    for them: tnpu renumbers when a stage is added, and the post-vcix IR has
+    already moved from 04- to 05- once.
     """
-    import glob
-    hits = sorted(glob.glob(os.path.join(workdir, f"*-{suffix}")))
-    return hits[-1] if hits else None
+    got = kernel_object(workdir)
+    if got is None:
+        return None
+    rel = got.get("artifacts", {}).get(kind)
+    if not rel:
+        return None
+    full = os.path.join(workdir, rel)
+    return full if os.path.exists(full) else None
