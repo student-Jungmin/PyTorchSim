@@ -40,11 +40,11 @@ class TnpuError(RuntimeError):
 def module_prefix():
     """Which package name this checkout spells the compiler with.
 
-    It was renamed from `tnpu` to `pytorchsim.triton_opt` and both are in flight,
+    It was renamed from `tnpu` to `pytorchsim_triton_opt` and both are in flight,
     so the checkout is asked rather than guessed. Delete once the rename lands.
     """
-    if os.path.isdir(os.path.join(tnpu_dir(), "pytorchsim", "triton_opt")):
-        return "pytorchsim.triton_opt"
+    if os.path.isdir(os.path.join(tnpu_dir(), "pytorchsim_triton_opt")):
+        return "pytorchsim_triton_opt"
     return "tnpu"
 
 
