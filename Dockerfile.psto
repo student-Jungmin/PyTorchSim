@@ -34,9 +34,7 @@ RUN --mount=type=secret,id=psto_token \
       /workspace/pytorchsim-triton-opt/setup/restore.sh --prebuilt
 
 ENV PSTO_DIR=/workspace/pytorchsim-triton-opt
-# NO TORCHSIM_LLVM_PATH. It existed because the TOG builder parsed the IR the
-# compiler printed and so had to link the same LLVM; the builder moved to the
-# compiler and this repository no longer reads an LLVM at all.
+# No TORCHSIM_LLVM_PATH: the TOG builder moved to the compiler.
 # psto defaults to a separate fp8 spike and asks for zvfp8; the released spike
 # has neither, and an unknown extension stops spike at startup. Drop once
 # PSAL-POSTECH/riscv-isa-sim#7 is in the release.

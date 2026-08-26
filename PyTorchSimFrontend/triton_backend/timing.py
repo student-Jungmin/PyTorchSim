@@ -34,13 +34,8 @@ LOCK_TIMEOUT = 1800
 def measure_tile_cycles(workdir, meta):
     """Per-compute-node cycle counts for ONE tile, measured under gem5.
 
-    The compiler makes the sample IR -- every loop a single trip, a marker
-    around each compute node -- and lowers it to a binary; gem5 runs that. None
-    on any failure; the caller uses the placeholder table.
-
-    THE MARKERS USED TO BE INSERTED HERE, by run_tog, one repository over from
-    the file that consumed the result. They read IR the compiler printed, so
-    they moved to it: see the compiler's cycle.py.
+    The compiler builds the sample binary; None on any failure, and the caller
+    then uses the placeholder table.
     """
     from . import compiler_bridge
 
@@ -114,14 +109,7 @@ def _write_extents(workdir, ext, what):
 
 
 def emit_trace(workdir, meta):
-    """Build `trace.so` + `trace_cycles.tsv` out of what the compiler emitted.
-
-    THE COMPILER MAKES THE TRACE PRODUCER NOW. It reads the post-vcix IR it
-    printed itself and hands back `trace_cpp` and `tile_types`; this side
-    measures a tile under gem5, compiles the C++, and folds the two together.
-    Neither the skeleton nor the EmitC lowering is here any more, and neither is
-    an `import mlir` -- which is the whole point: the contract between the two
-    repositories was MLIR TEXT, and text is not stable across LLVM revisions.
+    """Build trace.so + trace_cycles.tsv from the compiler's trace producer.
 
     Returns the number of compute tiles the cycle table covers.
     """

@@ -42,10 +42,7 @@ cd gem5 && scons build/RISCV/gem5.opt -j "$(nproc)"
 export GEM5_PATH="$home/gem5/build/RISCV/gem5.opt"
 cd "$home"
 
-# NO LLVM STEP. It built a RISC-V LLVM into /riscv-llvm with MLIR python
-# bindings, for PyTorchSimFrontend/tog to parse the compiler's IR with. tog now
-# lives in the compiler, which brings its own LLVM 23, and nothing in this
-# repository imports mlir.
+# No LLVM step: tog moved to the compiler, which brings its own.
 cd "$home"
 
 # Spike Simulator

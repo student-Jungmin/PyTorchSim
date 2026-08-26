@@ -193,10 +193,7 @@ RUN curl -L -H "Accept: application/octet-stream" https://api.github.com/repos/P
     rm /tmp/gem5-release.tar.gz
 ENV GEM5_PATH=/gem5/release/gem5.opt
 
-# NO LLVM HERE. This image used to carry a 2.4 GB RISC-V LLVM and put its MLIR
-# python bindings on PYTHONPATH, because PyTorchSimFrontend/tog parsed the MLIR
-# the compiler printed. That package moved to the compiler, which is the side
-# that printed the IR, and `import mlir` now appears nowhere in this repository.
+# No LLVM: tog moved to the compiler and nothing here imports mlir.
 ENV TORCHSIM_DIR=/workspace/PyTorchSim
 
 # Download Spike simulator
