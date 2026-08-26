@@ -43,7 +43,7 @@ class TritonNPUScheduling(TritonScheduling):
 
         fused_name = get_fused_kernel_name(node_schedule, "original_aten")
         kernel_name = "_".join(
-            x for x in ("triton_npu", fused_name, str(TritonNPUScheduling.count)) if x
+            x for x in ("pytorchsim_triton_opt", fused_name, str(TritonNPUScheduling.count)) if x
         )
         TritonNPUScheduling.count += 1
         wrapper.src_to_kernel[src_code] = kernel_name

@@ -1,14 +1,17 @@
-name: Triton codegen route (triton-npu)
+name: Triton codegen route (pytorchsim-triton-opt)
 
 # Exercises the Triton codegen route: Inductor's own Triton backend produces the
-# kernel and triton-npu lowers it to a RISC-V ELF.
+# kernel and pytorchsim-triton-opt lowers it to a RISC-V ELF.
 # (PyTorchSimFrontend/triton_backend/README.md)
 #
 # Separate from the main CI on purpose. The route is WIP, and its toolchain layer
 # is ~1.8 GiB that no other job needs, so it neither gates PRs nor slows them
 # down. Promote the jobs into pytorchsim_test.yml once the route runs end to end.
 #
-# Needs secrets.TNPU_TOKEN: a PAT that can read PSAL-POSTECH/triton-npu and its
+# The secret keeps its old name on purpose: GitHub cannot rename a secret, and
+# an existing one's value is not readable, so re-creating it would mean issuing a
+# new PAT to buy nothing a person ever sees. Everything downstream is PSTO_.
+# Needs secrets.TNPU_TOKEN: a PAT that can read PSAL-POSTECH/pytorchsim-triton-opt and its
 # toolchain-llvm23 release. The repo is private and the default Actions token is
 # scoped to this repository. preflight checks it before the docker build.
 
@@ -18,22 +21,22 @@ on:
     paths:
       - 'PyTorchSimFrontend/triton_backend/**'
       - 'PyTorchSimFrontend/tog/**'
-      - 'thirdparty/triton-npu.json'
-      - 'Dockerfile.tnpu'
-      - 'scripts/ci/tnpu_base_pin.sh'
+      - 'thirdparty/pytorchsim-triton-opt.json'
+      - 'Dockerfile.psto'
+      - 'scripts/ci/psto_base_pin.sh'
       - 'scripts/ci/triton_route_passing.txt'
       - '.github/workflows/triton_npu.yml'
   workflow_dispatch:
 
 env:
   BASE_IMAGE_REPO: ghcr.io/psal-postech/torchsim_base
-  TNPU_IMAGE_REPO: ghcr.io/psal-postech/torchsim_tnpu_base
-  APP_IMAGE_REPO: ghcr.io/psal-postech/torchsim_tnpu
+  PSTO_IMAGE_REPO: ghcr.io/psal-postech/torchsim_psto_base
+  APP_IMAGE_REPO: ghcr.io/psal-postech/torchsim_psto
   SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   preflight:
-    name: Check tnpu access
+    name: Check psto access
     runs-on: [self-hosted, slurm, x86_64]
     outputs:
       ready: ${{ steps.check.outputs.ready }}
@@ -46,32 +49,32 @@ jobs:
       - name: Token and release present
         id: check
         env:
-          TNPU_TOKEN: ${{ secrets.TNPU_TOKEN }}
+          PSTO_TOKEN: ${{ secrets.TNPU_TOKEN }}
         run: |
-          if [ -z "${TNPU_TOKEN}" ]; then
-            echo "::error::secrets.TNPU_TOKEN is not set. PSAL-POSTECH/triton-npu is private and the default Actions token cannot read it."
+          if [ -z "${PSTO_TOKEN}" ]; then
+            echo "::error::secrets.TNPU_TOKEN is not set. PSAL-POSTECH/pytorchsim-triton-opt is private and the default Actions token cannot read it."
             echo "ready=false" >> "$GITHUB_OUTPUT"; exit 1
           fi
-          REPO=$(jq -r '.triton_npu.repository' thirdparty/triton-npu.json)
-          TAG=$(jq -r '.triton_npu.release_tag' thirdparty/triton-npu.json)
-          if ! curl -fsS -H "Authorization: Bearer ${TNPU_TOKEN}" \
+          REPO=$(jq -r '.pytorchsim_triton_opt.repository' thirdparty/pytorchsim-triton-opt.json)
+          TAG=$(jq -r '.pytorchsim_triton_opt.release_tag' thirdparty/pytorchsim-triton-opt.json)
+          if ! curl -fsS -H "Authorization: Bearer ${PSTO_TOKEN}" \
                "https://api.github.com/repos/${REPO}" -o /dev/null; then
-            echo "::error::TNPU_TOKEN cannot read ${REPO}."
+            echo "::error::PSTO_TOKEN cannot read ${REPO}."
             echo "ready=false" >> "$GITHUB_OUTPUT"; exit 1
           fi
-          if ! curl -fsS -H "Authorization: Bearer ${TNPU_TOKEN}" \
+          if ! curl -fsS -H "Authorization: Bearer ${PSTO_TOKEN}" \
                "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" -o /dev/null; then
-            echo "::error::${REPO} has no release tagged '${TAG}'. Mirror the toolchain assets there (see thirdparty/triton-npu.json)."
+            echo "::error::${REPO} has no release tagged '${TAG}'. Mirror the toolchain assets there (see thirdparty/pytorchsim-triton-opt.json)."
             echo "ready=false" >> "$GITHUB_OUTPUT"; exit 1
           fi
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
-  ensure-tnpu-base:
-    name: Build tnpu toolchain image
+  ensure-psto-base:
+    name: Build psto toolchain image
     needs: preflight
     runs-on: [self-hosted, slurm, big, x86_64]
     outputs:
-      tnpu_image: ${{ steps.pin.outputs.tnpu_image }}
+      psto_image: ${{ steps.pin.outputs.psto_image }}
     permissions:
       contents: read
       packages: write
@@ -92,39 +95,39 @@ jobs:
         id: pin
         run: |
           BASE_PIN="$(bash scripts/ci/thirdparty_base_pin.sh)"
-          TNPU_PIN="$(bash scripts/ci/tnpu_base_pin.sh)"
+          PSTO_PIN="$(bash scripts/ci/psto_base_pin.sh)"
           echo "BASE_IMAGE=${BASE_IMAGE_REPO}:thirdparty-${BASE_PIN}" >> "$GITHUB_ENV"
-          # The tnpu layer sits on a specific base, so its tag carries both pins.
-          echo "TNPU_IMAGE=${TNPU_IMAGE_REPO}:tnpu-${TNPU_PIN}-base-${BASE_PIN}" >> "$GITHUB_ENV"
-          echo "tnpu_image=${TNPU_IMAGE_REPO}:tnpu-${TNPU_PIN}-base-${BASE_PIN}" >> "$GITHUB_OUTPUT"
-          echo "TNPU_REF=$(jq -r '.triton_npu.ref' thirdparty/triton-npu.json)" >> "$GITHUB_ENV"
+          # The psto layer sits on a specific base, so its tag carries both pins.
+          echo "PSTO_IMAGE=${PSTO_IMAGE_REPO}:psto-${PSTO_PIN}-base-${BASE_PIN}" >> "$GITHUB_ENV"
+          echo "psto_image=${PSTO_IMAGE_REPO}:psto-${PSTO_PIN}-base-${BASE_PIN}" >> "$GITHUB_OUTPUT"
+          echo "PSTO_REF=$(jq -r '.pytorchsim_triton_opt.ref' thirdparty/pytorchsim-triton-opt.json)" >> "$GITHUB_ENV"
 
-      - name: Check tnpu image exists
+      - name: Check psto image exists
         id: exists
         run: |
-          if docker manifest inspect "${TNPU_IMAGE}" > /dev/null 2>&1; then
+          if docker manifest inspect "${PSTO_IMAGE}" > /dev/null 2>&1; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build and push tnpu toolchain image
+      - name: Build and push psto toolchain image
         if: steps.exists.outputs.ok != 'true'
         uses: docker/build-push-action@v4
         with:
           context: .
-          file: ./Dockerfile.tnpu
+          file: ./Dockerfile.psto
           push: true
           build-args: |
             BASE_IMAGE=${{ env.BASE_IMAGE }}
-            TNPU_REF=${{ env.TNPU_REF }}
+            PSTO_REF=${{ env.PSTO_REF }}
           secrets: |
-            tnpu_token=${{ secrets.TNPU_TOKEN }}
-          tags: ${{ env.TNPU_IMAGE }}
+            psto_token=${{ secrets.TNPU_TOKEN }}
+          tags: ${{ env.PSTO_IMAGE }}
 
   build-app:
-    name: Build app image on tnpu base
-    needs: ensure-tnpu-base
+    name: Build app image on psto base
+    needs: ensure-psto-base
     runs-on: [self-hosted, slurm, big, x86_64]
     outputs:
       app_image: ${{ steps.name.outputs.app_image }}
@@ -155,11 +158,11 @@ jobs:
           file: ./Dockerfile
           push: true
           build-args: |
-            BASE_IMAGE=${{ needs.ensure-tnpu-base.outputs.tnpu_image }}
+            BASE_IMAGE=${{ needs.ensure-psto-base.outputs.psto_image }}
           tags: ${{ steps.name.outputs.app_image }}
 
-  tnpu-baselines:
-    name: triton-npu baselines
+  psto-baselines:
+    name: pytorchsim-triton-opt baselines
     needs: build-app
     runs-on: [self-hosted, slurm, x86_64]
     steps:
@@ -171,12 +174,12 @@ jobs:
 
       # The harness's own kernels, end to end through Spike. This is the gate on
       # the toolchain itself: if these regress, nothing downstream is meaningful.
-      # gemm/bmm need TNPU_VCIX_MATMUL=1 to reach the systolic array.
+      # gemm/bmm need PSTO_VCIX_MATMUL=1 to reach the systolic array.
       - name: doctor + add / mul / relu / gemm / bmm
         run: |
-          docker run --rm -e TNPU_VCIX_MATMUL=1 \
+          docker run --rm -e PSTO_VCIX_MATMUL=1 \
             ${{ needs.build-app.outputs.app_image }} bash -lc '
-              cd /workspace/triton-npu &&
+              cd /workspace/pytorchsim-triton-opt &&
               python3 run.py doctor &&
               for k in add mul relu gemm bmm; do
                 echo "=== $k ===" && python3 run.py kernels/$k.py || exit 1
