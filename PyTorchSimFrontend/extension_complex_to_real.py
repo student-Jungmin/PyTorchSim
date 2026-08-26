@@ -46,6 +46,8 @@ complex path at all.
 import torch
 from torch._inductor.custom_graph_pass import CustomGraphPass
 
+from . import extension_fx
+
 aten = torch.ops.aten
 
 #: Ops this pass knows how to say in real arithmetic. Everything else makes the
@@ -193,21 +195,22 @@ def install():
     """
     from torch._inductor import config
 
+    gated = extension_fx.NpuOnlyPass(_PASS)
     existing = config.post_grad_custom_post_pass
-    if existing is _PASS or isinstance(existing, ComplexToRealPairs):
+    if isinstance(existing, extension_fx.NpuOnlyPass) or isinstance(existing, ComplexToRealPairs):
         return
     if existing is None:
-        config.post_grad_custom_post_pass = _PASS
+        config.post_grad_custom_post_pass = gated
         return
 
     class _Chain(CustomGraphPass):
         def uuid(self):
             return (getattr(existing, "uuid", lambda: repr(existing))(),
-                    _PASS.uuid())
+                    gated.uuid())
 
         def __call__(self, graph):
             existing(graph)
-            _PASS(graph)
+            gated(graph)
 
     config.post_grad_custom_post_pass = _Chain()
 

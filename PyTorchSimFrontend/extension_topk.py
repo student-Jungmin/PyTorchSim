@@ -8,6 +8,8 @@ tnpu venv has no copy of, and scatter is itself an extern here.
 import torch
 from torch import fx
 
+from . import extension_fx
+
 aten = torch.ops.aten
 prims = torch.ops.prims
 
@@ -88,9 +90,11 @@ def install():
     import torch._inductor.config as icfg
     prev = icfg.post_grad_custom_post_pass
 
+    gated = extension_fx.npu_only(rewrite_topk)
+
     def _chained(g):
         if prev is not None:
             prev(g)
-        rewrite_topk(g)
+        gated(g)
 
     icfg.post_grad_custom_post_pass = _chained
