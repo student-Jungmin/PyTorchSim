@@ -55,7 +55,7 @@ def measure_tile_cycles(workdir, meta):
                 os.path.join(workdir, SAMPLE_MLIR), sample_mode=True)
 
     with breakdown.span(breakdown.GEM5_BUILD, kernel_name):
-        rc, output = tnpu_bridge.run_module("tnpu.cycle", spec, workdir)
+        rc, output = tnpu_bridge.run_module(f"{tnpu_bridge.module_prefix()}.cycle", spec, workdir)
     breakdown.ingest_tnpu(workdir, kernel_name, kind="cycle",
                           name="timing-cycle.json")
     if rc != 0:

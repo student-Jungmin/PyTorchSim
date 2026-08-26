@@ -42,7 +42,7 @@ def _tnpu_git(tnpu_dir):
 
 def _tool_paths(tnpu_dir):
     """The tool paths tnpu itself would resolve, asked in its own interpreter."""
-    code = ("import json; from tnpu import config as c; "
+    code = (f"import json; from {tnpu_bridge.module_prefix()} import config as c; "
             "print(json.dumps({n: p for n, p, _ in c.CHECKS}))")
     proc = subprocess.run(
         [extension_config.CONFIG_TNPU_PYTHON, "-c", code],

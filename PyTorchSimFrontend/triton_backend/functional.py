@@ -212,7 +212,7 @@ def run(workdir, meta, args):
                         meta["kernel_name"], key)
             return read_outputs(workdir, meta, args)
 
-    rc, output = tnpu_bridge.run_module("tnpu.spike", spec, workdir,
+    rc, output = tnpu_bridge.run_module(f"{tnpu_bridge.module_prefix()}.spike", spec, workdir,
                                         "--runtime", runtime)
     breakdown.ingest_tnpu(runtime, meta["kernel_name"], kind="spike",
                           name="timing-spike.json")

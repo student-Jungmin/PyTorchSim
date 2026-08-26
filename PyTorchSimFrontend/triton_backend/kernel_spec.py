@@ -2,7 +2,7 @@
 
 `collect_meta` pulls what tnpu needs out of the Inductor kernel while `V.graph`
 is still live; `write_spec_file` turns the Triton source plus that metadata into
-a file `tnpu.spec.load_spec` can read. Launch shape is launch.py's, source
+a file the compiler's `spec.load_spec` can read. Launch shape is launch.py's, source
 rewriting is source_rewrite.py's.
 """
 
@@ -13,6 +13,7 @@ from torch._inductor.virtualized import V
 
 from PyTorchSimFrontend import extension_config
 
+from . import tnpu_bridge  # noqa: F401
 from . import layout, launch, source_rewrite
 from .errors import SpecIncomplete
 
@@ -255,7 +256,7 @@ import os
 import sys
 
 sys.path.insert(0, {tnpu_dir!r})
-from tnpu.spec import KernelSpec, Arg  # noqa: E402
+from {spec_module} import KernelSpec, Arg  # noqa: E402
 
 #: The rewritten Triton source, beside this file. It must be a REAL file on
 #: disk, not an exec'd string: triton's @jit reads the function back with
@@ -347,6 +348,7 @@ def write_spec_file(src_code, meta, path, tnpu_dir):
     text = SPEC_TEMPLATE.format(
         kernel_name=meta["kernel_name"],
         tnpu_dir=tnpu_dir,
+        spec_module=f"{tnpu_bridge.module_prefix()}.spec",
         triton_module=triton_module,
         signature=signature,
         constexprs=constexprs,
