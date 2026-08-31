@@ -46,7 +46,7 @@ def get_write_path(src_code):
 def __getattr__(name):
     # TOGSim config
     config_path = os.environ.get('TOGSIM_CONFIG',
-                default=f"{CONFIG_TORCHSIM_DIR}/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml")
+                default=f"{CONFIG_TORCHSIM_DIR}/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml")
     if name == "CONFIG_TOGSIM_CONFIG":
         return config_path
 
@@ -82,22 +82,13 @@ def __getattr__(name):
     if name == "pytorchsim_functional_mode":
         return config_yaml['pytorchsim_functional_mode']
     if name == "pytorchsim_timing_mode":
-        # FORCED OFF ON THIS BRANCH, ON PURPOSE AND TEMPORARILY. Correctness is
-        # what is being worked on here and the timing half costs a gem5 sample
-        # and a TOGSim run per kernel, so every sweep pays for a number nobody
-        # is reading. The YAML still says what the machine is; this says what
-        # this branch is doing.
-        #
-        # IT IS A FORCE RATHER THAN A DEFAULT because the default is per-config
-        # and there are nineteen of them: eighteen say 1, and a run that does
-        # not set TORCHSIM_DIR reads a DIFFERENT CHECKOUT's copy -- which is how
-        # the sweeps on this branch ran with timing on while this repo's default
-        # config said 0. Set TORCHSIM_TIMING_MODE=1 to get it back, and delete
-        # this arm when correctness work moves on.
+        # The config says whether this machine is being timed; TORCHSIM_TIMING_MODE
+        # overrides it for one run. Five configs never declared the key and 18 of
+        # the 23 that do say 1, so an absent key reads as 1.
         env = os.environ.get("TORCHSIM_TIMING_MODE")
         if env is not None:
             return int(env)
-        return 0
+        return config_yaml.get('pytorchsim_timing_mode', 1)
     # Sub-option of functional mode: compare every realized Spike buffer against a CPU
     # golden to localize the first kernel whose value diverges. Auto-disabled when
     # functional mode is off (there are no Spike values to verify).
