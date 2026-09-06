@@ -18,7 +18,7 @@ def triton_src_dir():
     """Where the compiler's triton checkout lives (its editable install points here).
 
     Read out of the compiler's setup/versions.env, where TRITON_ROOT is the checkout
-    and HEXAGON_MLIR_ROOT was its parent (an older the compiler has only that key).
+    and HEXAGON_MLIR_ROOT was its parent (an older compiler has only that key).
     """
     from PyTorchSimFrontend import extension_config
     override = os.environ.get("PSTO_TRITON_SRC")
@@ -67,7 +67,7 @@ def _stable_backend_hash():
         version = triton.__version__
     except Exception:
         version = "unknown"
-    key = f"pytorchsim-the compiler-{version}"
+    key = f"pytorchsim-psto-{version}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest().upper()
 
 

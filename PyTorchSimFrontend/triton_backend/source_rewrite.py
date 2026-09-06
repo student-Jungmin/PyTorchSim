@@ -1,4 +1,4 @@
-"""Inductor's Triton source -> source the the compiler venv can compile.
+"""Inductor's Triton source -> source the compiler venv can compile.
 
 Two rewrites: drop what a torch-free venv cannot import, and replace the mm/bmm
 templates' modulo wrap with a load mask so the operand stays a descriptor.
@@ -46,7 +46,7 @@ def strip_for_tnpu(src):
     if unvendored:
         raise SpecIncomplete(
             f"kernel uses triton_helpers.{{{','.join(unvendored)}}}, which lives "
-            f"in torch and the the compiler venv has no torch. Add it to "
+            f"in torch and the compiler venv has no torch. Add it to "
             f"triton_helpers_src if it is pure triton, or lower it another way.")
 
     prefix = ""

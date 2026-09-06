@@ -16,7 +16,7 @@ logger = extension_config.setup_logger()
 
 
 class CompilerError(RuntimeError):
-    """A the compiler stage failed. Inductor reports only str(exc), so the stage's own
+    """A compiler stage failed. Inductor reports only str(exc), so the stage's own
     diagnostic has to travel in the message."""
     _SIGNAL = re.compile(
         r"^(?!\s|Traceback|During handling|The above)"
@@ -84,7 +84,7 @@ def target_path():
 
 
 def tnpu_env():
-    """The environment for a the compiler subprocess: this machine, no PYTHONPATH, and
+    """The environment for a compiler subprocess: this machine, no PYTHONPATH, and
     no device backend autoload.
 
     PSTO_TARGET NAMES THE WHOLE MACHINE, and used to name three of its seven
@@ -145,7 +145,7 @@ def run_pipeline(spec_path, workdir, to_stage="binary", timeout=1800):
 
 
 #: The compiler's manifest. Its schema is declared in the compiler
-#: (the compiler/kernel_object.py); this is a reader, and the format field is what stops
+#: (pytorchsim_triton_opt/contract/kernel_object.py); this is a reader, and the format field is what stops
 #: the two from drifting silently.
 KERNEL_MANIFEST = "kernel.json"
 KERNEL_FORMAT = 1

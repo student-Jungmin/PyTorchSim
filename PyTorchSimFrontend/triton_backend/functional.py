@@ -131,7 +131,7 @@ def read_outputs(workdir, meta, args):
 def _replay_root(workdir):
     """Beside the workdirs, not inside one.
 
-    A the compiler-side fix is picked up by DELETING `outputs/triton_*`, and a cache
+    A compiler-side fix is picked up by DELETING `outputs/triton_*`, and a cache
     kept inside a workdir would go with it every time it was most wanted.
     """
     return os.path.join(os.path.dirname(os.path.abspath(workdir)), REPLAY_DIR)

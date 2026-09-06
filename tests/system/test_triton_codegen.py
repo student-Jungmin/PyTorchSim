@@ -129,6 +129,36 @@ def check_reduction_is_right():
     return True
 
 
+def check_spad_marker():
+    """The compiler's scratchpad refusal carries a marker THIS PROCESS parses.
+
+    It runs as a subprocess, so the string cannot be imported and both sides
+    spell it out. They drifted once -- a rename put "the compiler-" in front of
+    the regex and the retry became unreachable with no diagnostic, because a
+    marker that never matches looks exactly like a kernel that did not overflow.
+    """
+    import re
+
+    from PyTorchSimFrontend.triton_backend import codecache, compiler_bridge
+
+    src = os.path.join(compiler_bridge.tnpu_dir(), "pytorchsim_triton_opt",
+                       "elf", "emit_spad_header.py")
+    if not os.path.isfile(src):
+        print(f"  spad marker: no compiler checkout at {src}")
+        return True
+    with open(src) as fh:
+        m = re.search(r'SPAD_OVERFLOW_MARKER\s*=\s*"([^"]+)"', fh.read())
+    if not m:
+        print("  spad marker: the compiler no longer declares one")
+        return False
+    sentence = f"{m.group(1)}: usage=393232 budget=262144"
+    if not codecache._SPAD_OVERFLOW_RE.search(sentence):
+        print(f"  spad marker: the compiler says {m.group(1)!r}, this side "
+              f"reads {codecache._SPAD_OVERFLOW_RE.pattern!r}")
+        return False
+    return True
+
+
 def main():
     from PyTorchSimFrontend import extension_config
     from PyTorchSimFrontend.triton_backend import compiler_bridge
@@ -137,6 +167,8 @@ def main():
           f"{'ok' if check_multi_axis_grid() else 'FAILED'}")
     print(f"reduction is right       = "
           f"{'ok' if check_reduction_is_right() else 'FAILED'}")
+    print(f"spad-overflow marker     = "
+          f"{'ok' if check_spad_marker() else 'FAILED'}")
     print(f"PSTO_DIR                = {extension_config.CONFIG_PSTO_DIR}")
     ok, _out = compiler_bridge.doctor()
     print(f"tnpu doctor             = {'ok' if ok else 'FAILED (see run.py doctor)'}")

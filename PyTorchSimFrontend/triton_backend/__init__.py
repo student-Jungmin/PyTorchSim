@@ -1,4 +1,4 @@
-"""The `npu` codegen route: Inductor's Triton backend + the the compiler passes.
+"""The `npu` codegen route: Inductor's Triton backend + the compiler's passes.
 
     Inductor -> TritonNPUScheduling.define_kernel   (scheduling.py)
              -> triton_npu_compile                  (codecache.py, kernel_spec.py)

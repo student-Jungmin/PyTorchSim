@@ -94,7 +94,7 @@ def current():
         if paths is None:
             logger.warning(
                 "[provenance] the compiler's toolchain could not be introspected; "
-                "cached kernels are guarded by the the compiler commit only")
+                "cached kernels are guarded by the compiler commit only")
         _current = {
             "the compiler": _tnpu_git(tnpu_dir),
             "tools": _stat_tools(paths) if paths else None,
