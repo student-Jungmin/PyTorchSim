@@ -26,6 +26,20 @@ class TransposePopUnit(MinorFU):
     opClasses = minorMakeOpClassSet(["CustomTransposePop"])
     opLat = 1
 
+class CrossbarUnit(MinorFU):
+    # The cross-lane crossbar: fold the lane axis, or replicate one lane to all.
+    # opLat IS THE SERIALISER, as it is for the transpose, and it is the whole cost
+    # here: the reduction tree is log2(256) = 8 stages deep but pipelined behind a
+    # push that carries vlen/32 = 16 values per lane, so 16 depth slices cost 16.
+    # The replicate shares the class because it shares that serialiser, which is
+    # what dominates -- a fan-out is not cheaper than the wire it goes down.
+    opClasses = minorMakeOpClassSet(["CustomCrossbarPush"])
+    opLat = 16
+
+class CrossbarPopUnit(MinorFU):
+    opClasses = minorMakeOpClassSet(["CustomCrossbarPop"])
+    opLat = 1
+
 class SpecialFunctionUnit(MinorFU):
     opClasses = minorMakeOpClassSet([
         "CustomVexp",
@@ -236,6 +250,8 @@ class MinorCustomFUPool(MinorFUPool):
         # Cross-lane
         TransposeUnit(),
         TransposePopUnit(),
+        CrossbarUnit(),
+        CrossbarPopUnit(),
     ]
 
 class RiscvVPU(RiscvMinorCPU):
