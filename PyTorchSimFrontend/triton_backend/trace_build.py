@@ -8,11 +8,18 @@ import os
 VECTOR_COMPUTE = 0
 MATMUL_COMPUTE = 1
 MATMUL_PRELOAD = 2
+CROSS_LANE_COMPUTE = 3
 
 
 def overlapping_cycle(cycle, compute_type, x_offset, w_offset):
     """The pipeline-overlapped portion of cycle, by compute type."""
     if compute_type <= VECTOR_COMPUTE:
+        return 0
+    # NOTHING OF THE CROSS-LANE UNIT OVERLAPS A MATMUL'S OPERAND FEED. `x_offset`
+    # and `w_offset` are the systolic array's -- falling through to them would
+    # charge a transpose an overlap it never had, and the number would be wrong
+    # rather than absent.
+    if compute_type == CROSS_LANE_COMPUTE:
         return 0
     offset = w_offset if compute_type == MATMUL_PRELOAD else x_offset
     return max(int(cycle) - int(offset), 0)

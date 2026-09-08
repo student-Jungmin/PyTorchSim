@@ -13,6 +13,19 @@ class SparseAccelerator(MinorFU):
     opClasses = minorMakeOpClassSet(["CustomMatMul", "CustomMatMuliVpush", "CustomMatMulwVpush", "CustomMatMulvpop"])
     opLat = 1
 
+class TransposeUnit(MinorFU):
+    # The cross-lane transpose unit. opLat IS THE SERIALISER: the unit takes
+    # (m+n)-1 passes over a m x n tile and one push carries vlen/32 = 16 values
+    # per lane, so a square tile of depth D costs ~2D passes over D/16 pushes --
+    # 32 per push, and the ratio holds at every square size. The pop only drains,
+    # so it costs one.
+    opClasses = minorMakeOpClassSet(["CustomTransposePush"])
+    opLat = 32
+
+class TransposePopUnit(MinorFU):
+    opClasses = minorMakeOpClassSet(["CustomTransposePop"])
+    opLat = 1
+
 class SpecialFunctionUnit(MinorFU):
     opClasses = minorMakeOpClassSet([
         "CustomVexp",
@@ -219,6 +232,10 @@ class MinorCustomFUPool(MinorFUPool):
 
         # SFU
         SpecialFunctionUnit(),
+
+        # Cross-lane
+        TransposeUnit(),
+        TransposePopUnit(),
     ]
 
 class RiscvVPU(RiscvMinorCPU):

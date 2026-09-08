@@ -57,6 +57,10 @@ class Core {
     VECTOR_UNIT,
     MATMUL,
     PRELOAD,
+    // The cross-lane unit. ITS OWN PIPELINE, not the VPU's: on the machine this
+    // models it runs beside the vector unit rather than in it, so a transpose
+    // and an elementwise op overlap.
+    CROSS_LANE,
     NR_COMPUTE_UNIT
   };
 
@@ -65,6 +69,7 @@ class Core {
   void compute_cycle();
   void vu_cycle();
   void sa_cycle();
+  void xlu_cycle();
   bool can_issue_compute(std::shared_ptr<Instruction>& inst);
   void update_stats();
   // SRAM-capacity throttle (sec 10.4): a consumer frees the buffer-versions it
@@ -109,6 +114,8 @@ class Core {
   cycle_type _stat_dma_cycle = 0;
   cycle_type _stat_dma_idle_cycle = 0;
   cycle_type _stat_vu_compute_idle_cycle = 0;
+  cycle_type _stat_xlu_compute_cycle = 0;
+  cycle_type _stat_xlu_compute_idle_cycle = 0;
   std::vector<cycle_type> _stat_sa_compute_idle_cycle;
   uint64_t _stat_mem_response = 0;
 
@@ -121,6 +128,7 @@ class Core {
   bool _issue_dirty = true;
 
   std::queue<std::shared_ptr<Instruction>> _vu_compute_pipeline;
+  std::queue<std::shared_ptr<Instruction>> _xlu_compute_pipeline;
   std::vector<std::queue<std::shared_ptr<Instruction>>> _sa_compute_pipeline;
   std::queue<std::shared_ptr<Instruction>> _ld_inst_queue;
   std::queue<std::shared_ptr<Instruction>> _st_inst_queue;
