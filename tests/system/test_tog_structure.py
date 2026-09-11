@@ -33,7 +33,7 @@ module {
     scf.for %k = %c0_i32 to %c2_i32 step %c1_i32  : i32 {
       %ki = arith.index_cast %k : i32 to index
       %off = arith.muli %ki, %c128 : index
-      "togsim.transfer"(%dram, %off, %spad, %c0, %tag, %c0, %c1) {dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [128, 1]} : (memref<16384xf32>, index, memref<128x128xf32, 1>, index, memref<1xi32, 1>, index, index) -> ()
+      "torchsim.transfer"(%dram, %off, %spad, %c0, %tag, %c0, %c1) {dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [128, 1]} : (memref<16384xf32>, index, memref<128x128xf32, 1>, index, memref<1xi32, 1>, index, index) -> ()
       %w = arith.bitcast %cst : vector<8xf32> to vector<8xi32>
       %op_pre = llvm.mlir.constant(1 : i64) : i64
       %rd = llvm.mlir.constant(0 : i64) : i64
@@ -80,7 +80,7 @@ def check_loop_body_is_read():
     problems = []
     ctx, module = _parse(FIXTURE)
     with ctx:
-        want_dma = len(_togsim_ops(module, "togsim.transfer"))
+        want_dma = len(_togsim_ops(module, "torchsim.transfer"))
         try:
             bs.build_skeleton(module)
         except Exception as e:  # noqa: BLE001
@@ -89,7 +89,7 @@ def check_loop_body_is_read():
 
         got_dma = len(_togsim_ops(module, ts.DMA))
         if got_dma != want_dma:
-            problems.append(f"{want_dma} togsim.transfer became {got_dma} togsim.dma")
+            problems.append(f"{want_dma} torchsim.transfer became {got_dma} torchsim.dma")
 
         types = sorted(
             ir.IntegerAttr(op.operation.attributes[ts.ATTR_COMPUTE_TYPE]).value

@@ -45,7 +45,7 @@ def check_multi_axis_grid():
         %a = arith.muli %arg1, %c8 : i32
         %b = arith.addi %a, %arg2 : i32
         %o = arith.index_cast %b : i32 to index
-        "togsim.dma"(%o, %c0) {arg_id = 0 : i32, base = "arg0", dims = [128],
+        "torchsim.dma"(%o, %c0) {arg_id = 0 : i32, base = "arg0", dims = [128],
             dir = 0 : i32, elem_bits = 32 : i32, is_async = false, read_bufs = [],
             strides = [1], tag_id = 0 : i32, write_bufs = [0]} : (index, index) -> ()
         return
