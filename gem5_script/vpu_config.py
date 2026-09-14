@@ -13,12 +13,23 @@ class SparseAccelerator(MinorFU):
     opClasses = minorMakeOpClassSet(["CustomMatMul", "CustomMatMuliVpush", "CustomMatMulwVpush", "CustomMatMulvpop"])
     opLat = 1
 
+# THERE IS ONE CROSS-LANE UNIT AND FOUR FUs, because a MinorFU is a cost and not
+# a machine. The unit holds one tile in one queue pair; what differs between its
+# operations is the SIMM5 XU field -- whether a pass swaps depth and lane -- and
+# that is a factor of two in the serialiser. The decoder routes each arm to the
+# class whose number matches, so these names read as costs: "Transpose" is any
+# pass that crosses (transpose, all-gather), "Crossbar" any that only shuffles
+# lanes (broadcast, permute). Splitting costs no fidelity here because issueLat
+# is 1 on all four, so neither spelling models the unit's occupancy.
 class TransposeUnit(MinorFU):
-    # The cross-lane transpose unit. opLat IS THE SERIALISER: the unit takes
+    # A pass that swaps depth and lane. opLat IS THE SERIALISER: the unit takes
     # (m+n)-1 passes over a m x n tile and one push carries vlen/32 = 16 values
     # per lane, so a square tile of depth D costs ~2D passes over D/16 pushes --
     # 32 per push, and the ratio holds at every square size. The pop only drains,
     # so it costs one.
+    # ALL-GATHER IS HERE AND ITS NUMBER IS NOT SETTLED: it crosses and then runs
+    # the post-RPU, so 32 is the crossing alone and whether the second stage adds
+    # to it or streams behind it is unmeasured.
     opClasses = minorMakeOpClassSet(["CustomTransposePush"])
     opLat = 32
 
@@ -27,9 +38,9 @@ class TransposePopUnit(MinorFU):
     opLat = 1
 
 class CrossbarUnit(MinorFU):
-    # The cross-lane crossbar: fold the lane axis, or replicate one lane to all.
-    # opLat IS THE SERIALISER, as it is for the transpose, and it is the whole cost
-    # here: the reduction tree is log2(256) = 8 stages deep but pipelined behind a
+    # A pass that shuffles lanes without crossing: replicate one lane to all, or
+    # read the lane each lane names. opLat IS THE SERIALISER, as above, and it is
+    # the whole cost here: a crossbar is one stage deep but pipelined behind a
     # push that carries vlen/32 = 16 values per lane, so 16 depth slices cost 16.
     # The replicate shares the class because it shares that serialiser, which is
     # what dominates -- a fan-out is not cheaper than the wire it goes down.
