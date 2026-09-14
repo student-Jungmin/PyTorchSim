@@ -64,7 +64,7 @@ WHAT IS ABSENT, and what was measured about each rather than assumed:
 it a preset can pass while proving nothing -- "qwen3 runs" is worth nothing if
 q_norm silently did not exist.
 
-    source /workspace/tnpu-env.sh
+    source /workspace/psto-env.sh
     python tests/models/Qwen/test_qwen.py --preset 3-8b
 
 ALL EIGHT PRESETS PASS, measured 2026-08-13 against the same model on CPU, one

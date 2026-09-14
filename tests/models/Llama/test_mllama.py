@@ -30,7 +30,7 @@ scripts/op_coverage.py's build_mllama does NOT cover any of this -- it passes
 cross_attention_layers=[] and builds the text branch alone, which is a Llama
 with a different class name. Its "26 ops, OK" says nothing about this file.
 
-    source /workspace/tnpu-env.sh
+    source /workspace/psto-env.sh
     python tests/models/Llama/test_mllama.py --part vision
     python tests/models/Llama/test_mllama.py --part text
 

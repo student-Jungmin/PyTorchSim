@@ -22,7 +22,7 @@ logs/            <workload>.log, fp32가 아니면 <workload>.<dtype>.log
 다른 기계로 재려면 `TOGSIM_CONFIG`를 잡고 돌린 뒤 `summary.py --machine v3`처럼 맞춰 준다.
 
 ```bash
-source /workspace/tnpu-env.sh
+source /workspace/psto-env.sh
 
 python timing_mode_validation/run.py --op gemm --list
 python timing_mode_validation/ops/gemm.py --dtype float32 --jobs 4      # 연산 하나만
@@ -51,7 +51,7 @@ fp32와 fp16 두 번 돌린다.
 명령을 실행하지 못한다 — 타이밍 전용 실행에는 상관없지만, `TOGSIM_CONFIG`가
 functional mode를 켜는 config(예: `..._tpuv6e.yml`)를 가리키고 있으면 fp16이 spike에서
 죽는다. `run.py`는 `_timing_only` config를 기본으로 잡지만 이미 설정된 `TOGSIM_CONFIG`를
-덮지 않으므로, `tnpu-env.sh`를 source한 셸에서는 직접 지정해야 한다:
+덮지 않으므로, `psto-env.sh`를 source한 셸에서는 직접 지정해야 한다:
 
 ```bash
 export TOGSIM_CONFIG=$TORCHSIM_DIR/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e_timing_only.yml

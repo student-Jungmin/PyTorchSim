@@ -70,7 +70,7 @@ input resolution and class count, which change the size of the tensors and not
 which kernels run.  64 is the smallest input the head accepts: stride 32 has to
 leave a feature map with a nonzero extent, and 64 gives 8x8 / 4x4 / 2x2.
 
-    source /workspace/tnpu-env.sh
+    source /workspace/psto-env.sh
     python tests/models/Yolo/test_yolo.py --version v8
 
 MEASURED 2026-08-13, one cleared dump path each, nine runs sharing the machine
