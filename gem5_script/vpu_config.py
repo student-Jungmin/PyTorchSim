@@ -27,9 +27,14 @@ class TransposeUnit(MinorFU):
     # per lane, so a square tile of depth D costs ~2D passes over D/16 pushes --
     # 32 per push, and the ratio holds at every square size. The pop only drains,
     # so it costs one.
-    # ALL-GATHER IS HERE AND ITS NUMBER IS NOT SETTLED: it crosses and then runs
-    # the post-RPU, so 32 is the crossing alone and whether the second stage adds
-    # to it or streams behind it is unmeasured.
+    # ALL-GATHER IS 32 TOO, AND THAT IS THE NUMBER RATHER THAN A PLACEHOLDER.
+    # opLat here counts the SERIALISER and nothing else -- the crossbar's own 16
+    # already discards a tree 8 stages deep on the grounds that it rides the same
+    # push -- and a combination is ONE pass over ONE serialiser. The post-RPU can
+    # start as soon as the crossing has produced row 0, so it streams behind the
+    # crossing instead of queueing after it. What the old two-pass spelling paid
+    # twice was the serialiser itself, plus a round trip through a vector register
+    # and dst_bank that no opLat here ever modelled.
     opClasses = minorMakeOpClassSet(["CustomTransposePush"])
     opLat = 32
 
