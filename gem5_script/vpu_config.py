@@ -1,5 +1,10 @@
+import os
 import m5
 from m5.objects import *
+
+#: One FU whose latency comes from the tile, instead of four latency buckets.
+#: Off by default -- see CrossLaneUnit below.
+_XLU_FU = os.environ.get("PSTO_XLU_FU", "0") == "1"
 
 class SystolicArray(MinorFU):
     unitType = "SystolicArray"
@@ -55,6 +60,25 @@ class CrossbarUnit(MinorFU):
 class CrossbarPopUnit(MinorFU):
     opClasses = minorMakeOpClassSet(["CustomCrossbarPop"])
     opLat = 1
+
+#: THE UNIT AS ONE FU, WITH THE PASS'S COST COMING FROM THE TILE. The four FUs
+#: below are four *latency buckets*, not four machines: a `MinorFU` carries one
+#: `opLat` and the four costs differ, so they had to be split. `CrossLaneFU`
+#: (gem5 `func_unit.hh`) holds the pass's state instead -- `depth` counts what the
+#: pushes handed over and the first pop fires the pass -- so one FU says
+#: `m + n - 1` for a crossing and `2m + n` for a lane-only shuffle, at any shape.
+#: SystolicArrayFU already does exactly this for the array; this is that pattern
+#: a second time.
+#:
+#: BEHIND A FLAG because the four-FU spelling is what every other run has been
+#: measured against. `PSTO_XLU_FU=1` selects this one.
+class CrossLaneUnit(MinorFU):
+    unitType = "CrossLane"
+    crossLaneWidth = int(os.environ.get("PSTO_XLU_LANES", "256"))
+    opClasses = minorMakeOpClassSet(["CustomTransposePush", "CustomTransposePop",
+                                     "CustomCrossbarPush",  "CustomCrossbarPop"])
+    opLat = 1          # issue only; the pass's cost is the FU's own
+    issueLat = 1
 
 class SpecialFunctionUnit(MinorFU):
     opClasses = minorMakeOpClassSet([
@@ -264,11 +288,8 @@ class MinorCustomFUPool(MinorFUPool):
         SpecialFunctionUnit(),
 
         # Cross-lane
-        TransposeUnit(),
-        TransposePopUnit(),
-        CrossbarUnit(),
-        CrossbarPopUnit(),
-    ]
+    ] + ([CrossLaneUnit()] if _XLU_FU else
+         [TransposeUnit(), TransposePopUnit(), CrossbarUnit(), CrossbarPopUnit()])
 
 class RiscvVPU(RiscvMinorCPU):
     fetch1FetchLimit = 8
