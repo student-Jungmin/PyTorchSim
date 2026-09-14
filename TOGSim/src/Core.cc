@@ -122,6 +122,8 @@ std::shared_ptr<Tile> Core::pop_finished_tile() {
 std::queue<std::shared_ptr<Instruction>>& Core::get_compute_pipeline(int compute_type) {
   if (compute_type == VECTOR_UNIT)
     return _vu_compute_pipeline;
+  else if (compute_type == CROSS_LANE)
+    return _xlu_compute_pipeline;
   else if (compute_type == MATMUL || compute_type == PRELOAD) {
     uint32_t sa_idx = _systolic_array_rr;
     _systolic_array_rr = (_systolic_array_rr + 1) % _num_systolic_array_per_core;
@@ -154,6 +156,27 @@ void Core::vu_cycle() {
   }
 }
 
+void Core::xlu_cycle() {
+  bool retry = true;
+  while (retry) {
+    if (!_xlu_compute_pipeline.empty()) {
+      _stat_xlu_compute_cycle++;
+      if(_xlu_compute_pipeline.front()->finish_cycle <= _core_cycle) {
+        cycle_type bubble = _xlu_compute_pipeline.front()->bubble_cycle;
+        _stat_xlu_compute_idle_cycle += bubble;
+        _stat_xlu_compute_cycle = (bubble < _stat_xlu_compute_cycle) ? (_stat_xlu_compute_cycle - bubble) : 0;
+        finish_instruction(_xlu_compute_pipeline.front());
+        _xlu_compute_pipeline.pop();
+      } else {
+        retry = false;
+      }
+    } else {
+      _stat_xlu_compute_idle_cycle++;
+      retry = false;
+    }
+  }
+}
+
 void Core::sa_cycle() {
   for (int i=0; i<_num_systolic_array_per_core; i++) {
     bool retry = true;
@@ -181,6 +204,7 @@ void Core::sa_cycle() {
 void Core::compute_cycle() {
   vu_cycle();
   sa_cycle();
+  xlu_cycle();
 }
 
 void Core::dma_cycle() {
