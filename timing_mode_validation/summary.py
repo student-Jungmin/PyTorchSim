@@ -21,18 +21,23 @@ from roofline import cost, regime  # noqa: E402
 LOG_DIR = os.path.join(HERE, "logs")
 
 
+#: A run that never compiled still prints a cycle line, so the line alone is not
+#: evidence.  These mark the log as a failure; scoring it would report a crash as
+#: a fast kernel (a compile abort reads as 1 cycle, i.e. -100% against any ref).
+FAILED_MARKS = ("InductorError", "TnpuError", "CompilationError", "Traceback (most recent call last)")
+
+
 def cycles_from_log(name, dtype):
-    """The simulated cycle count for one case at one width, or None."""
+    """The simulated cycle count for one case at one width, or None if it did not run."""
     suffix = "" if dtype == "float32" else f".{dtype}"
     path = os.path.join(LOG_DIR, f"{name}{suffix}.log")
     if not os.path.exists(path):
         return None
-    with open(path, errors="ignore") as f:
-        for line in f:
-            m = re.search(r"Total execution cycles:\s*([0-9]+)", line)
-            if m:
-                return int(m.group(1))
-    return None
+    text = open(path, errors="ignore").read()
+    if any(mark in text for mark in FAILED_MARKS):
+        return None
+    m = re.search(r"Total execution cycles:\s*([0-9]+)", text)
+    return int(m.group(1)) if m else None
 
 
 def load_reference(paths):
@@ -61,9 +66,11 @@ def main():
     ap.add_argument("--dtype", default="float32,float16")
     ap.add_argument("--machine", default="v6e", choices=["v3", "v6e"],
                     help="which machine's ridge labels the regime column")
+    #: ref_v6e.csv is the real v6e device time, written by gen_v6e_cases.py and keyed
+    #: at float16 because the measurements are bfloat16 -- same bytes, same timing.
+    #: The TPUv3 baselines it replaced were a different machine at an unrecorded width.
     ap.add_argument("--reference", nargs="*", default=[
-        os.path.join(HERE, "tpu_ref.csv"),
-        os.path.join(os.path.dirname(HERE), "experiments/artifact/baseline_cycle.csv")])
+        os.path.join(HERE, "ref_v6e.csv")])
     ap.add_argument("--out", default=os.path.join(HERE, "timing_summary.csv"))
     args = ap.parse_args()
 
