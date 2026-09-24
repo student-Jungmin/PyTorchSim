@@ -7,7 +7,6 @@ sys.path.insert(0, base_path)
 sys.path.insert(0, os.path.join(base_path, 'tests'))
 
 import torch
-from Simulator.simulator import TOGSimulator
 
 config = os.environ.get('TOGSIM_CONFIG', f'{base_path}/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e_timing_only.yml')
 os.environ['TOGSIM_CONFIG'] = config
@@ -37,7 +36,7 @@ if __name__ == "__main__":
     model_input = torch.randn(args.input_size, hidden_dim).to(device=device)
     opt_fn = torch.compile(dynamic=False)(model)
 
-    with TOGSimulator(config_path=config), torch.no_grad():
+    with torch.npu.simulator(config_path=config), torch.no_grad():
         torch.npu.launch_model(opt_fn, model_input, stream_index=0, timestamp=0)
         torch.npu.synchronize()
     print(f"BERT-{args.size} Simulation Done")

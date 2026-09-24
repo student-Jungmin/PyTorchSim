@@ -211,6 +211,45 @@ def set_tog_simulator(simulator):
     global _tog_simulator
     _tog_simulator = simulator
 
+class simulator:
+    """Open a TOGSim backend and make it this device's simulator for the block.
+
+    Compilation must read the same hardware YAML as the run, so the config path
+    is exported while the block is open and restored on exit.
+    """
+
+    _CONFIG_ENV_UNSET = object()
+
+    def __init__(self, config_path=None, togsim_path=None):
+        self.config_path = config_path
+        self.togsim_path = togsim_path
+        self._backend = None
+
+    def __enter__(self):
+        from Simulator.simulator import TOGSimulator
+
+        self._backend = TOGSimulator(config_path=self.config_path,
+                                     togsim_path=self.togsim_path)
+        self._old_config_env = os.environ.get("TOGSIM_CONFIG", self._CONFIG_ENV_UNSET)
+        os.environ["TOGSIM_CONFIG"] = os.path.abspath(self._backend.config_path)
+        self._old_simulator = get_tog_simulator()
+        set_tog_simulator(self._backend)
+        return self._backend
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Drain this device's stream first, then shut the backend down."""
+        try:
+            synchronize()
+            self._backend.shutdown()
+        finally:
+            set_tog_simulator(self._old_simulator)
+            if self._old_config_env is self._CONFIG_ENV_UNSET:
+                os.environ.pop("TOGSIM_CONFIG", None)
+            else:
+                os.environ["TOGSIM_CONFIG"] = self._old_config_env
+        return False
+
+
 def set_launch_context(stream_index=0, timestamp=0):
     _launch_context.stream_index = stream_index
     _launch_context.timestamp = timestamp
@@ -418,6 +457,7 @@ __all__ = [
     "synchronize",
     "get_tog_simulator",
     "set_tog_simulator",
+    "simulator",
     "eager_to_compile",
     "register_eager_to_compile",
     "DEFAULT_EAGER_TO_COMPILE",

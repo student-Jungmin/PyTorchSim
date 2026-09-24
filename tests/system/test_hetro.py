@@ -5,7 +5,6 @@ import argparse
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 
-from Simulator.simulator import TOGSimulator
 from system.test_stonne import sparse_matmul
 
 
@@ -52,7 +51,7 @@ if __name__ == "__main__":
     sparse_input2 = sparse_input2 * mask2
 
     with torch.no_grad():
-        with TOGSimulator(config_path=config_path):
+        with torch.npu.simulator(config_path=config_path):
             if mode == 0:
                 torch.npu.launch_model(opt_model2, sparse_input1, sparse_input2, stream_index=0, timestamp=0)
             elif mode == 1:

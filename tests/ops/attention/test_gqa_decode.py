@@ -5,7 +5,6 @@ import os
 import sys
 import math
 import argparse
-from Simulator.simulator import TOGSimulator
 device = torch.device("npu:0")
 # ─────────────────────────────────────────────────────────────────────────────
 # Optimized: Flash-Decode style — tile S upfront, batch in B dimension
@@ -179,7 +178,7 @@ def test_gqa_decode_optimized(model, device, seq_len: int = 10240, tile_size: in
 
     q_dev, k_dev, v_dev = q.to(device), k.to(device), v.to(device)
     with torch.no_grad():
-        with TOGSimulator():
+        with torch.npu.simulator():
             out_dev = compiled(q_dev, k_dev, v_dev, scale=scale)
 
     # ── CPU reference ──────────────────────────────────────────────────────
