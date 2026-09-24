@@ -92,8 +92,25 @@ def _gemm_tiles(m, n, k, dtype_size):
         if not all(_power_of_two(b) and b >= _MIN_BLOCK
                    for b in (tile_m, tile_n, tile_k)):
             continue
-        out.append(GemmConfig(tile_m, tile_n, tile_k, 1, 4))
-    return out
+        out.append((tile_m, tile_n, tile_k))
+
+    #: FILL THE CORES FIRST, THEN TAKE THE BIGGEST TILE. The enumeration above
+    #: ranks by scratchpad and knows nothing about how many cores will share the
+    #: work; a tile whose output grid does not reach the cores, or does not
+    #: divide among them, leaves one idle for a whole kernel. STABLE, so the
+    #: scratchpad order survives inside each group -- and on a one-core machine
+    #: every grid divides by 1, which returns the list untouched.
+    cores = _num_cores()
+    if cores > 1:
+        mm, nn = int(m), int(n)
+
+        def _idle_cores(tile):
+            grid = (-(-mm // tile[0])) * (-(-nn // tile[1]))
+            return 0 if grid >= cores and grid % cores == 0 else 1
+
+        out.sort(key=_idle_cores)
+
+    return [GemmConfig(tm, tn, tk, 1, 4) for tm, tn, tk in out]
 
 
 def _register_template_heuristics():
@@ -418,6 +435,15 @@ def _short_circuit_degenerate_gemms():
                 lowerings[o] = wrap(o, bias)
 
 
+def _num_cores():
+    """This machine's core count. The frontend has it and nobody read it."""
+    from .hardware import HardwareInfo
+    try:
+        return max(1, int(HardwareInfo().num_cores))
+    except Exception:
+        return 1
+
+
 def _npu_choices_class():
     global _NPU_CHOICES
     if _NPU_CHOICES is not None:
@@ -426,7 +452,66 @@ def _npu_choices_class():
 
     from . import launch
 
+    _DT_BITS = {torch.float64: 64, torch.float32: 32, torch.float16: 16,
+                torch.bfloat16: 16, torch.int64: 64, torch.int32: 32,
+                torch.int16: 16, torch.int8: 8, torch.uint8: 8, torch.bool: 8}
+
     class NPUChoices(InductorChoices):
+        def triton_kernel_kwargs(self, kernel_cls, features, groups, kernel_kwargs):
+            """Pin this machine's blocks INSIDE Inductor, the hook upstream
+            documents for exactly this ("used to apply fixed configurations").
+
+            It runs before the TritonKernel is built, so the source is generated
+            knowing the block: measured, a numel the block divides loses its mask
+            entirely (`xmask = xindex < xnumel` -> `tl.full(...)`, loads lose the
+            mask operand), and one it does not keeps it.
+            """
+            kw = super().triton_kernel_kwargs(kernel_cls, features, groups,
+                                              kernel_kwargs)
+            if not _lowering_npu():
+                return kw
+            from torch._inductor.codegen.triton import FixedTritonConfig
+
+            from . import launch
+            #: THE NUMELS ARE IN `groups`, one dict per tiling ({'x': 1024, 'r0_': 1}).
+            numels = {}
+            for g in (groups or []):
+                try:
+                    items = dict(g).items()
+                except Exception:
+                    continue
+                for prefix, n in items:
+                    try:
+                        numels[f"{prefix}numel"] = int(n)
+                    except Exception:
+                        pass
+            if not numels:
+                return kw
+            #: WIDEST ELEMENT, the same question `launch._element_bits` asks of
+            #: the spec's args -- asked here of the nodes, which is what exists.
+            bits = []
+            for nd in features.scheduler_nodes():
+                try:
+                    bits.append(_DT_BITS.get(nd.node.get_dtype(), 32))
+                except Exception:
+                    pass
+            args = ([{"dtype": {64: "float64", 32: "float32", 16: "float16",
+                                8: "int8"}[max(bits)]}] if bits else [])
+            shim = type("K", (), {"inside_reduction": bool(features.is_reduction()),
+                                  "numels": numels})()
+            try:
+                cfg = launch.fixed_config_for(shim, numels, args) or {}
+            except Exception as e:                       # noqa: BLE001
+                logger.info("[psto] no fixed_config for this kernel: %s", e)
+                return kw
+            cfg = {k: int(v) for k, v in cfg.items()
+                   if v and k.endswith("BLOCK")}
+            if not cfg:
+                return kw
+            kw = dict(kw)
+            kw["fixed_config"] = FixedTritonConfig(cfg)
+            return kw
+
         @staticmethod
         def should_use_persistent_reduction(features, cooperative_reduction):
             base = InductorChoices.should_use_persistent_reduction(
@@ -445,14 +530,44 @@ def _npu_choices_class():
         @staticmethod
         def reduction_split_factor(device, reduction_numel_hint, numel_hint,
                                    inner_reduction):
-            """Never split a reduction, and so never split a scan.
+            """Split a reduction only when a core would otherwise sit idle.
 
-            Splitting buys parallelism across blocks that run at the same time;
-            this route walks the grid sequentially in its own wrapper.
+            Splitting costs a DRAM round trip for the partials and buys
+            parallelism across work-items that run AT THE SAME TIME. Two things
+            have to hold: the machine must have more than one core, and the
+            parallel axis must not already fill them. Upstream writes the kernel
+            that combines the partials, so nothing here has to.
             """
             if getattr(device, "type", device) != "npu":
                 return InductorChoices.reduction_split_factor(
                     device, reduction_numel_hint, numel_hint, inner_reduction)
+            #: THE DEVICE IS THE ARGUMENT HERE, and the guard above already
+            #: settled it. `_lowering_npu()` asks V.graph, which has no current
+            #: device yet during lowering -- it answers False and the whole
+            #: branch never runs.
+            cores = _num_cores()
+            if cores > 1:
+                want = InductorChoices.reduction_split_factor(
+                    device, reduction_numel_hint, numel_hint, inner_reduction)
+                #: ENOUGH PARALLEL WORK ALREADY. `numel_hint` is the output
+                #: count, i.e. the work-items the parallel axis alone gives; if
+                #: that reaches the cores, splitting adds traffic and no overlap.
+                try:
+                    if int(numel_hint) >= cores:
+                        return 1
+                except (TypeError, ValueError):
+                    return 1
+                #: AND NO MORE THAN THE CORES. Upstream sizes the split for a GPU
+                #: whose blocks number in the hundreds; here every split past the
+                #: core count is a partial written and read for nothing.
+                split = min(int(want), cores)
+                if split > 1:
+                    logger.info(
+                        "[psto] splitting a reduction of %s elements %s ways "
+                        "over %s cores (upstream wanted %s)",
+                        reduction_numel_hint, split, cores, want)
+                    return split
+                return 1
             if os.environ.get("TORCHSIM_LOG_SPLIT"):
                 would = InductorChoices.reduction_split_factor(
                     device, reduction_numel_hint, numel_hint, inner_reduction)
