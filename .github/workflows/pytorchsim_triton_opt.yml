@@ -176,7 +176,7 @@ jobs:
       # the toolchain itself: if these regress, nothing downstream is meaningful.
       # gemm/bmm need TORCHSIM_COMPILE_VCIX_MATMUL=1 to reach the systolic array.
       #
-      # tests/psto and NOT pytorchsim-triton-opt: the compiler driver stops at
+      # tests/torchsim-compile and NOT pytorchsim-triton-compiler: the compiler driver stops at
       # the kernel object, so it would compile these and never run one. The
       # suite's driver registers the stages that run Spike and check the
       # numbers, which is the whole point of a smoke test.
@@ -184,10 +184,10 @@ jobs:
         run: |
           docker run --rm -e TORCHSIM_COMPILE_VCIX_MATMUL=1 \
             ${{ needs.build-app.outputs.app_image }} bash -lc '
-              cd /workspace/pytorchsim-triton-opt &&
-              python3 tests/psto doctor &&
+              cd /workspace/pytorchsim-triton-compiler &&
+              python3 tests/torchsim-compile doctor &&
               for k in add mul relu gemm bmm; do
-                echo "=== $k ===" && python3 tests/psto tests/cases/smoke/$k.py || exit 1
+                echo "=== $k ===" && python3 tests/torchsim-compile tests/cases/smoke/$k.py || exit 1
               done'
 
   triton-route:
