@@ -4,7 +4,7 @@ from m5.objects import *
 
 #: One FU whose latency comes from the tile, instead of four latency buckets.
 #: Off by default -- see CrossLaneUnit below.
-_XLU_FU = os.environ.get("PSTO_XLU_FU", "0") == "1"
+_XLU_FU = os.environ.get("TORCHSIM_COMPILE_XLU_FU", "0") == "1"
 
 class SystolicArray(MinorFU):
     unitType = "SystolicArray"
@@ -71,10 +71,10 @@ class CrossbarPopUnit(MinorFU):
 #: a second time.
 #:
 #: BEHIND A FLAG because the four-FU spelling is what every other run has been
-#: measured against. `PSTO_XLU_FU=1` selects this one.
+#: measured against. `TORCHSIM_COMPILE_XLU_FU=1` selects this one.
 class CrossLaneUnit(MinorFU):
     unitType = "CrossLane"
-    crossLaneWidth = int(os.environ.get("PSTO_XLU_LANES", "256"))
+    crossLaneWidth = int(os.environ.get("TORCHSIM_COMPILE_XLU_LANES", "256"))
     opClasses = minorMakeOpClassSet(["CustomTransposePush", "CustomTransposePop",
                                      "CustomCrossbarPush",  "CustomCrossbarPop"])
     opLat = 1          # issue only; the pass's cost is the FU's own

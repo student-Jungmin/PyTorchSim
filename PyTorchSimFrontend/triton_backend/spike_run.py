@@ -11,12 +11,12 @@ import shutil
 import subprocess
 
 SPIKE = os.environ.get("TORCHSIM_SPIKE",
-                       os.environ.get("PSTO_SPIKE",
+                       os.environ.get("TORCHSIM_COMPILE_SPIKE",
                                       "/workspace/riscv-isa-sim/install/bin/spike"))
 PK = os.environ.get("TORCHSIM_PK",
-                    os.environ.get("PSTO_PK", "/workspace/riscv-pk/build/pk"))
+                    os.environ.get("TORCHSIM_COMPILE_PK", "/workspace/riscv-pk/build/pk"))
 SPIKE_ISA = os.environ.get("TORCHSIM_SPIKE_ISA",
-                           os.environ.get("PSTO_SPIKE_ISA", "rv64gcv_zfh"))
+                           os.environ.get("TORCHSIM_COMPILE_SPIKE_ISA", "rv64gcv_zfh"))
 
 ITEMSIZE = {"float64": 8, "float32": 4, "float16": 2,
             "int64": 8, "int32": 4, "int16": 2, "int8": 1,
@@ -138,7 +138,7 @@ def _jobs(manifest, total, log):
         log("[Spike] one process: an inout argument is read as well as written")
         return 1
     env = os.environ.get("TORCHSIM_SPIKE_JOBS",
-                         os.environ.get("PSTO_SPIKE_JOBS", "")).strip()
+                         os.environ.get("TORCHSIM_COMPILE_SPIKE_JOBS", "")).strip()
     if env:
         return max(1, min(int(env), total))
     try:

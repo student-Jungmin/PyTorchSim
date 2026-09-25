@@ -183,7 +183,7 @@ def reduction_block_for(extent, elem_bytes=4, lane_bytes=None):
     agree: this pins the block, inductor_templates asks if persistence matches.
     """
     if lane_bytes is None:
-        lane_bytes = int(os.environ.get("PSTO_SPAD_SIZE", str(64 * 1024)), 0)
+        lane_bytes = int(os.environ.get("TORCHSIM_COMPILE_SPAD_SIZE", str(64 * 1024)), 0)
     budget = lane_bytes // 2 // _REDUCTION_LIVE_TILES
     block = 1 << (int(extent) - 1).bit_length()
     while block * elem_bytes > budget and block > 1:

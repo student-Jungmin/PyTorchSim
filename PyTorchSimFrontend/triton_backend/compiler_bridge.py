@@ -42,11 +42,11 @@ COMPILER_PKG = "pytorchsim_triton_opt"
 
 
 def tnpu_dir():
-    d = extension_config.CONFIG_PSTO_DIR
+    d = extension_config.CONFIG_TORCHSIM_COMPILE_DIR
     if not os.path.isdir(d):
         raise CompilerError(
             f"pytorchsim-triton-opt checkout not found at {d}. It is a separate repository "
-            f"and is not vendored; clone it there or set PSTO_DIR.")
+            f"and is not vendored; clone it there or set TORCHSIM_COMPILE_DIR.")
     return d
 
 
@@ -87,21 +87,21 @@ def tnpu_env():
     """The environment for a compiler subprocess: this machine, no PYTHONPATH, and
     no device backend autoload.
 
-    PSTO_TARGET NAMES THE WHOLE MACHINE, and used to name three of its seven
+    TORCHSIM_COMPILE_TARGET NAMES THE WHOLE MACHINE, and used to name three of its seven
     fields while the compiler supplied the rest from a shipped default. One
     description, written from the YAML this process is running.
     """
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     env["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
-    env.setdefault("PSTO_TARGET", target_path())
+    env.setdefault("TORCHSIM_COMPILE_TARGET", target_path())
     return env
 
 
 def doctor():
     """Return (ok, output) for the compiler's own toolchain check."""
     proc = subprocess.run(
-        [extension_config.CONFIG_PSTO_PYTHON,
+        [extension_config.CONFIG_TORCHSIM_COMPILE_PYTHON,
          os.path.join(tnpu_dir(), "pytorchsim-triton-opt"), "doctor"],
         capture_output=True, text=True, cwd=tnpu_dir())
     return proc.returncode == 0, proc.stdout + proc.stderr
@@ -114,7 +114,7 @@ def run_module(module, *args, timeout=None):
     fact. What to do when it fails differs per caller and stays with them.
     """
     proc = subprocess.run(
-        [extension_config.CONFIG_PSTO_PYTHON, "-m", module, *args],
+        [extension_config.CONFIG_TORCHSIM_COMPILE_PYTHON, "-m", module, *args],
         capture_output=True, text=True, cwd=tnpu_dir(), env=tnpu_env(),
         timeout=timeout)
     return proc.returncode, proc.stdout + proc.stderr
@@ -126,7 +126,7 @@ def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", timeout=1800):
     Stops at `to_stage`, by default `torchsim-compile` -- the ELF: spike and verify
     want tensors and a per-kernel reference this route has no graph-level answer for.
     """
-    cmd = [extension_config.CONFIG_PSTO_PYTHON,
+    cmd = [extension_config.CONFIG_TORCHSIM_COMPILE_PYTHON,
            os.path.join(tnpu_dir(), "pytorchsim-triton-opt"), spec_path,
            "--from", "triton-compile", "--to", to_stage, "--workdir", workdir]
 

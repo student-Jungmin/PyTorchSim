@@ -24,7 +24,7 @@ LOCK_TIMEOUT = 600
 #: THE MARKER IS A TEXT CONTRACT ACROSS A PROCESS BOUNDARY. The compiler runs
 #: as a subprocess, so this string cannot be imported from it -- it is spelled
 #: `spad.SPAD_OVERFLOW_MARKER` there and pinned by tile_spad_over_budget_marker.
-_SPAD_OVERFLOW_RE = re.compile(r"psto-spad-overflow: usage=(\d+) budget=(\d+)")
+_SPAD_OVERFLOW_RE = re.compile(r"torchsim-spad-overflow: usage=(\d+) budget=(\d+)")
 
 
 def _write_path(src_code):

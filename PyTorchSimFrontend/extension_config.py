@@ -9,12 +9,12 @@ CONFIG_GEM5_PATH = os.environ.get('GEM5_PATH', default="/workspace/gem5/build/RI
 # --- Triton codegen route ----------------------------------------------------
 # The pytorchsim-triton-opt checkout that owns stages 1-5 (ttir -> ttshared -> the compiler passes
 # -> RISC-V ELF). It is a SEPARATE repository, deliberately not vendored.
-CONFIG_PSTO_DIR = os.environ.get(
-    "PSTO_DIR", default=os.path.join(CONFIG_TORCHSIM_DIR, "pytorchsim-triton-opt"))
+CONFIG_TORCHSIM_COMPILE_DIR = os.environ.get(
+    "TORCHSIM_COMPILE_DIR", default=os.path.join(CONFIG_TORCHSIM_DIR, "pytorchsim-triton-opt"))
 # the compiler runs in its own process. Both sides now hold the same LLVM 23 bindings,
 # so the seam is a process boundary rather than a version one; `mlir` is a
 # namespace package, and each side still selects its own root explicitly.
-CONFIG_PSTO_PYTHON = os.environ.get("PSTO_PYTHON", default=sys.executable)
+CONFIG_TORCHSIM_COMPILE_PYTHON = os.environ.get("TORCHSIM_COMPILE_PYTHON", default=sys.executable)
 
 
 def get_dump_path():

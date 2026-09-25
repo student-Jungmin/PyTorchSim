@@ -45,7 +45,7 @@ def _tool_paths(tnpu_dir):
     code = (f"import json; from {compiler_bridge.COMPILER_PKG} import config as c; "
             "print(json.dumps({n: p for n, p, _ in c.CHECKS}))")
     proc = subprocess.run(
-        [extension_config.CONFIG_PSTO_PYTHON, "-c", code],
+        [extension_config.CONFIG_TORCHSIM_COMPILE_PYTHON, "-c", code],
         capture_output=True, text=True, cwd=tnpu_dir, env=compiler_bridge.tnpu_env())
     if proc.returncode != 0:
         return None

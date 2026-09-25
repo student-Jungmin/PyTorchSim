@@ -18,7 +18,7 @@ ARG PSTO_REF=main
 WORKDIR /workspace
 
 # Not under $TORCHSIM_DIR: ./Dockerfile copies the PyTorchSim checkout over that
-# path afterwards. extension_config reads PSTO_DIR, set below.
+# path afterwards. extension_config reads TORCHSIM_COMPILE_DIR, set below.
 RUN --mount=type=secret,id=psto_token \
     TOKEN="$(cat /run/secrets/psto_token)" && \
     git clone "https://x-access-token:${TOKEN}@github.com/${PSTO_REPO}.git" \
@@ -33,13 +33,13 @@ RUN --mount=type=secret,id=psto_token \
     GITHUB_TOKEN="$(cat /run/secrets/psto_token)" \
       /workspace/pytorchsim-triton-opt/setup/restore.sh --prebuilt
 
-ENV PSTO_DIR=/workspace/pytorchsim-triton-opt
+ENV TORCHSIM_COMPILE_DIR=/workspace/pytorchsim-triton-opt
 # No TORCHSIM_LLVM_PATH: the TOG builder moved to the compiler.
 # psto defaults to a separate fp8 spike and asks for zvfp8; the released spike
 # has neither, and an unknown extension stops spike at startup. Drop once
 # PSAL-POSTECH/riscv-isa-sim#7 is in the release.
-ENV PSTO_SPIKE=/workspace/riscv-isa-sim/install/bin/spike
-ENV PSTO_SPIKE_ISA=rv64gcv_zfh
+ENV TORCHSIM_COMPILE_SPIKE=/workspace/riscv-isa-sim/install/bin/spike
+ENV TORCHSIM_COMPILE_SPIKE_ISA=rv64gcv_zfh
 
 # Fail the build, not the first CI job.
 RUN python3 /workspace/pytorchsim-triton-opt/pytorchsim-triton-opt doctor

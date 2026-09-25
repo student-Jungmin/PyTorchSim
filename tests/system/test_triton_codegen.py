@@ -169,7 +169,7 @@ def main():
           f"{'ok' if check_reduction_is_right() else 'FAILED'}")
     print(f"spad-overflow marker     = "
           f"{'ok' if check_spad_marker() else 'FAILED'}")
-    print(f"PSTO_DIR                = {extension_config.CONFIG_PSTO_DIR}")
+    print(f"TORCHSIM_COMPILE_DIR    = {extension_config.CONFIG_TORCHSIM_COMPILE_DIR}")
     ok, _out = compiler_bridge.doctor()
     print(f"tnpu doctor             = {'ok' if ok else 'FAILED (see run.py doctor)'}")
     print()
