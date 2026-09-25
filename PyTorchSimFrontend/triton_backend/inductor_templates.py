@@ -142,7 +142,7 @@ def _register_template_heuristics():
                 mapped = _gemm_tiles(*mnk, kwargs.get("dtype_size", 4))
                 if not mapped:
                     logger.warning(
-                        "[psto] no mapped tile for %sx%sx%s is a legal "
+                        "[torchsim-compile] no mapped tile for %sx%sx%s is a legal "
                         "Triton block; falling back to the generic set", *mnk)
                 yield from self._finalize_mm_configs(mapped)
                 yield from generic(m, n, k, **kwargs)
@@ -502,7 +502,7 @@ def _npu_choices_class():
             try:
                 cfg = launch.fixed_config_for(shim, numels, args) or {}
             except Exception as e:                       # noqa: BLE001
-                logger.info("[psto] no fixed_config for this kernel: %s", e)
+                logger.info("[torchsim-compile] no fixed_config for this kernel: %s", e)
                 return kw
             cfg = {k: int(v) for k, v in cfg.items()
                    if v and k.endswith("BLOCK")}
@@ -563,7 +563,7 @@ def _npu_choices_class():
                 split = min(int(want), cores)
                 if split > 1:
                     logger.info(
-                        "[psto] splitting a reduction of %s elements %s ways "
+                        "[torchsim-compile] splitting a reduction of %s elements %s ways "
                         "over %s cores (upstream wanted %s)",
                         reduction_numel_hint, split, cores, want)
                     return split
@@ -573,7 +573,7 @@ def _npu_choices_class():
                     device, reduction_numel_hint, numel_hint, inner_reduction)
                 if would != 1:
                     logger.info(
-                        "[psto] declined a %s-way split of %s elements "
+                        "[torchsim-compile] declined a %s-way split of %s elements "
                         "into %s outputs (inner=%s)",
                         would, reduction_numel_hint, numel_hint, inner_reduction)
             return 1

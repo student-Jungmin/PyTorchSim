@@ -30,7 +30,7 @@ what is unproven is the routing and the combine, and those do not change with
 the expert count. Layers stay at 4 because that is the shortest run that
 contains a NoPE layer; `scout` names its own no_rope_layers to get one in two.
 
-    source /workspace/psto-env.sh
+    source /workspace/torchsim-env.sh
     python tests/models/Llama/test_llama4.py --preset small
 
 MEASURED 2026-08-14 on transformers 5.15.0, tnpu 983eee4, --preset small:

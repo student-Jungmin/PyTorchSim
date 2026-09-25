@@ -24,7 +24,7 @@ the compiled graph is Llama 3's graph with different constants -- see
 ``_assert_character``, which fails if a preset claims a feature the model did
 not actually get.  Without that assert a 3.1 test passes while proving nothing.
 
-    source /workspace/psto-env.sh
+    source /workspace/torchsim-env.sh
     python tests/models/Llama/test_llama3x.py --preset 8b
 
 ALL SEVEN CONFIGURATIONS PASS, measured 2026-08-13 against the same model on

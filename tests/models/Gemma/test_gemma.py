@@ -84,7 +84,7 @@ WHY 2B AND 7B ARE BOTH HERE.  They are not the same block at two widths:
 Dropping either one drops a claim.  ``_assert_character`` cashes every claim
 above against the built model, so a preset cannot pass while proving nothing.
 
-    source /workspace/psto-env.sh
+    source /workspace/torchsim-env.sh
     python tests/models/Gemma/test_gemma.py --preset 7b
 
 MEASURED ON TRANSFORMERS 5.15.0, 2026-08-14, triton-npu develop c6e9d7f,

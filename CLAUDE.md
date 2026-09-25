@@ -129,8 +129,8 @@ Read in `PyTorchSimFrontend/extension_config.py`:
 | `TORCHSIM_DUMP_PATH` | `$TORCHSIM_DIR` | misc dumps |
 | `TORCHSIM_DEBUG_MODE` | `0` | extra debug |
 | `TORCHSIM_BREAKDOWN` | `0` | `1` prints where the run's wall clock went (tnpu compile per stage/pass, Spike, gem5, TOGSim) at exit, and writes `breakdown_<YYYYMMDD_HHMMSS>_<hash>.json` into the dump path — stamped like `togsim_results/`, so parallel runs sharing a dump path each keep their own |
-| `PSTO_DIR` | `$TORCHSIM_DIR/pytorchsim-triton-opt` | compiler checkout (stages 1-6) |
-| `PSTO_PYTHON` | `sys.executable` | interpreter the compiler runs under |
+| `TORCHSIM_COMPILE_DIR` | `$TORCHSIM_DIR/pytorchsim-triton-opt` | compiler checkout (stages 1-6) |
+| `TORCHSIM_COMPILE_PYTHON` | `sys.executable` | interpreter the compiler runs under |
 | `SRAM_BUFFER_PLAN_PATH` | unset | L2/CMEM persistent-cache tensor plan (Python file with `plan = {...}`) |
 | `TOGSIM_DEBUG_LEVEL` | unset | passed to TOGSim `--log_level` |
 
@@ -257,10 +257,10 @@ artifact replays and a fix appears to change nothing. That has already caused on
 wrong conclusion. A push whose verification was skipped is a push of an unknown
 state.
 
-**PIN `PSTO_DIR` WHEN THE ROUTE IS INVOLVED.** Stages 1-5 live in a separate repo
+**PIN `TORCHSIM_COMPILE_DIR` WHEN THE ROUTE IS INVOLVED.** Stages 1-5 live in a separate repo
 that someone else may be editing right now, and a pass mid-refactor produces
 failures that look like ours (`no lane axis`, bare `NameError`s that vanish on
-re-run). Point `PSTO_DIR` at a worktree pinned to a known-good commit so a result
+re-run). Point `TORCHSIM_COMPILE_DIR` at a worktree pinned to a known-good commit so a result
 means something.
 
 **WHAT DOES NOT COUNT.** Exploration, scratch files, a half-finished edit, or a

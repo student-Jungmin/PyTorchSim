@@ -131,7 +131,7 @@ def clamp_instead_of_wrap(body, kernel_name=""):
                                                 "rk = tl.arange("))), None)
         if anchor is None or not any(_load_re(p).search(text) for p in _MASK_FOR):
             logger.warning(
-                "[psto] %s: a block does not divide its dimension and "
+                "[torchsim-compile] %s: a block does not divide its dimension and "
                 "this does not recognise the loads to bound; leaving the wrap",
                 kernel_name or "kernel")
             return body
@@ -150,7 +150,7 @@ def clamp_instead_of_wrap(body, kernel_name=""):
                 applied[ptr] = _add_mask_to_loads(lines, ptr, name)
         if any(v == 0 for v in applied.values()):
             logger.warning(
-                "[psto] %s: could not attach a bound to every load; "
+                "[torchsim-compile] %s: could not attach a bound to every load; "
                 "leaving the wrap in place", kernel_name or "kernel")
             return body
 
@@ -161,7 +161,7 @@ def clamp_instead_of_wrap(body, kernel_name=""):
         body, n = re.subn(rf"\b{idx}\s*%\s*{dim}\b", idx, body)
         if n:
             logger.info(
-                "[psto] %s: replaced %d `%s %% %s` with %s, so the "
+                "[torchsim-compile] %s: replaced %d `%s %% %s` with %s, so the "
                 "operand stays a descriptor instead of becoming a gather",
                 kernel_name or "kernel", n, idx, dim,
                 "a load bound" if needs[idx] else "nothing (the block divides)")

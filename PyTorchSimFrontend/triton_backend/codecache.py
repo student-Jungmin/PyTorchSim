@@ -122,7 +122,7 @@ def triton_npu_compile(src_code, meta, kernel_name):
         elf = compiler_bridge.artifact(write_path, "elf")
         if elf is not None and not provenance.matches(write_path):
             logger.info(
-                "[psto] %s: cached artifacts carry a different toolchain "
+                "[torchsim-compile] %s: cached artifacts carry a different toolchain "
                 "or machine identity, rebuilding", kernel_name)
             provenance.clear_stale(write_path)
             elf = None
@@ -136,10 +136,10 @@ def triton_npu_compile(src_code, meta, kernel_name):
                 kernel_spec.write_spec_file(src_code, meta, spec_path,
                                             compiler_bridge.tnpu_dir())
                 try:
-                    with breakdown.span(breakdown.PSTO, kernel_name):
+                    with breakdown.span(breakdown.TORCHSIM_COMPILE, kernel_name):
                         compiler_bridge.run_pipeline(spec_path, write_path,
                                                  to_stage="torchsim-compile")
-                    breakdown.ingest_psto(write_path, kernel_name)
+                    breakdown.ingest_compile(write_path, kernel_name)
                     break
                 except compiler_bridge.CompilerError as exc:
                     over = _spad_overflow(exc)
@@ -148,17 +148,17 @@ def triton_npu_compile(src_code, meta, kernel_name):
                     tile = next(tiles, None)
                     if tile is None:
                         logger.warning(
-                            "[psto] %s: %d bytes/lane over a budget of %d, and "
+                            "[torchsim-compile] %s: %d bytes/lane over a budget of %d, and "
                             "no tile with every block >= 2 is left to try",
                             kernel_name, over[0], over[1])
                         raise
                     meta["fixed_config"].update(tile)
                     logger.info(
-                        "[psto] %s: %d bytes/lane over a budget of %d, trying "
+                        "[torchsim-compile] %s: %d bytes/lane over a budget of %d, trying "
                         "%s", kernel_name, over[0], over[1],
                         {k: v for k, v in meta["fixed_config"].items()
                          if k.endswith("BLOCK")})
             timing.store_meta(write_path, meta)
             provenance.store(write_path)
-        logger.info("[psto] %s -> %s", kernel_name, write_path)
+        logger.info("[torchsim-compile] %s -> %s", kernel_name, write_path)
         return TritonNPULauncher(kernel_name, write_path, meta)

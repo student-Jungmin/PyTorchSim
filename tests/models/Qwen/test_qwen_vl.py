@@ -31,7 +31,7 @@ image is proved to REACH the output rather than assumed to: the same model is
 run twice with different pixels and the logits must differ.  Without that a
 tower that quietly contributed nothing would pass.
 
-    source /workspace/psto-env.sh
+    source /workspace/torchsim-env.sh
     python tests/models/Qwen/test_qwen_vl.py
 
 MEASURED 2026-08-13.  The `tiny` rows are triton-npu develop 3434608; the `2b`

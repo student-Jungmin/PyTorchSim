@@ -67,7 +67,7 @@ def _stable_backend_hash():
         version = triton.__version__
     except Exception:
         version = "unknown"
-    key = f"pytorchsim-psto-{version}"
+    key = f"pytorchsim-torchsim-compile-{version}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest().upper()
 
 

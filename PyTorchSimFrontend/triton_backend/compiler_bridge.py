@@ -140,7 +140,7 @@ def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", timeout=1800):
                 output += "\n" + fh.read()
         raise CompilerError(f"the compiler pipeline failed (exit {proc.returncode})",
                         cmd=" ".join(cmd), output=output)
-    logger.debug("[psto] %s", output)
+    logger.debug("[torchsim-compile] %s", output)
     return workdir
 
 

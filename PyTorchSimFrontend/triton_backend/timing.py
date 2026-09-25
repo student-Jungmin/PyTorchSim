@@ -48,7 +48,7 @@ def measure_tile_cycles(workdir, meta):
 
     with breakdown.span(breakdown.GEM5_BUILD, kernel_name):
         rc, output = compiler_bridge.run_module(f"{compiler_bridge.COMPILER_PKG}.trace.emit_gem5_binary", spec, workdir)
-    breakdown.ingest_psto(workdir, kernel_name, kind="cycle",
+    breakdown.ingest_compile(workdir, kernel_name, kind="cycle",
                           name="timing-cycle.json")
     if rc != 0:
         logger.warning("[Gem5] cycle binary build failed:\n%s", output[-2000:])
