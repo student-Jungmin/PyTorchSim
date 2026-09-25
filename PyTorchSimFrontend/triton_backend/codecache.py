@@ -138,7 +138,7 @@ def triton_npu_compile(src_code, meta, kernel_name):
                 try:
                     with breakdown.span(breakdown.PSTO, kernel_name):
                         compiler_bridge.run_pipeline(spec_path, write_path,
-                                                 to_stage="binary")
+                                                 to_stage="torchsim-compile")
                     breakdown.ingest_psto(write_path, kernel_name)
                     break
                 except compiler_bridge.CompilerError as exc:

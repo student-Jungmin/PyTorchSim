@@ -120,15 +120,15 @@ def run_module(module, *args, timeout=None):
     return proc.returncode, proc.stdout + proc.stderr
 
 
-def run_pipeline(spec_path, workdir, to_stage="binary", timeout=1800):
+def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", timeout=1800):
     """Drive the compiler's stages over `spec_path`, writing artifacts into `workdir`.
 
-    Stops at `to_stage`, by default `binary`: stages 6 and 7 want tensors and a
-    per-kernel reference this route has no graph-level answer for.
+    Stops at `to_stage`, by default `torchsim-compile` -- the ELF: spike and verify
+    want tensors and a per-kernel reference this route has no graph-level answer for.
     """
     cmd = [extension_config.CONFIG_PSTO_PYTHON,
            os.path.join(tnpu_dir(), "pytorchsim-triton-opt"), spec_path,
-           "--from", "ttir", "--to", to_stage, "--workdir", workdir]
+           "--from", "triton-compile", "--to", to_stage, "--workdir", workdir]
 
     proc = subprocess.run(cmd, capture_output=True, text=True,
                           cwd=tnpu_dir(), env=tnpu_env(), timeout=timeout)
