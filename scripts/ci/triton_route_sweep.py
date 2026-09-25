@@ -26,11 +26,11 @@ PASSING = os.path.join(HERE, "triton_route_passing.txt")
 
 #: How far the kernel got. The stage a failure did not reach owns it.
 STAGES = [
-    ("01-ttir.mlir",     "1 triton -> ttir"),
-    ("02-ttshared.mlir", "2 ttir -> tts/linalg (triton-shared)"),
-    ("03-adapted.mlir",  "3 the compiler adapt"),
-    ("04-custom.mlir",   "4 the compiler lower (DMA, lanes, spad)"),
-    ("trace.so",         "5 trace producer"),
+    ("01-ttir.mlir",        "1 triton-compile"),
+    ("03-ttshared.mlir",    "2 triton-shared"),
+    ("04-transformed.mlir", "3 torchsim-compile: transform"),
+    ("05-custom.mlir",      "3 torchsim-compile: lower (DMA, lanes, spad)"),
+    ("trace.so",            "trace producer"),
 ]
 
 #: First match wins. Each bucket names the layer that owns the fix.
