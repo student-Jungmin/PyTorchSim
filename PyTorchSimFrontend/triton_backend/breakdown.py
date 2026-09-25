@@ -240,7 +240,7 @@ def render(rec):
             out += ["", "  psto compile, by stage"]
             for name, dt in stages:
                 out.append(_line(name, dt, wall, indent=4))
-    for records, stage in ((psto, "ttclean"), (psto, "adapt"), (psto, "lower"),
+    for records, stage in ((psto, "adapt"), (psto, "lower"),
                            (launch, "spike")):
         passes = _psto_passes(records, stage)
         if not passes:
