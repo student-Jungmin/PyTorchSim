@@ -6,6 +6,7 @@
 One directory per source hash, holding the compiler kernel file and every artifact.
 """
 
+import itertools
 import os
 import re
 
@@ -78,31 +79,32 @@ def _spad_overflow(exc):
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
-def _shrink_tile(meta, usage, budget):
-    """Divide the tile by enough to fit, in place. False if stuck.
-
-    ONLY A BLOCK THE KERNEL TAKES AS AN ARGUMENT MOVES ANYTHING: a persistent
-    reduction bakes R0_BLOCK into its body. XBLOCK only when it takes none.
-    """
-    factor = 1
-    while usage > budget * factor:
-        factor *= 2
+def _get_tile_candidates(meta):
+    """Every tile the search may try, LARGEST FIRST: each block the kernel takes as
+    an argument halves down to 2, never 1. Equal sizes go to the larger reduction
+    block; the first is the tile fixed_config_for pinned."""
     cfg = meta.get("fixed_config") or {}
     signature = meta.get("signature") or {}
+    movable = [k for k, v in cfg.items() if k in signature and v and v >= 2]
+    ranges = []
+    for k in movable:
+        vs, v = [], cfg[k]
+        while v >= 2:
+            vs.append(v)
+            v //= 2
+        ranges.append(vs)
 
-    def _movable(names):
-        return {k: v for k, v in cfg.items()
-                if k in names and k in signature and v and v > 1}
-
-    blocks = _movable([k for k in cfg
-                       if k.startswith("R") and k.endswith("_BLOCK")])
-    if not blocks:
-        blocks = _movable(["XBLOCK"])
-    if not blocks:
-        return False
-    for k, v in blocks.items():
-        cfg[k] = max(1, v // factor)
-    return True
+    def _product(tile, keep):
+        n = 1
+        for k, v in tile.items():
+            if keep(k):
+                n *= v
+        return n
+    tiles = [dict(zip(movable, vs)) for vs in itertools.product(*ranges)]
+    tiles.sort(key=lambda t: (-_product(t, lambda k: True),
+                              -_product(t, lambda k: k.startswith("R")),
+                              [-t[k] for k in movable]))
+    return tiles
 
 
 def triton_npu_compile(src_code, meta, kernel_name):
@@ -128,7 +130,8 @@ def triton_npu_compile(src_code, meta, kernel_name):
             with open(os.path.join(write_path, "kernel.py"), "w") as f:
                 f.write(src_code)
             timing.store_meta(write_path, meta)
-            last_usage = None
+            tiles = iter(_get_tile_candidates(meta))
+            next(tiles)
             while True:
                 kernel_spec.write_spec_file(src_code, meta, spec_path,
                                             compiler_bridge.tnpu_dir())
@@ -142,50 +145,17 @@ def triton_npu_compile(src_code, meta, kernel_name):
                     over = _spad_overflow(exc)
                     if over is None:
                         raise
-                    # A RETRY THAT FREES NOTHING IS NOT A RETRY. The tile
-                    # keeps halving, the measurement does not move, and the last
-                    # halving takes the outer axis to 1 -- a unit axis, which
-                    # leaves select_lane_axis no axis for the lanes, so it
-                    # answers differently per buffer and the fold crosses lanes.
-                    # That kernel COMPILES and returns wrong numbers.
-                    #
-                    #   measured, Qwen2-MoE's sort kernel at spad 131072, each
-                    #   XBLOCK compiled alone and its .spad read back:
-                    #
-                    #     128 273,936 | 32 149,264 | 16 132,592   all axis 0
-                    #       8 127,616 |  4 127,616 |  2 127,616   all axis 0
-                    #       1  37,792                axis 0 x300, 1 x125, ONE_LANE x4
-                    #
-                    #   8/4/2 are one number because reserve_per_lane rounds up
-                    #   to MIN_VEC; 1 is smaller only because the banking
-                    #   collapsed. The model gave Max abs diff 1.369991421699524
-                    #   at XBLOCK 1, twice, and passes at 8 and 64.
-                    #
-                    # A compile error names the kernel and the budget; a wrong
-                    # number names nothing.
-                    if last_usage is not None and over[0] >= last_usage:
+                    tile = next(tiles, None)
+                    if tile is None:
                         logger.warning(
-                            "[psto] %s: %d bytes/lane, unchanged from the "
-                            "previous tile -- shrinking further frees nothing "
-                            "and only risks a unit axis, so stopping here",
-                            kernel_name, over[0])
+                            "[psto] %s: %d bytes/lane over a budget of %d, and "
+                            "no tile with every block >= 2 is left to try",
+                            kernel_name, over[0], over[1])
                         raise
-                    last_usage = over[0]
-                    if not _shrink_tile(meta, *over):
-                        raise
-                    # EVERY BLOCK, and the filter used to be `endswith("_BLOCK")`
-                    # -- which is false of "XBLOCK", the only block that moves in
-                    # a persistent reduction (see _shrink_tile). So the one line
-                    # that says what the retry changed reported the block that
-                    # did NOT change and hid the one that did:
-                    #
-                    #   retrying with {'R0_BLOCK': 128}    six times in a row
-                    #
-                    # reads as a loop that shrinks nothing, which is the opposite
-                    # of what was happening. Measured on Qwen2-MoE's sort kernel.
+                    meta["fixed_config"].update(tile)
                     logger.info(
-                        "[psto] %s: %d bytes/lane over a budget of %d, "
-                        "retrying with %s", kernel_name, over[0], over[1],
+                        "[psto] %s: %d bytes/lane over a budget of %d, trying "
+                        "%s", kernel_name, over[0], over[1],
                         {k: v for k, v in meta["fixed_config"].items()
                          if k.endswith("BLOCK")})
             timing.store_meta(write_path, meta)
