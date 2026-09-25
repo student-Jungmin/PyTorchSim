@@ -141,7 +141,7 @@ def check_spad_marker():
 
     from PyTorchSimFrontend.triton_backend import codecache, compiler_bridge
 
-    src = os.path.join(compiler_bridge.tnpu_dir(), "pytorchsim_triton_opt",
+    src = os.path.join(compiler_bridge.tnpu_dir(), "pytorchsim_triton_compiler",
                        "elf", "emit_spad_header.py")
     if not os.path.isfile(src):
         print(f"  spad marker: no compiler checkout at {src}")

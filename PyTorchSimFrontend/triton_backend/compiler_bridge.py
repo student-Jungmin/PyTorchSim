@@ -1,4 +1,4 @@
-"""Run pytorchsim-triton-opt, out of process.
+"""Run pytorchsim-triton-compiler, out of process.
 
 the compiler's passes run on LLVM 23's MLIR python bindings and this process holds LLVM
 20's. `mlir` is a NAMESPACE package, so two LLVMs in one interpreter merge
@@ -37,15 +37,15 @@ class CompilerError(RuntimeError):
         super().__init__(message)
 
 
-#: The compiler's package. One name since pytorchsim-triton-opt fe0ee08.
-COMPILER_PKG = "pytorchsim_triton_opt"
+#: The compiler's package. One name since pytorchsim-triton-compiler fe0ee08.
+COMPILER_PKG = "pytorchsim_triton_compiler"
 
 
 def tnpu_dir():
     d = extension_config.CONFIG_TORCHSIM_COMPILE_DIR
     if not os.path.isdir(d):
         raise CompilerError(
-            f"pytorchsim-triton-opt checkout not found at {d}. It is a separate repository "
+            f"pytorchsim-triton-compiler checkout not found at {d}. It is a separate repository "
             f"and is not vendored; clone it there or set TORCHSIM_COMPILE_DIR.")
     return d
 
@@ -102,7 +102,7 @@ def doctor():
     """Return (ok, output) for the compiler's own toolchain check."""
     proc = subprocess.run(
         [extension_config.CONFIG_TORCHSIM_COMPILE_PYTHON,
-         os.path.join(tnpu_dir(), "pytorchsim-triton-opt"), "doctor"],
+         os.path.join(tnpu_dir(), "pytorchsim-triton-compiler"), "doctor"],
         capture_output=True, text=True, cwd=tnpu_dir())
     return proc.returncode == 0, proc.stdout + proc.stderr
 
@@ -127,7 +127,7 @@ def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", timeout=1800):
     want tensors and a per-kernel reference this route has no graph-level answer for.
     """
     cmd = [extension_config.CONFIG_TORCHSIM_COMPILE_PYTHON,
-           os.path.join(tnpu_dir(), "pytorchsim-triton-opt"), spec_path,
+           os.path.join(tnpu_dir(), "pytorchsim-triton-compiler"), spec_path,
            "--from", "triton-compile", "--to", to_stage, "--workdir", workdir]
 
     proc = subprocess.run(cmd, capture_output=True, text=True,
@@ -145,7 +145,7 @@ def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", timeout=1800):
 
 
 #: The compiler's manifest. Its schema is declared in the compiler
-#: (pytorchsim_triton_opt/contract/kernel_object.py); this is a reader, and the format field is what stops
+#: (pytorchsim_triton_compiler/contract/kernel_object.py); this is a reader, and the format field is what stops
 #: the two from drifting silently.
 KERNEL_MANIFEST = "kernel.json"
 KERNEL_FORMAT = 1
