@@ -131,6 +131,8 @@ valid_cpu = {
 # change systolicArrayWidth and systolicArrayHeight into args.vlane
 SystolicArray.systolicArrayWidth = args.vlane
 SystolicArray.systolicArrayHeight = args.vlane
+MsaUnit.systolicArrayWidth = args.vlane
+MsaUnit.systolicArrayHeight = args.vlane
 binary = args.cmd
 
 # Main System Setup

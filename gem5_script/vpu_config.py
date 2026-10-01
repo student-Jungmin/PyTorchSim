@@ -5,6 +5,18 @@ from m5.objects import *
 #: One FU whose latency comes from the tile, instead of four latency buckets.
 #: Off by default -- see CrossLaneUnit below.
 _XLU_FU = os.environ.get("TORCHSIM_COMPILE_XLU_FU", "0") == "1"
+#: The multi-precision array exists only in a gem5 that carries its op classes;
+#: an older binary keeps today's pool rather than failing on an unknown enum.
+_MSA_FU = "CustomMsaVpush" in OpClass.vals
+
+#: The multi-precision array (karrot): its own copy of the systolic array. The
+#: weight push's SIMM5 sets the live width, so the fill is rows + live columns - 1.
+class MsaUnit(MinorFU):
+    unitType = "Msa"
+    opClasses = minorMakeOpClassSet(["CustomMsaVpush", "CustomMsaVpop"] if _MSA_FU else [])
+    opLat = 1
+    systolicArrayWidth = 128
+    systolicArrayHeight = 128
 
 class SystolicArray(MinorFU):
     unitType = "SystolicArray"
@@ -289,7 +301,8 @@ class MinorCustomFUPool(MinorFUPool):
 
         # Cross-lane
     ] + ([CrossLaneUnit()] if _XLU_FU else
-         [TransposeUnit(), TransposePopUnit(), CrossbarUnit(), CrossbarPopUnit()])
+         [TransposeUnit(), TransposePopUnit(), CrossbarUnit(), CrossbarPopUnit()]) \
+      + ([MsaUnit()] if _MSA_FU else [])
 
 class RiscvVPU(RiscvMinorCPU):
     fetch1FetchLimit = 8
