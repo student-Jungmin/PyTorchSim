@@ -130,6 +130,9 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   std::vector<int64_t>& get_tag_id() { return _tag_key; }
   void set_addr_name(std::string name, int64_t id) { _addr_name = name; _addr_id = id; }
   std::string get_addr_name() { return _addr_name; }
+  // The kernel argument (tensor) a DMA moves; -1 when unknown.
+  void set_dram_arg(int arg) { _dram_arg = arg; }
+  int get_dram_arg() const { return _dram_arg; }
   int64_t get_addr_id() { return _addr_id; }
   void set_nr_inner_loop(int nr) { _nr_inner_loop = nr; }
   int get_nr_inner_loop() { return _nr_inner_loop; }
@@ -198,6 +201,7 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   std::vector<int64_t> _accum_tag_idx_list;
   std::vector<addr_type> _trace_address;
   std::string _addr_name;
+  int _dram_arg = -1;
   int64_t _addr_id = 0;
   int _nr_inner_loop = 0;
   bool _is_async_dma=false;

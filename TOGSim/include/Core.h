@@ -81,6 +81,12 @@ class Core {
   // SA weight-buffer throttle (sec 10.4): pick a systolic array that has a free
   // weight slot (round-robin among free); -1 if all full -> the preload stalls.
   int pick_free_weight_sa();
+  // Cross-dispatch block reuse (dma_reuse_across_dispatch): a load of the tile the
+  // previous dispatch on this core loaded completes without DRAM traffic.
+  std::vector<int64_t> reuse_key(const std::shared_ptr<Instruction>& inst);
+  bool try_reuse_load(const std::shared_ptr<Instruction>& inst);
+  void complete_reused_load(std::shared_ptr<Instruction> inst);
+  void note_load_done(const std::shared_ptr<Instruction>& inst);
   void process_due_events();   // drain _due_events due this cycle
   void apply_due(const DueAction& a);
 
@@ -90,8 +96,15 @@ class Core {
   uint32_t _num_systolic_array_per_core;
   uint32_t _systolic_array_rr = 0;
 
-  /* DMA Unit */
+  /* DMA Unit: _dma is stream 0 and holds the tag tables; _extra_streams are streams 1.. */
   DMA _dma;
+  std::vector<std::unique_ptr<DMA>> _extra_streams;
+  std::vector<double> _stream_credit;
+  uint32_t _stream_rr = 0;
+  DMA& stream(uint32_t i) { return i == 0 ? _dma : *_extra_streams[i - 1]; }
+  uint32_t num_streams() const { return 1 + _extra_streams.size(); }
+  bool any_stream_busy() { for (uint32_t i = 0; i < num_streams(); i++) if (!stream(i).empty()) return true; return false; }
+  void retire_stream_inst(DMA& s);
 
   /* cycle */
   cycle_type _core_cycle;
@@ -159,4 +172,25 @@ class Core {
   std::vector<int> _weight_slots_used;
   uint32_t _weight_slot_depth = 0;
   std::multimap<cycle_type, DueAction> _due_events;
+
+  // Each block brought in, by reuse_key: the load that brought it (in flight until
+  // done) and the reusing loads waiting for its data.
+  struct ResidentBlock {
+    Instruction* loader = nullptr;
+    bool done = false;
+    std::vector<std::shared_ptr<Instruction>> waiting;
+  };
+  std::map<std::vector<int64_t>, ResidentBlock> _resident;
+  std::unordered_map<Instruction*, std::vector<int64_t>> _resident_key_of;   // in-flight loaders
+  std::unordered_map<const Instruction*, uint64_t> _dma_seq;   // issue order of queued DMAs
+  uint64_t _next_dma_seq = 0;
+  std::unordered_map<const Tile*, size_t> _unfinished_stores;   // per dispatch, stores not yet done
+  std::unordered_map<const Tile*, size_t> _loads_in_flight;     // per dispatch, loads whose data has not landed
+  void note_load_landed(const std::shared_ptr<Instruction>& inst);
+  bool is_draining(const std::shared_ptr<Tile>& t);
+  std::vector<int> _dispatch_order;   // subgraph ids in the order they reached this core
+  std::map<std::pair<int, int>, std::vector<int64_t>> _last_load;   // (dispatch, tensor) -> block it loaded last
+  uint64_t _stat_reused_loads = 0;
+  std::vector<uint64_t> _stat_streams_busy;   // cycles with n streams generating requests
+  uint64_t _stat_reused_bytes = 0;
 };

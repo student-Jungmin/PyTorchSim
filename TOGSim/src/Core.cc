@@ -10,6 +10,9 @@ Core::Core(uint32_t id, SimulationConfig config)
       _stat_dma_cycle(0),
       _num_systolic_array_per_core(config.num_systolic_array_per_core),
       _dma(id, config.dram_req_size, config.l2d_type != L2CacheType::NOCACHE) {
+  for (uint32_t i = 1; i < config.dma_streams; i++)
+    _extra_streams.push_back(std::make_unique<DMA>(id, config.dram_req_size, config.l2d_type != L2CacheType::NOCACHE));
+  _stream_credit.assign(config.dma_streams, 0.0);
   _sa_compute_pipeline.resize(_num_systolic_array_per_core);
   _stat_tot_sa_compute_cycle.resize(_num_systolic_array_per_core);
   _stat_sa_compute_cycle.resize(_num_systolic_array_per_core);
@@ -89,14 +92,125 @@ bool Core::can_issue(const std::shared_ptr<Tile>& op) {
    * for the shared spad and deadlock). spad_footprint = codegen .spad x lanes; 0
    * (unknown) falls back to 2. */
   size_t M = op->get_spad_footprint();
-  int max_concurrent = (_sram_capacity && M > _sram_capacity / 2) ? 1 : 2;
-  return (int)_tiles.size() < max_concurrent && !op->is_stonne_tile();
+  const int k = (int)_config.max_concurrent_dispatch;
+  int max_concurrent = (_sram_capacity && M > _sram_capacity / k) ? 1 : k;
+  int active = (int)_tiles.size();
+  if (_config.dispatch_after_loads)
+    for (const auto& t : _tiles) {
+      auto it = _loads_in_flight.find(t.get());
+      if (it != _loads_in_flight.end() && it->second > 0) return false;
+    }
+  if (_config.release_dispatch_at_store) {
+    for (const auto& t : _tiles) active -= is_draining(t);
+    if ((int)_tiles.size() >= max_concurrent + 1) return false;   // one draining dispatch at most
+  }
+  return active < max_concurrent && !op->is_stonne_tile();
+}
+
+// Only stores left: every other instruction of the dispatch has finished.
+bool Core::is_draining(const std::shared_ptr<Tile>& t) {
+  auto it = _unfinished_stores.find(t.get());
+  if (it == _unfinished_stores.end() || it->second == 0) return false;
+  return t->nr_insts() - t->nr_finshed_insts() == it->second;
+}
+
+std::vector<int64_t> Core::reuse_key(const std::shared_ptr<Instruction>& inst) {
+  std::vector<int64_t> k{(int64_t)inst->get_base_dram_address(), (int64_t)inst->get_elem_bits()};
+  for (auto d : inst->get_tile_size()) k.push_back((int64_t)d);
+  k.push_back(-1);
+  for (auto s : inst->get_tile_stride()) k.push_back((int64_t)s);
+  return k;
+}
+
+// Pallas's rule, per tensor: a dispatch's FIRST load of a tensor reuses the block when it
+// is the block the previous dispatch on this core loaded LAST from that tensor. Later
+// loads of the tensor in the same dispatch follow a load of another block: never reused.
+bool Core::try_reuse_load(const std::shared_ptr<Instruction>& inst) {
+  if (!_config.dma_reuse_across_dispatch || inst->is_indirect_mode() || inst->get_dram_arg() < 0)
+    return false;
+  const int sg = inst->subgraph_id, arg = inst->get_dram_arg();
+  if (_last_load.count({sg, arg})) return false;
+  auto pos = std::find(_dispatch_order.begin(), _dispatch_order.end(), sg);
+  if (pos == _dispatch_order.begin() || pos == _dispatch_order.end()) return false;
+  auto key = reuse_key(inst);
+  auto prev = _last_load.find({*(pos - 1), arg});
+  if (prev == _last_load.end() || prev->second != key) return false;
+  auto it = _resident.find(key);
+  if (it == _resident.end()) return false;
+  if (!try_occupy_sram(inst)) return false;
+  spdlog::debug("[{}][Core {}] load reused across dispatches: dispatch={} prev={} arg={} dram=0x{:x} bytes={}",
+                _core_cycle, _id, sg, *(pos - 1), arg, inst->get_base_dram_address(),
+                inst->get_tile_numel() * (inst->get_elem_bits() / 8));
+  _last_load[{sg, arg}] = key;
+  _stat_reused_loads++;
+  _stat_reused_bytes += inst->get_tile_numel() * (inst->get_elem_bits() / 8);
+  if (inst->is_async_dma()) {   // an async load finishes on issue; its tag waits for the data
+    _dma.register_tag(inst->subgraph_id, inst->get_tag_id());
+    std::shared_ptr<Instruction> issued = inst;
+    finish_instruction(issued, InstFinishTraceTag::DmaIssueComplete);
+  }
+  if (it->second.done)
+    complete_reused_load(inst);
+  else
+    it->second.waiting.push_back(inst);
+  return true;
+}
+
+void Core::complete_reused_load(std::shared_ptr<Instruction> inst) {
+  note_load_landed(inst);
+  if (!inst->is_async_dma()) {
+    finish_instruction(inst);
+    return;
+  }
+  auto& key = inst->get_tag_id();
+  _dma.set_tag_finish(inst->subgraph_id, key);
+  for (auto& wait_inst : _dma.get_tag_waiter(inst->subgraph_id, key)) {
+    _dma.mark_tag_used(inst->subgraph_id, key);
+    _due_events.emplace(_core_cycle, DueAction{DueAction::WakeBar, nullptr, wait_inst});
+  }
+}
+
+void Core::note_load_done(const std::shared_ptr<Instruction>& inst) {
+  auto k = _resident_key_of.find(inst.get());   // the key taken at issue: the DMA rewrites the tile
+  if (k == _resident_key_of.end()) return;
+  auto it = _resident.find(k->second);
+  _resident_key_of.erase(k);
+  if (it == _resident.end() || it->second.loader != inst.get()) return;
+  it->second.done = true;
+  auto waiting = std::move(it->second.waiting);
+  it->second.waiting.clear();
+  for (auto& w : waiting) complete_reused_load(w);
+}
+
+void Core::note_load_landed(const std::shared_ptr<Instruction>& inst) {
+  auto it = _loads_in_flight.find(static_cast<Tile*>(inst->get_owner()));
+  if (it != _loads_in_flight.end() && it->second > 0) it->second--;
 }
 
 void Core::issue(std::shared_ptr<Tile> op) {
+  if (_config.dispatch_after_loads) {
+    size_t n = 0;
+    for (const auto& inst : op->get_instructions()) n += inst->is_dma_read();
+    _loads_in_flight[op.get()] = n;
+  }
+  if (_config.release_dispatch_at_store) {
+    size_t n = 0;
+    for (const auto& inst : op->get_instructions()) n += inst->is_dma_write();
+    _unfinished_stores[op.get()] = n;
+  }
+  if (!op->get_instructions().empty()) {
+    int sg = op->get_instructions().front()->subgraph_id;
+    if (_dispatch_order.empty() || _dispatch_order.back() != sg) {
+      _dispatch_order.push_back(sg);
+      if (_dispatch_order.size() > 2)   // only the previous dispatch's last loads are ever asked for
+        for (auto it = _last_load.begin(); it != _last_load.end();)
+          it = (it->first.first == _dispatch_order[_dispatch_order.size() - 3]) ? _last_load.erase(it) : std::next(it);
+    }
+  }
   if (op->get_instructions().size()) {
     size_t M = op->get_spad_footprint();
-    int max_dispatch = (_sram_capacity && M > _sram_capacity / 2) ? 1 : 2;
+    const int k = (int)_config.max_concurrent_dispatch;
+    int max_dispatch = (_sram_capacity && M > _sram_capacity / k) ? 1 : k;
     core_trace_log::trace_tile_scheduled(_core_cycle, _id,
                                          TraceLogTag::pad15(TraceLogTag::kTileScheduled),
                                          M, max_dispatch);
@@ -213,6 +327,8 @@ void Core::dma_cycle() {
     std::shared_ptr<Instruction>& instruction = _dma_finished_queue.at(0);
     assert(instruction->get_waiting_request()==0);
 
+    if (instruction->is_dma_read()) { note_load_done(instruction); note_load_landed(instruction); }
+
     /* Finish DMA read instruction */
     if (instruction->is_dma_read() && !instruction->is_async_dma())
       finish_instruction(instruction);
@@ -239,55 +355,85 @@ void Core::dma_cycle() {
     _dma_finished_queue.erase(_dma_finished_queue.begin());
   }
 
-  if (_dma.is_finished()) {
-    /* Finish instruction when it is DMA store */
-    if (_dma.get_current_inst() != nullptr) {
-      std::shared_ptr<Instruction> finished_inst = std::move(_dma.get_current_inst());
-      if (finished_inst->is_dma_write()) {
-        /* Only DMA write operation is finished! */
-        finish_instruction(finished_inst);
-      } else if (finished_inst->is_dma_read() && finished_inst->is_async_dma()) {
-        /* Register tag table for async dma load; see TraceLogTag::kAsyncDmaAllRequestsIssued */
-        finish_instruction(finished_inst, InstFinishTraceTag::DmaIssueComplete);
-      } else if(!finished_inst->is_dma_read()) {
-        core_trace_log::log_error_dma_instruction_invalid(_core_cycle, _id);
-        exit(EXIT_FAILURE);
-      } else if (finished_inst->get_opcode() == Opcode::MEMORY_BAR) {
-        if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
-                                               _id,
-                                               TraceLogTag::pad15(TraceLogTag::kInstructionFinished),
-                                               finished_inst->get_global_inst_id(),
-                                               core_trace_log::format_instruction_detail_line(
-                                                   *finished_inst));
+  // Each stream that has generated all its requests retires its DMA and takes the next one.
+  bool busy = false;
+  uint32_t n_busy = 0;
+  for (uint32_t i = 0; i < num_streams(); i++) {
+    DMA& s = stream(i);
+    if (s.is_finished()) {
+      if (s.get_current_inst() != nullptr) retire_stream_inst(s);
+      bool store_first = _config.dma_issue_order && !_ld_inst_queue.empty() && !_st_inst_queue.empty() &&
+                         _dma_seq[_st_inst_queue.front().get()] < _dma_seq[_ld_inst_queue.front().get()];
+      if (!_ld_inst_queue.empty() && !store_first) {
+        _dma_seq.erase(_ld_inst_queue.front().get());
+        s.issue_tile(_ld_inst_queue.front());
+        _ld_inst_queue.pop();
+      } else if (!_st_inst_queue.empty()) {
+        _dma_seq.erase(_st_inst_queue.front().get());
+        s.issue_tile(_st_inst_queue.front());
+        _st_inst_queue.pop();
       }
-      /*Pass to waiting queue */
-      _dma_waiting_queue[finished_inst.get()] = std::move(finished_inst);
     }
-
-    /* Issue new DMA operation */
-    if (!_ld_inst_queue.empty()) {
-      std::shared_ptr<Instruction> inst = _ld_inst_queue.front();
-      _dma.issue_tile(inst);
-      _ld_inst_queue.pop();
-    } else if (!_st_inst_queue.empty()) {
-      std::shared_ptr<Instruction> inst = _st_inst_queue.front();
-      _dma.issue_tile(inst);
-      _st_inst_queue.pop();
-    } else {
-      /* DMA is idle */
-      _stat_dma_idle_cycle++;
-      return;
+    busy = busy || !s.is_finished();
+    n_busy += !s.is_finished();
+  }
+  if (_stat_streams_busy.size() <= n_busy) _stat_streams_busy.resize(n_busy + 1, 0);
+  _stat_streams_busy[n_busy]++;
+  if (!busy) {
+    /* DMA is idle */
+    _stat_dma_idle_cycle++;
+    return;
+  }
+  /* Generate memfetch: streams take turns, each up to its per-cycle rate, all within the ports */
+  int budget = _config.icnt_injection_ports_per_core;
+  const double cap = _config.dma_stream_req_per_cycle;
+  for (uint32_t n = 0; n < num_streams() && budget > 0; n++) {
+    uint32_t i = (_stream_rr + n) % num_streams();
+    DMA& s = stream(i);
+    if (s.is_finished()) continue;
+    int want = budget;
+    if (cap > 0) {
+      _stream_credit[i] = std::min(_stream_credit[i] + cap, cap + 1.0);
+      want = std::min(budget, (int)_stream_credit[i]);
+      if (want == 0) continue;
+    }
+    auto access_vec = s.get_memory_access(_core_cycle, want);
+    if (cap > 0) _stream_credit[i] -= access_vec->size();
+    budget -= access_vec->size();
+    for (auto access : *access_vec) {
+      access->set_start_cycle(_core_cycle);
+      _request_queue.push(access);
     }
   }
-  /* Generate memfetch */
-  auto access_vec = _dma.get_memory_access(_core_cycle, _config.icnt_injection_ports_per_core);
-  for (auto access : *access_vec) {
-    access->set_start_cycle(_core_cycle);
-    _request_queue.push(access);
-  }
+  _stream_rr = (_stream_rr + 1) % num_streams();
 
   /* Increase dma stat cycle */
   _stat_dma_cycle++;
+}
+
+void Core::retire_stream_inst(DMA& s) {
+  std::shared_ptr<Instruction> finished_inst = std::move(s.get_current_inst());
+  if (finished_inst->is_dma_write()) {
+    /* Only DMA write operation is finished! */
+    auto st = _unfinished_stores.find(static_cast<Tile*>(finished_inst->get_owner()));
+    if (st != _unfinished_stores.end() && st->second > 0) st->second--;
+    finish_instruction(finished_inst);
+  } else if (finished_inst->is_dma_read() && finished_inst->is_async_dma()) {
+    /* Register tag table for async dma load; see TraceLogTag::kAsyncDmaAllRequestsIssued */
+    finish_instruction(finished_inst, InstFinishTraceTag::DmaIssueComplete);
+  } else if(!finished_inst->is_dma_read()) {
+    core_trace_log::log_error_dma_instruction_invalid(_core_cycle, _id);
+    exit(EXIT_FAILURE);
+  } else if (finished_inst->get_opcode() == Opcode::MEMORY_BAR) {
+    if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
+                                           _id,
+                                           TraceLogTag::pad15(TraceLogTag::kInstructionFinished),
+                                           finished_inst->get_global_inst_id(),
+                                           core_trace_log::format_instruction_detail_line(
+                                               *finished_inst));
+  }
+  /*Pass to waiting queue */
+  _dma_waiting_queue[finished_inst.get()] = std::move(finished_inst);
 }
 
 void Core::cycle() {
@@ -343,9 +489,19 @@ void Core::cycle() {
               issued = true;
               _stat_tot_skipped_inst.at(static_cast<size_t>(inst->get_opcode()))++;
               break;
+            } else if (try_reuse_load(inst)) {
+              issued = true;
+              _stat_tot_skipped_inst.at(static_cast<size_t>(inst->get_opcode()))++;
+              break;
             } else {
               // load occupies its spad bytes on issue; stall (retry next cycle) if full.
               if (!try_occupy_sram(inst)) break;
+              if (_config.dma_reuse_across_dispatch && !inst->is_indirect_mode()) {
+                auto k = reuse_key(inst);
+                _last_load[{inst->subgraph_id, inst->get_dram_arg()}] = k;
+                _resident[k] = ResidentBlock{inst.get(), false, {}};
+                _resident_key_of[inst.get()] = std::move(k);
+              }
               if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
                                                        _id,
                                                        TraceLogTag::pad15(
@@ -354,6 +510,7 @@ void Core::cycle() {
                                                        core_trace_log::format_dma_inst_issued_trace_line(
                                                            *inst));
               _dma.register_tag(inst->subgraph_id, inst->get_tag_id());
+              _dma_seq[inst.get()] = _next_dma_seq++;
               _ld_inst_queue.push(inst);
               issued = true;
               break;
@@ -367,6 +524,7 @@ void Core::cycle() {
                                                    inst->get_global_inst_id(),
                                                    core_trace_log::format_dma_inst_issued_trace_line(
                                                        *inst));
+          _dma_seq[inst.get()] = _next_dma_seq++;
           _st_inst_queue.push(inst);
           issued = true;
           break;
@@ -512,6 +670,8 @@ void Core::cycle() {
     for (int i=0; i<_tiles.size() && !issued; i++) {
       if (_tiles[i]->all_insts_finshed()) {
         _tiles[i]->set_status(Tile::Status::FINISH);
+        _unfinished_stores.erase(_tiles[i].get());
+        _loads_in_flight.erase(_tiles[i].get());
         _finished_tiles.push(std::move(_tiles[i]));
         _tiles.erase(_tiles.begin() + i); // FIXME. Inefficient data structure
         /* Let's retry */
@@ -563,7 +723,7 @@ bool Core::has_inflight() {
   for (int i = 0; i < _num_systolic_array_per_core; i++)
     if (!_sa_compute_pipeline.at(i).empty()) return true;
   if (!_dma_waiting_queue.empty() || !_dma_finished_queue.empty()) return true;
-  if (!_dma.empty()) return true;
+  if (any_stream_busy()) return true;
   if (!_ld_inst_queue.empty() || !_st_inst_queue.empty()) return true;
   return false;
 }
@@ -575,7 +735,7 @@ bool Core::running() {
   for (int i=0; i<_num_systolic_array_per_core;i++)
     running = running || !_sa_compute_pipeline.at(i).empty();
   running = running || !_dma_waiting_queue.empty() || !_dma_finished_queue.empty();
-  running = running || !_dma.empty();
+  running = running || any_stream_busy();
   running = running || !_ld_inst_queue.empty();
   running = running || !_st_inst_queue.empty();
   return running;
@@ -662,6 +822,10 @@ void Core::print_stats() {
   spdlog::info("Core [{}] : Cross-lane unit utilization(%): {:.2f}, active cycle: {}, idle_cycle: {}", _id,
     static_cast<float>(_stat_tot_xlu_compute_cycle * 100) / _core_cycle, _stat_tot_xlu_compute_cycle, _stat_tot_xlu_compute_idle_cycle);
   spdlog::info("Core [{}] : NUMA local memory: {} requests, remote memory: {} requests", _id, _stat_numa_local_access, _stat_numa_remote_access);
+  if (_config.dma_reuse_across_dispatch)
+    spdlog::info("Core [{}] : Loads reused across dispatches: {} ({} bytes)", _id, _stat_reused_loads, _stat_reused_bytes);
+  if (num_streams() > 1)
+    spdlog::info("Core [{}] : DMA streams busy, cycles by count: [{}]", _id, fmt::join(_stat_streams_busy, ", "));
   spdlog::info("Core [{}] : Total_cycles: {}", _id, _core_cycle);
 }
 

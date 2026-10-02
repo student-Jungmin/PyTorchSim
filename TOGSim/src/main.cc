@@ -29,9 +29,23 @@ std::unique_ptr<TileGraph> build_trace_tilegraph(Simulator* simulator,
   for (int c = 0; c < num_cores; c++)
     if (simulator->get_partition_id(c) == partition_id) partition_cores.push_back(c);
   if (partition_cores.empty()) partition_cores.push_back(0);
-  // First cut: stub tensor bases (real per-tensor addresses come later).
+  // Stub tensor bases (real per-tensor addresses come later), `trace_tensor_base_stride`
+  // bytes apart (default 1 MiB): a tensor larger than the stride overlaps the next one.
+  const uint64_t stride = cfg["trace_tensor_base_stride"]
+                              ? cfg["trace_tensor_base_stride"].as<uint64_t>() : 0x100000ull;
   std::vector<uint64_t> bases(16);
-  for (size_t i = 0; i < bases.size(); ++i) bases[i] = 0x100000ull * (i + 1);
+  for (size_t i = 0; i < bases.size(); ++i) bases[i] = stride * (i + 1);
+  // `trace_tensor_packed`: the tensors back to back in argument order, each start aligned to
+  // `trace_tensor_align_kib` (16, XLA's program HBM alignment), from the sidecar's byte sizes.
+  if (cfg["trace_tensor_packed"] && cfg["trace_tensor_packed"].as<int>() != 0) {
+    std::ifstream tt(fs::path(trace_so_path).parent_path() / "trace_tensors.txt");
+    const uint64_t align = 1024ull * (cfg["trace_tensor_align_kib"] ? cfg["trace_tensor_align_kib"].as<uint64_t>() : 16);
+    uint64_t at = 0, bytes;
+    for (size_t i = 0; i < bases.size() && tt >> bytes; ++i) {
+      bases[i] = at;
+      at = (at + bytes + align - 1) / align * align;
+    }
+  }
   // Cycle table: load the per-tile_id TSV sidecar if present, else a flat stub.
   std::vector<int64_t> cyc, ovl;
   std::ifstream ct(cycle_table_path);
@@ -55,7 +69,8 @@ std::unique_ptr<TileGraph> build_trace_tilegraph(Simulator* simulator,
                             bases.data(), (int)bases.size(),
                             cyc.data(), ovl.data(), (int)cyc.size(),
                             partition_cores.data(), (int32_t)partition_cores.size(),
-                            "trace_kernel");
+                            "trace_kernel",
+                            cfg["systolic_in_order"] && cfg["systolic_in_order"].as<int>() != 0);
 }
 
 void launchKernel(Simulator* simulator, unsigned int kernel_id, std::string onnx_path, std::string attribute_path, const YAML::Node& config_yaml, cycle_type request_time=0, int partition_id=0, int device_id=0) {

@@ -66,6 +66,20 @@ SimulationConfig initialize_config(const YAML::Node& config,
     parsed_config.num_systolic_array_per_core = config["num_systolic_array_per_core"].as<uint32_t>();
   if (config["core_spad_size_kb"])
     parsed_config.core_spad_size_kb = config["core_spad_size_kb"].as<uint32_t>();
+  if (config["max_concurrent_dispatch"])
+    parsed_config.max_concurrent_dispatch = std::max(1u, config["max_concurrent_dispatch"].as<uint32_t>());
+  if (config["dma_issue_order"])
+    parsed_config.dma_issue_order = config["dma_issue_order"].as<uint32_t>() != 0;
+  if (config["dispatch_after_loads"])
+    parsed_config.dispatch_after_loads = config["dispatch_after_loads"].as<uint32_t>() != 0;
+  if (config["release_dispatch_at_store"])
+    parsed_config.release_dispatch_at_store = config["release_dispatch_at_store"].as<uint32_t>() != 0;
+  if (config["dma_streams"])
+    parsed_config.dma_streams = std::max(1u, config["dma_streams"].as<uint32_t>());
+  if (config["dma_stream_req_per_cycle"])
+    parsed_config.dma_stream_req_per_cycle = config["dma_stream_req_per_cycle"].as<double>();
+  if (config["dma_reuse_across_dispatch"])
+    parsed_config.dma_reuse_across_dispatch = config["dma_reuse_across_dispatch"].as<uint32_t>() != 0;
   if (config["sa_weight_buffer_depth"])
     parsed_config.sa_weight_buffer_depth = config["sa_weight_buffer_depth"].as<uint32_t>();
   if (config["num_stonne_per_core"])

@@ -13,9 +13,11 @@
 // dependency-closed; SRAM buffer VERSIONS do cross tiles though.
 //
 // `name` labels the graph. Returns nullptr if the producer fails to load or run.
+// `in_order_systolic`: a work-item's systolic-array ops issue in program order, as an
+// in-order core streams them; false lets any op whose operands are ready go first.
 std::unique_ptr<TileGraph> trace_to_tilegraph(
     const char* so_path, const int64_t* shape_args, int32_t n_shape,
     const uint64_t* tensor_base, int32_t n_tensors,
     const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
     const int32_t* partition_cores, int32_t n_partition_cores,
-    const std::string& name);
+    const std::string& name, bool in_order_systolic = false);

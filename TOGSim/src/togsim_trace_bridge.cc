@@ -31,6 +31,7 @@ std::shared_ptr<Instruction> make_dma(const togsim::TraceRec& t, int64_t uniq) {
       /*accum_tag_idx_list=*/std::vector<int64_t>{});
   inst->set_is_async(t.is_async != 0);
   inst->set_addr_name("tag" + std::to_string(uniq), uniq);
+  inst->set_dram_arg(t.arg_id);
   inst->prepare_tag_key();
   return inst;
 }
@@ -99,6 +100,8 @@ struct BuildState {
            std::pair<int64_t, std::shared_ptr<Instruction>>> bar_for_load;
   int64_t next_tag = 0;
   int cur_tile_group = -1;
+  bool in_order_systolic = false;
+  std::shared_ptr<Instruction> last_systolic;   // this work-item's previous systolic op
   std::set<int64_t> cur_tile_bufs;
   size_t cur_tile_footprint = 0;
 
@@ -211,6 +214,7 @@ struct BuildState {
     writers.clear();
     current_dma.clear();
     bar_for_load.clear();
+    last_systolic.reset();
     cur_tile_bufs.clear();
     cur_tile_footprint = 0;
     next_tag = 0;
@@ -375,6 +379,10 @@ struct BuildState {
       auto inst = make_compute(t);
       inst->set_tile_group(cur_tile_group);
       link(inst, t.read_bufs, t.write_bufs);
+      if (in_order_systolic && (t.compute_type == MATMUL_CT || t.compute_type == PRELOAD_CT)) {
+        if (last_systolic) last_systolic->add_dep(inst, DepEvent::ISSUE);
+        last_systolic = inst;
+      }
       note_bufs(t.read_bufs); note_bufs(t.write_bufs);   // distinct-buffer footprint for 1- vs 2-dispatch
       sram_apply(t, inst);   // consuming reads free their version; fresh outputs open one
     }
@@ -400,9 +408,10 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
     const uint64_t* tensor_base, int32_t n_tensors,
     const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
     const int32_t* partition_cores, int32_t n_partition_cores,
-    const std::string& name) {
+    const std::string& name, bool in_order_systolic) {
   using togsim::TraceRec;
   auto S = std::make_shared<BuildState>();
+  S->in_order_systolic = in_order_systolic;
 
   // Index the dispatches (records each work-item's fn/iv/core) and collect each
   // buffer's spad size. Builds no Instruction.

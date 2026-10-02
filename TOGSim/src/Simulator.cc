@@ -16,7 +16,7 @@ Simulator::Simulator(SimulationConfig config, YAML::Node hardware_config_yaml)
   _dram_time = 0;
   _icnt_time = 0;
   _slot_id = 0;
-  _max_slot = 2;
+  _max_slot = config.max_concurrent_dispatch;
   _n_cores = config.num_cores;
   _n_memories = config.dram_channels;
   _memory_req_size = config.dram_req_size;
@@ -99,6 +99,9 @@ void Simulator::core_cycle() {
       if (tile->get_status() != Tile::Status::EMPTY && _cores[core_id]->can_issue(tile))  {
         if (tile->get_status() == Tile::Status::INITIALIZED) {
           _cores[core_id]->issue(std::move(get_partition_scheduler(core_id)->get_tile(core_id, _slot_id)));
+          // Start the next look at the OTHER slot: a slot always holding a ready tile would
+          // otherwise take every freed place and starve the other one to the end of the kernel.
+          _slot_id = (_slot_id + 1) % _max_slot;
           break;
         } else {
           spdlog::error("[Simulator] issued tile is not valid status...!");

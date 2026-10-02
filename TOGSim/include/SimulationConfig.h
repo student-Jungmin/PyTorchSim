@@ -35,6 +35,29 @@ struct SimulationConfig {
   // preload stalls until a slot frees (its matmuls finished). 2 = weight
   // double-buffer (convention default, tunable). 0 = disabled.
   uint32_t sa_weight_buffer_depth = 2;
+  // A load whose DRAM tile the core's previous dispatch already brought in is not
+  // fetched again: the next grid step reuses the resident block, as a Pallas grid
+  // does when a block index does not change between consecutive steps.
+  bool dma_reuse_across_dispatch = false;
+  // Dispatches (work-items) a core runs at once when each fits its share of the spad.
+  // 2 is a double buffer; a Pallas-style pipeline also overlaps the previous step's
+  // write-back, which takes 3.
+  uint32_t max_concurrent_dispatch = 2;
+  // A dispatch left with only its stores to drain stops counting against
+  // max_concurrent_dispatch: the next one starts while the write-back finishes, as a
+  // pipeline that issues its output copy and moves on.
+  bool release_dispatch_at_store = false;
+  // A new dispatch starts only once every running one has its loads in: one step's
+  // loads in flight at a time, as a pipeline that prefetches exactly the next step.
+  bool dispatch_after_loads = false;
+  // DMA streams take loads and stores in the order they were issued; false serves every
+  // queued load before any store.
+  bool dma_issue_order = false;
+  // DMA streams in flight per core, and the requests one stream may inject per cycle
+  // (fractional; 0 = no cap). 1 stream with no cap is one DMA at a time at the full
+  // injection width; a TPU DMA runs at a fraction of HBM and several share it.
+  uint32_t dma_streams = 1;
+  double dma_stream_req_per_cycle = 0;
 
   /* DRAM config */
   DramType dram_type;
